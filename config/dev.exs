@@ -1,0 +1,51 @@
+import Config
+
+config :alem, Alem.Repo,
+  username: "postgres",
+  password: "postgres",
+  hostname: "172.235.17.68",
+  database: "alem_dev",
+  stacktrace: true,
+  show_sensitive_data_on_connection_error: true,
+  pool_size: 10
+
+config :alem, AlemWeb.Endpoint,
+  http: [ip: {127, 0, 0, 1}, port: 4000],
+  check_origin: false,
+  code_reloader: true,
+  debug_errors: true,
+  secret_key_base: "TYPluKe+33aYQCwORlkEwTADppYLiB7fVdKrxNk0YQBFsNtSQ9iLj4+ZNm9d4Ox5",
+  watchers: [
+    esbuild: {Esbuild, :install_and_run, [:alem, ~w(--sourcemap=inline --watch)]},
+    tailwind: {Tailwind, :install_and_run, [:alem, ~w(--watch)]}
+  ]
+
+config :alem, AlemWeb.Endpoint,
+  live_reload: [
+    patterns: [
+      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$",
+      ~r"priv/gettext/.*\.po$",
+      ~r"lib/alem_web/(controllers|live|components)/.*\.(ex|heex)$"
+    ]
+  ]
+
+config :alem, dev_routes: true
+
+config :logger, :default_formatter, format: "[$level] $message\n"
+
+config :phoenix, :stacktrace_depth, 20
+config :phoenix, :plug_init_mode, :runtime
+
+config :phoenix_live_view,
+  debug_heex_annotations: true,
+  enable_expensive_runtime_checks: true
+
+# Override for dev - use local config
+config :ex_aws,
+  access_key_id: System.get_env("AWS_ACCESS_KEY_ID"),
+  secret_access_key: System.get_env("AWS_SECRET_ACCESS_KEY")
+
+config :alem, :couchdb,
+  url: System.get_env("COUCHDB_URL", "http://172.235.17.68:5984"),
+  user: System.get_env("COUCHDB_USER", "admin"),
+  password: System.get_env("COUCHDB_PASSWORD", "new.P@ssw0rd")
