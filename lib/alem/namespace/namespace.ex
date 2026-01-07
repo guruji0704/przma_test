@@ -16,8 +16,8 @@ defmodule Alem.Namespace do
   # Public API
 
   @doc "Start a namespace for a user"
-  def start(user_id, opts \\ []) do
-    Manager.start(user_id, opts)
+  def start(user_id, tenant_id, opts \\ []) do
+    Manager.start(user_id, tenant_id, opts)
   end
 
   @doc "Stop a user's namespace"
@@ -36,19 +36,19 @@ defmodule Alem.Namespace do
   end
 
   @doc "Ensure namespace is started (idempotent)"
-  def ensure_started(user_id, opts \\ []) do
+  def ensure_started(user_id, tenant_id, opts \\ []) do
     if exists?(user_id) do
       {:ok, Manager.whereis(user_id)}
     else
-      start(user_id, opts)
+      start(user_id, tenant_id, opts)
     end
   end
 
   # Data Operations
 
   @doc "Ingest a document into the namespace"
-  def ingest_document(user_id, document) do
-    ensure_started(user_id)
+  def ingest_document(user_id, tenant_id, document) do
+    ensure_started(user_id, tenant_id)
     DataRouter.ingest(user_id, document)
   end
 

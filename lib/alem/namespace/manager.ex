@@ -10,6 +10,7 @@ defmodule Alem.Namespace.Manager do
 
   defstruct [
     :user_id,
+    :tenant_id,
     :config,
     :services,
     :started_at,
@@ -19,12 +20,12 @@ defmodule Alem.Namespace.Manager do
 
   # Client API
 
-  def start(user_id, opts \\ []) do
-    config = build_config(user_id, opts)
+  def start(user_id, tenant_id, opts \\ []) do
+    config = build_config(user_id, tenant_id, opts)
 
     child_spec = %{
       id: {:namespace_manager, user_id},
-      start: {__MODULE__, :start_link, [user_id, config]},
+      start: {__MODULE__, :start_link, [user_id, tenant_id, config]},
       restart: :transient
     }
 
@@ -35,8 +36,8 @@ defmodule Alem.Namespace.Manager do
     end
   end
 
-  def start_link(user_id, config) do
-    GenServer.start_link(__MODULE__, {user_id, config}, name: via(user_id))
+  def start_link(user_id, tenant_id, config) do
+    GenServer.start_link(__MODULE__, {user_id, tenant_id, config}, name: via(user_id))
   end
 
   def stop(user_id) do
@@ -83,11 +84,12 @@ defmodule Alem.Namespace.Manager do
   # GenServer Implementation
 
   @impl true
-  def init({user_id, config}) do
-    Logger.info("[Namespace:#{user_id}] Starting namespace manager")
+  def init({user_id, tenant_id, config}) do
+    Logger.info("[Namespace:#{tenant_id}/#{user_id}] Starting namespace manager")
 
     state = %__MODULE__{
       user_id: user_id,
+      tenant_id: tenant_id,
       config: config,
       services: %{},
       started_at: DateTime.utc_now(),
@@ -104,9 +106,9 @@ defmodule Alem.Namespace.Manager do
 
   @impl true
   def handle_info(:initialize, state) do
-    Logger.info("[Namespace:#{state.user_id}] Initializing services")
+    Logger.info("[Namespace:#{state.tenant_id}/#{state.user_id}] Initializing services")
 
-    services = start_core_services(state.user_id, state.config)
+    services = start_core_services(state.user_id, state.tenant_id, state.config)
     schedule_health_check()
 
     new_state = %{state |
@@ -114,7 +116,7 @@ defmodule Alem.Namespace.Manager do
       health_status: :healthy
     }
 
-    Logger.info("[Namespace:#{state.user_id}] Initialization complete")
+    Logger.info("[Namespace:#{state.tenant_id}/#{state.user_id}] Initialization complete")
     {:noreply, new_state}
   end
 
@@ -130,8 +132,8 @@ defmodule Alem.Namespace.Manager do
     {service_name, _} = Enum.find(state.services, fn {_, {p, _}} -> p == pid end) || {nil, nil}
 
     if service_name do
-      Logger.warning("[Namespace:#{state.user_id}] Service #{service_name} died: #{inspect(reason)}")
-      new_services = restart_service(state.user_id, service_name, state.services, state.config)
+      Logger.warning("[Namespace:#{state.tenant_id}/#{state.user_id}] Service #{service_name} died: #{inspect(reason)}")
+      new_services = restart_service(state.user_id, state.tenant_id, service_name, state.services, state.config)
       {:noreply, %{state | services: new_services}}
     else
       {:noreply, state}
@@ -142,6 +144,7 @@ defmodule Alem.Namespace.Manager do
   def handle_call(:status, _from, state) do
     status = %{
       user_id: state.user_id,
+      tenant_id: state.tenant_id,
       started_at: state.started_at,
       health_status: state.health_status,
       services: format_services(state.services),
@@ -170,10 +173,10 @@ defmodule Alem.Namespace.Manager do
 
   @impl true
   def terminate(reason, state) do
-    Logger.info("[Namespace:#{state.user_id}] Shutting down: #{inspect(reason)}")
+    Logger.info("[Namespace:#{state.tenant_id}/#{state.user_id}] Shutting down: #{inspect(reason)}")
 
     Enum.each(state.services, fn {name, {pid, _ref}} ->
-      Logger.debug("[Namespace:#{state.user_id}] Stopping #{name}")
+      Logger.debug("[Namespace:#{state.tenant_id}/#{state.user_id}] Stopping #{name}")
       if Process.alive?(pid), do: GenServer.stop(pid, :shutdown)
     end)
 
@@ -182,12 +185,12 @@ defmodule Alem.Namespace.Manager do
 
   # Private Functions
 
-  defp build_config(user_id, opts) do
+  defp build_config(user_id, tenant_id, opts) do
     defaults = %{
       storage: %{
-        s3_bucket: "alem-data",
-        s3_prefix: "namespaces/#{user_id}/",
-        database: "alem_#{user_id}"
+        s3_bucket: "perkeep",
+        s3_prefix: "tenant/#{tenant_id}/#{user_id}/",
+        database: "alem_#{tenant_id}_#{user_id}"
       },
       limits: %{
         max_documents: 10_000,
@@ -198,10 +201,10 @@ defmodule Alem.Namespace.Manager do
     deep_merge(defaults, Enum.into(opts, %{}))
   end
 
-  defp start_core_services(user_id, config) do
+  defp start_core_services(user_id, tenant_id, config) do
     services = %{}
 
-    services = case DataRouter.start(user_id, config) do
+    services = case DataRouter.start(user_id, tenant_id, config) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
         Map.put(services, :data_router, {pid, ref})
@@ -212,11 +215,11 @@ defmodule Alem.Namespace.Manager do
     services
   end
 
-  defp restart_service(user_id, service_name, services, config) do
-    Logger.info("[Namespace:#{user_id}] Restarting service: #{service_name}")
+  defp restart_service(user_id, tenant_id, service_name, services, config) do
+    Logger.info("[Namespace:#{tenant_id}/#{user_id}] Restarting service: #{service_name}")
 
     result = case service_name do
-      :data_router -> DataRouter.start(user_id, config)
+      :data_router -> DataRouter.start(user_id, tenant_id, config)
       _ -> {:error, :unknown_service}
     end
 

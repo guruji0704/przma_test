@@ -10,6 +10,7 @@ defmodule Alem.Schemas.Namespace do
   @timestamps_opts [type: :utc_datetime]
 
   schema "namespaces" do
+    field :tenant_id, :string
     field :config, :map, default: %{}
     field :status, :string, default: "active"
     field :document_count, :integer, default: 0
@@ -22,9 +23,9 @@ defmodule Alem.Schemas.Namespace do
 
   def changeset(namespace, attrs) do
     namespace
-    |> cast(attrs, [:id, :config, :status, :document_count, :vector_count,
+    |> cast(attrs, [:id, :tenant_id, :config, :status, :document_count, :vector_count,
                     :storage_bytes, :last_activity_at])
-    |> validate_required([:id])
+    |> validate_required([:id, :tenant_id])
     |> validate_inclusion(:status, ["active", "suspended", "deleted"])
   end
 end

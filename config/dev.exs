@@ -40,12 +40,3 @@ config :phoenix_live_view,
   debug_heex_annotations: true,
   enable_expensive_runtime_checks: true
 
-# Override for dev - use local config
-config :ex_aws,
-  access_key_id: System.get_env("AWS_ACCESS_KEY_ID"),
-  secret_access_key: System.get_env("AWS_SECRET_ACCESS_KEY")
-
-config :alem, :couchdb,
-  url: System.get_env("COUCHDB_URL", "http://172.235.17.68:5984"),
-  user: System.get_env("COUCHDB_USER", "admin"),
-  password: System.get_env("COUCHDB_PASSWORD", "new.P@ssw0rd")

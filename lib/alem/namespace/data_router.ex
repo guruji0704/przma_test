@@ -11,6 +11,7 @@ defmodule Alem.Namespace.DataRouter do
 
   defstruct [
     :user_id,
+    :tenant_id,
     :config,
     :storage_config,
     :stats
@@ -18,9 +19,9 @@ defmodule Alem.Namespace.DataRouter do
 
   # Client API
 
-  def start(user_id, config) do
+  def start(user_id, tenant_id, config) do
     name = Registry.via(user_id, :data_router)
-    GenServer.start_link(__MODULE__, {user_id, config}, name: name)
+    GenServer.start_link(__MODULE__, {user_id, tenant_id, config}, name: name)
   end
 
   def ingest(user_id, document) do
@@ -54,17 +55,19 @@ defmodule Alem.Namespace.DataRouter do
   # GenServer Implementation
 
   @impl true
-  def init({user_id, config}) do
-    Logger.info("[DataRouter:#{user_id}] Starting data router")
+  def init({user_id, tenant_id, config}) do
+    Logger.info("[DataRouter:#{tenant_id}/#{user_id}] Starting data router")
 
-    database_name = "alem_#{user_id}"
+    database_name = "alem_#{tenant_id}_#{user_id}"
     DocumentStore.ensure_database(database_name)
 
     state = %__MODULE__{
       user_id: user_id,
+      tenant_id: tenant_id,
       config: config,
       storage_config: Map.merge(config.storage, %{
-        couchdb_database: database_name
+        couchdb_database: database_name,
+        s3_prefix: "tenant/#{tenant_id}/#{user_id}/"
       }),
       stats: %{
         documents_ingested: 0,
@@ -131,20 +134,21 @@ defmodule Alem.Namespace.DataRouter do
 
   defp do_ingest(state, document) do
     user_id = state.user_id
+    tenant_id = state.tenant_id
     doc_id = generate_document_id()
 
-    Logger.info("[DataRouter:#{user_id}] Starting ingestion for #{document.filename}")
+    Logger.info("[DataRouter:#{tenant_id}/#{user_id}] Starting ingestion for #{document.filename}")
 
     with :ok <- validate_document(document),
          {:ok, object_key} <- store_raw_file(state, doc_id, document),
          {:ok, extracted} <- extract_content(document),
          {:ok, _couch_rev} <- store_document_record(state, doc_id, document, extracted, object_key),
          {:ok, _pg_record} <- create_search_record(state, doc_id, document, extracted) do
-      Logger.info("[DataRouter:#{user_id}] ✅ Successfully ingested document #{doc_id}")
+      Logger.info("[DataRouter:#{tenant_id}/#{user_id}] ✅ Successfully ingested document #{doc_id}")
       {:ok, doc_id}
     else
       {:error, reason} = error ->
-        Logger.error("[DataRouter:#{user_id}] ❌ Ingestion failed: #{inspect(reason)}")
+        Logger.error("[DataRouter:#{tenant_id}/#{user_id}] ❌ Ingestion failed: #{inspect(reason)}")
         error
     end
   end
@@ -161,7 +165,7 @@ defmodule Alem.Namespace.DataRouter do
 
     case ObjectStore.put(bucket, key, document.content, %{
       content_type: document[:content_type] || "application/octet-stream",
-      metadata: %{"original_filename" => document.filename}
+      metadata: %{"original_filename" => document.filename, "tenant_id" => state.tenant_id}
     }) do
       :ok -> {:ok, key}
       error -> error
@@ -191,6 +195,7 @@ defmodule Alem.Namespace.DataRouter do
     doc = %{
       "_id" => doc_id,
       "type" => "document",
+      "tenant_id" => state.tenant_id,
       "user_id" => state.user_id,
       "filename" => document.filename,
       "content_type" => document[:content_type],
@@ -208,6 +213,7 @@ defmodule Alem.Namespace.DataRouter do
   defp create_search_record(state, doc_id, document, extracted) do
     RelationalStore.insert(:documents, %{
       id: doc_id,
+      tenant_id: state.tenant_id,
       user_id: state.user_id,
       filename: document.filename,
       content_type: document[:content_type],
@@ -221,6 +227,7 @@ defmodule Alem.Namespace.DataRouter do
 
   defp do_list_documents(state, opts) do
     RelationalStore.list(:documents, %{
+      tenant_id: state.tenant_id,
       user_id: state.user_id,
       limit: opts[:limit] || 100,
       offset: opts[:offset] || 0
@@ -232,17 +239,22 @@ defmodule Alem.Namespace.DataRouter do
 
     case DocumentStore.get(db, document_id) do
       {:ok, doc} ->
-        doc = if opts[:include_content] do
-          bucket = Application.get_env(:alem, :file_storage)[:bucket]
-          case ObjectStore.get(bucket, doc["object_key"]) do
-            {:ok, content} -> Map.put(doc, "raw_content", content)
-            _ -> doc
-          end
+        # Verify tenant isolation
+        if doc["tenant_id"] != state.tenant_id do
+          {:error, :unauthorized}
         else
-          doc
-        end
+          doc = if opts[:include_content] do
+            bucket = Application.get_env(:alem, :file_storage)[:bucket]
+            case ObjectStore.get(bucket, doc["object_key"]) do
+              {:ok, content} -> Map.put(doc, "raw_content", content)
+              _ -> doc
+            end
+          else
+            doc
+          end
 
-        {:ok, doc}
+          {:ok, doc}
+        end
 
       error -> error
     end
@@ -253,23 +265,25 @@ defmodule Alem.Namespace.DataRouter do
     bucket = Application.get_env(:alem, :file_storage)[:bucket]
 
     with {:ok, doc} <- DocumentStore.get(db, document_id),
+         :ok <- if(doc["tenant_id"] != state.tenant_id, do: {:error, :unauthorized}, else: :ok),
          :ok <- ObjectStore.delete(bucket, doc["object_key"]),
          :ok <- DocumentStore.delete(db, document_id, doc["_rev"]),
          :ok <- RelationalStore.delete(:documents, document_id) do
-      Logger.info("[DataRouter:#{state.user_id}] ✅ Deleted document #{document_id}")
+      Logger.info("[DataRouter:#{state.tenant_id}/#{state.user_id}] ✅ Deleted document #{document_id}")
       :ok
     end
   end
 
   defp do_search(state, query, opts) do
     RelationalStore.search(:documents, query, %{
+      tenant_id: state.tenant_id,
       user_id: state.user_id,
       limit: opts[:limit] || 20
     })
   end
 
   defp do_sync(state, _source, _opts) do
-    Logger.info("[DataRouter:#{state.user_id}] Sync completed")
+    Logger.info("[DataRouter:#{state.tenant_id}/#{state.user_id}] Sync completed")
     :ok
   end
 

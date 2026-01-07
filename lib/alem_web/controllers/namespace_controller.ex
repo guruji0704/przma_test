@@ -4,22 +4,23 @@ defmodule AlemWeb.NamespaceController do
 
   def test(conn, _params) do
     user_id = "test_user_#{:rand.uniform(1000)}"
+    tenant_id = "test_tenant_#{:rand.uniform(100)}"
 
-    Logger.info("🧪 Starting REAL storage tests for #{user_id}")
+    Logger.info("🧪 Starting REAL storage tests for tenant:#{tenant_id} user:#{user_id}")
 
-    results = run_all_tests(user_id)
+    results = run_all_tests(user_id, tenant_id)
 
     Logger.info("📊 All tests completed!")
 
     json(conn, results)
   end
 
-  defp run_all_tests(user_id) do
-    %{user_id: user_id, tests: []}
-    |> test_start_namespace(user_id)
+  defp run_all_tests(user_id, tenant_id) do
+    %{user_id: user_id, tenant_id: tenant_id, tests: []}
+    |> test_start_namespace(user_id, tenant_id)
     |> test_namespace_exists(user_id)
     |> test_get_status(user_id)
-    |> test_ingest_document(user_id)
+    |> test_ingest_document(user_id, tenant_id)
     |> test_list_documents(user_id)
     |> test_get_document(user_id)
     |> test_search_documents(user_id)
@@ -28,10 +29,10 @@ defmodule AlemWeb.NamespaceController do
     |> test_stop_namespace(user_id)
   end
 
-  defp test_start_namespace(results, user_id) do
-    Logger.info("✅ Test 1: Starting namespace")
-    {:ok, pid} = Alem.Namespace.start(user_id)
-    add_test(results, "start_namespace", "passed", %{pid: inspect(pid)})
+  defp test_start_namespace(results, user_id, tenant_id) do
+    Logger.info("✅ Test 1: Starting namespace for tenant:#{tenant_id} user:#{user_id}")
+    {:ok, pid} = Alem.Namespace.start(user_id, tenant_id)
+    add_test(results, "start_namespace", "passed", %{pid: inspect(pid), tenant_id: tenant_id})
   end
 
   defp test_namespace_exists(results, user_id) do
@@ -46,8 +47,8 @@ defmodule AlemWeb.NamespaceController do
     add_test(results, "get_status", "passed", status)
   end
 
-  defp test_ingest_document(results, user_id) do
-    Logger.info("✅ Test 4: Ingesting REAL document to S3+CouchDB+PostgreSQL")
+  defp test_ingest_document(results, user_id, tenant_id) do
+    Logger.info("✅ Test 4: Ingesting REAL document to S3+CouchDB+PostgreSQL for tenant:#{tenant_id}")
 
     doc = %{
       filename: "test_document.txt",
@@ -59,12 +60,13 @@ defmodule AlemWeb.NamespaceController do
       }
     }
 
-    case Alem.Namespace.ingest_document(user_id, doc) do
+    case Alem.Namespace.ingest_document(user_id, tenant_id, doc) do
       {:ok, doc_id} ->
         # Store doc_id for later tests
         results = Map.put(results, :last_doc_id, doc_id)
         add_test(results, "ingest_document", "passed", %{
           doc_id: doc_id,
+          tenant_id: tenant_id,
           message: "Document uploaded to S3, CouchDB, and PostgreSQL"
         })
       {:error, reason} ->

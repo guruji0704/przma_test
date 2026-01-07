@@ -12,7 +12,7 @@ defmodule Alem.Storage.RelationalStore do
   Insert a document record
   """
   def insert(:documents, attrs) do
-    Logger.info("[PostgreSQL] Inserting document #{attrs[:id]}")
+    Logger.info("[PostgreSQL] Inserting document #{attrs[:id]} for tenant:#{attrs[:tenant_id]}")
 
     changeset = Document.changeset(%Document{}, attrs)
 
@@ -89,9 +89,15 @@ defmodule Alem.Storage.RelationalStore do
   List documents with filters
   """
   def list(:documents, filters \\ %{}) do
-    Logger.info("[PostgreSQL] Listing documents")
+    Logger.info("[PostgreSQL] Listing documents for tenant:#{filters[:tenant_id]}")
 
     query = from d in Document
+
+    query = if tenant_id = filters[:tenant_id] do
+      where(query, [d], d.tenant_id == ^tenant_id)
+    else
+      query
+    end
 
     query = if user_id = filters[:user_id] do
       where(query, [d], d.user_id == ^user_id)
@@ -120,11 +126,17 @@ defmodule Alem.Storage.RelationalStore do
   Full-text search
   """
   def search(:documents, search_query, filters \\ %{}) do
-    Logger.info("[PostgreSQL] Searching: #{search_query}")
+    Logger.info("[PostgreSQL] Searching: #{search_query} in tenant:#{filters[:tenant_id]}")
 
     query = from d in Document,
       where: fragment("? @@ plainto_tsquery(?)", d.text_content, ^search_query),
       order_by: [desc: fragment("ts_rank(to_tsvector(?), plainto_tsquery(?))", d.text_content, ^search_query)]
+
+    query = if tenant_id = filters[:tenant_id] do
+      where(query, [d], d.tenant_id == ^tenant_id)
+    else
+      query
+    end
 
     query = if user_id = filters[:user_id] do
       where(query, [d], d.user_id == ^user_id)
