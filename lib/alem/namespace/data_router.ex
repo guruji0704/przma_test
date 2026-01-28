@@ -29,7 +29,7 @@ defmodule Alem.Namespace.DataRouter do
   end
 
   def list_documents(user_id, opts \\ []) do
-    GenServer.call(Registry.lookup!(user_id, :data_router), {:list_documents, opts})
+    GenServer.call(Registry.lookup!(user_id, :data_router), {:list_documents, opts}, 30_000)
   end
 
   def get_document(user_id, document_id, opts \\ []) do

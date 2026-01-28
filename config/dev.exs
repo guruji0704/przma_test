@@ -2,9 +2,9 @@ import Config
 
 config :alem, Alem.Repo,
   username: "postgres",
-  password: "postgres",
-  hostname: "172.235.17.68",
-  database: "alem_dev",
+  password: "1245",
+  hostname: "localhost",
+  database: "alemmm_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -39,4 +39,3 @@ config :phoenix, :plug_init_mode, :runtime
 config :phoenix_live_view,
   debug_heex_annotations: true,
   enable_expensive_runtime_checks: true
-
