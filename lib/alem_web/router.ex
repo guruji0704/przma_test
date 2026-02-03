@@ -12,12 +12,30 @@ defmodule AlemWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug OpenApiSpex.Plug.PutApiSpec, module: AlemWeb.Swagger
+  end
+
+  pipeline :swagger do
+    plug :accepts, ["json"]
+    plug OpenApiSpex.Plug.PutApiSpec, module: AlemWeb.Swagger
   end
 
   scope "/api", AlemWeb do
     pipe_through :api
 
     get "/test-namespace", NamespaceController, :test
+  end
+
+  scope "/api/swagger" do
+    pipe_through :browser
+
+    get "/", OpenApiSpex.Plug.SwaggerUI, path: "/api/swagger/openapi.json"
+  end
+
+  scope "/api/swagger" do
+    pipe_through [:swagger]
+
+    get "/openapi.json", OpenApiSpex.Plug.RenderSpec, []
   end
 
   if Application.compile_env(:alem, :dev_routes) do

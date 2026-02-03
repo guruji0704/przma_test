@@ -78,7 +78,11 @@ defmodule Alem.MixProject do
       {:multipart, "~> 0.4"},
 
       # JWT
-      {:joken, "~> 2.6"}
+      {:joken, "~> 2.6"},
+      {:jose, git: "https://github.com/potatosalad/erlang-jose.git", tag: "1.11.10", override: true},
+
+      # API Documentation
+      {:open_api_spex, "~> 3.18"}
     ]
   end
 
