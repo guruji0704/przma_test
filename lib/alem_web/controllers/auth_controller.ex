@@ -8,6 +8,17 @@ defmodule AlemWeb.AuthController do
       "https://pleroma.social"
   end
 
+  # Helper to parse response body - handles both string and map responses
+  defp parse_response_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> body
+    end
+  end
+
+  defp parse_response_body(body) when is_map(body), do: body
+  defp parse_response_body(body), do: body
+
   @doc """
   Register an OAuth application
   POST /api/v1/apps
@@ -29,11 +40,11 @@ defmodule AlemWeb.AuthController do
     case Req.post(url, json: body) do
       {:ok, %{status: status, body: response_body}} when status in [200, 201] ->
         Logger.info("OAuth app registered successfully")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:ok, %{status: status, body: response_body}} ->
         Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:error, reason} ->
         Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
@@ -60,11 +71,11 @@ defmodule AlemWeb.AuthController do
     case Req.post(url, form: form_data) do
       {:ok, %{status: status, body: response_body}} when status in [200, 201] ->
         Logger.info("OAuth token obtained successfully")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:ok, %{status: status, body: response_body}} ->
         Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:error, reason} ->
         Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
@@ -91,11 +102,11 @@ defmodule AlemWeb.AuthController do
     case Req.post(url, json: body) do
       {:ok, %{status: status, body: response_body}} when status in [200, 201] ->
         Logger.info("Account registered successfully")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:ok, %{status: status, body: response_body}} ->
         Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:error, reason} ->
         Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
@@ -117,11 +128,11 @@ defmodule AlemWeb.AuthController do
     case Req.get(url) do
       {:ok, %{status: 200, body: response_body}} ->
         Logger.info("Captcha retrieved successfully")
-        conn |> json(response_body)
+        conn |> json(parse_response_body(response_body))
 
       {:ok, %{status: status, body: response_body}} ->
         Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:error, reason} ->
         Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
@@ -158,11 +169,12 @@ defmodule AlemWeb.AuthController do
     case Req.post(url, json: body, headers: headers) do
       {:ok, %{status: status, body: response_body}} when status in [200, 201, 204] ->
         Logger.info("Account deletion requested")
-        conn |> put_status(status) |> json(response_body || %{message: "Account deletion scheduled"})
+        parsed_body = parse_response_body(response_body || %{message: "Account deletion scheduled"})
+        conn |> put_status(status) |> json(parsed_body)
 
       {:ok, %{status: status, body: response_body}} ->
         Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:error, reason} ->
         Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
@@ -199,11 +211,12 @@ defmodule AlemWeb.AuthController do
     case Req.post(url, json: body, headers: headers) do
       {:ok, %{status: status, body: response_body}} when status in [200, 201, 204] ->
         Logger.info("Account disable requested")
-        conn |> put_status(status) |> json(response_body || %{message: "Account disabled"})
+        parsed_body = parse_response_body(response_body || %{message: "Account disabled"})
+        conn |> put_status(status) |> json(parsed_body)
 
       {:ok, %{status: status, body: response_body}} ->
         Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:error, reason} ->
         Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
@@ -234,11 +247,11 @@ defmodule AlemWeb.AuthController do
     case Req.get(url, headers: headers) do
       {:ok, %{status: 200, body: response_body}} ->
         Logger.info("MFA settings retrieved successfully")
-        conn |> json(response_body)
+        conn |> json(parse_response_body(response_body))
 
       {:ok, %{status: status, body: response_body}} ->
         Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(response_body)
+        conn |> put_status(status) |> json(parse_response_body(response_body))
 
       {:error, reason} ->
         Logger.error("Failed to call Pleroma API: #{inspect(reason)}")

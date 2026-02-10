@@ -25,6 +25,12 @@ defmodule AlemWeb.Router do
 
     get "/test-namespace", NamespaceController, :test
 
+    # Pleroma-Namespace Integration Endpoints
+    post "/namespaces/pleroma", NamespacePleromaController, :create_or_get
+    get "/namespaces/pleroma", NamespacePleromaController, :get
+    post "/namespaces/pleroma/sync", NamespacePleromaController, :sync
+    get "/namespaces/pleroma/account", NamespacePleromaController, :get_account_info
+
     # Pleroma Authentication Endpoints
     post "/v1/apps", AuthController, :register_app
     post "/account/register", AuthController, :register_account

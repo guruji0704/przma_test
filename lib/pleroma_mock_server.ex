@@ -37,7 +37,9 @@ defmodule Alem.PleromaMockServer do
     client_id = generate_id(32)
     client_secret = generate_secret()
 
-    send_resp(conn, 201, Jason.encode!(%{
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(201, Jason.encode!(%{
       id: client_id,
       client_id: client_id,
       client_secret: client_secret,
@@ -55,7 +57,9 @@ defmodule Alem.PleromaMockServer do
     case grant_type do
       "password" ->
         access_token = generate_secret()
-        send_resp(conn, 200, Jason.encode!(%{
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{
           access_token: access_token,
           token_type: "Bearer",
           scope: conn.body_params["scope"] || "read write follow push",
@@ -64,7 +68,9 @@ defmodule Alem.PleromaMockServer do
 
       "authorization_code" ->
         access_token = generate_secret()
-        send_resp(conn, 200, Jason.encode!(%{
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, Jason.encode!(%{
           access_token: access_token,
           token_type: "Bearer",
           scope: "read write follow push",
@@ -72,7 +78,9 @@ defmodule Alem.PleromaMockServer do
         }))
 
       _ ->
-        send_resp(conn, 400, Jason.encode!(%{error: "unsupported_grant_type"}))
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(400, Jason.encode!(%{error: "unsupported_grant_type"}))
     end
   end
 
@@ -81,7 +89,9 @@ defmodule Alem.PleromaMockServer do
     account_id = generate_id(16)
     nickname = conn.body_params["nickname"]
 
-    send_resp(conn, 201, Jason.encode!(%{
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(201, Jason.encode!(%{
       id: account_id,
       username: nickname,
       acct: nickname,
@@ -106,7 +116,9 @@ defmodule Alem.PleromaMockServer do
   # Captcha
   get "/api/v1/pleroma/captcha" do
     token = generate_secret()
-    send_resp(conn, 200, Jason.encode!(%{
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{
       token: token,
       answer_data: "ABCD1234",
       type: "image/png"
@@ -115,17 +127,23 @@ defmodule Alem.PleromaMockServer do
 
   # Delete account
   post "/api/pleroma/delete_account" do
-    send_resp(conn, 200, Jason.encode!(%{message: "Account deletion scheduled"}))
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{message: "Account deletion scheduled"}))
   end
 
   # Disable account
   post "/api/pleroma/disable_account" do
-    send_resp(conn, 200, Jason.encode!(%{message: "Account disabled"}))
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{message: "Account disabled"}))
   end
 
   # MFA
   get "/api/v1/pleroma/accounts/mfa" do
-    send_resp(conn, 200, Jason.encode!(%{
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{
       enabled: false,
       backup_codes: [],
       totp: %{
@@ -135,9 +153,43 @@ defmodule Alem.PleromaMockServer do
     }))
   end
 
+  # Verify credentials (for OAuth token verification)
+  get "/api/v1/accounts/verify_credentials" do
+    # Extract token from Authorization header
+    auth_header = List.first(Plug.Conn.get_req_header(conn, "authorization")) || ""
+
+    # Mock account info
+    account_info = %{
+      id: "12345",
+      username: "test_user",
+      acct: "test_user@localhost",
+      display_name: "Test User",
+      note: "Test account for namespace integration",
+      avatar: "",
+      avatar_static: "",
+      header: "",
+      header_static: "",
+      locked: false,
+      bot: false,
+      created_at: "2024-01-01T00:00:00Z",
+      fields: [],
+      emojis: [],
+      discoverable: true,
+      moved: nil,
+      suspended: false,
+      limited: false
+    }
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(account_info))
+  end
+
   # Root endpoint
   get "/" do
-    send_resp(conn, 200, Jason.encode!(%{
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{
       message: "Pleroma Mock Server",
       version: "1.0.0",
       endpoints: [
@@ -154,7 +206,9 @@ defmodule Alem.PleromaMockServer do
 
   # Catch-all
   match _ do
-    send_resp(conn, 404, Jason.encode!(%{error: "Not found", path: conn.request_path}))
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(404, Jason.encode!(%{error: "Not found", path: conn.request_path}))
   end
 
   defp generate_id(length) do

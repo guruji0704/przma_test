@@ -40,7 +40,10 @@ defmodule AlemWeb.Swagger do
         "/api/v1/pleroma/captcha" => get_captcha_path(),
         "/api/pleroma/delete_account" => delete_account_path(),
         "/api/pleroma/disable_account" => disable_account_path(),
-        "/api/v1/pleroma/accounts/mfa" => get_mfa_path()
+        "/api/v1/pleroma/accounts/mfa" => get_mfa_path(),
+        "/api/namespaces/pleroma" => namespace_pleroma_path(),
+        "/api/namespaces/pleroma/sync" => namespace_pleroma_sync_path(),
+        "/api/namespaces/pleroma/account" => namespace_pleroma_account_path()
       },
       components: %Components{
         schemas: %{
@@ -56,7 +59,11 @@ defmodule AlemWeb.Swagger do
           "CaptchaResponse" => captcha_response_schema(),
           "DeleteAccountRequest" => delete_account_request_schema(),
           "DisableAccountRequest" => disable_account_request_schema(),
-          "MFAResponse" => mfa_response_schema()
+          "MFAResponse" => mfa_response_schema(),
+          "NamespaceResponse" => namespace_response_schema(),
+          "NamespaceSyncRequest" => namespace_sync_request_schema(),
+          "NamespaceSyncResponse" => namespace_sync_response_schema(),
+          "PleromaAccountResponse" => pleroma_account_response_schema()
         },
         securitySchemes: %{
           "BearerAuth" => %OpenApiSpex.SecurityScheme{
@@ -724,6 +731,360 @@ defmodule AlemWeb.Swagger do
               example: nil
             }
           }
+        }
+      }
+    }
+  end
+
+  # Namespace Pleroma Integration Endpoints
+
+  defp namespace_pleroma_path do
+    %OpenApiSpex.PathItem{
+      post: %OpenApiSpex.Operation{
+        summary: "Create or Get Namespace for Pleroma User",
+        description: """
+        Create a new namespace or retrieve an existing one for an authenticated Pleroma user.
+
+        This endpoint:
+        - Verifies the Pleroma OAuth token
+        - Creates a namespace if it doesn't exist
+        - Returns namespace status and Pleroma account information
+        """,
+        operationId: "create_or_get_namespace_pleroma",
+        tags: ["Namespaces", "Pleroma"],
+        security: [%{"BearerAuth" => []}],
+        responses: %{
+          200 => OpenApiSpex.Operation.response("Namespace created or retrieved", "application/json", %Reference{"$ref": "#/components/schemas/NamespaceResponse"}),
+          401 => OpenApiSpex.Operation.response("Unauthorized", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"}),
+          500 => OpenApiSpex.Operation.response("Server Error", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"})
+        }
+      },
+      get: %OpenApiSpex.Operation{
+        summary: "Get Namespace for Pleroma User",
+        description: """
+        Retrieve namespace information for an authenticated Pleroma user.
+
+        Returns:
+        - Namespace status and health
+        - Services running in the namespace
+        - Resource usage statistics
+        - Associated Pleroma account information
+        """,
+        operationId: "get_namespace_pleroma",
+        tags: ["Namespaces", "Pleroma"],
+        security: [%{"BearerAuth" => []}],
+        responses: %{
+          200 => OpenApiSpex.Operation.response("Namespace information", "application/json", %Reference{"$ref": "#/components/schemas/NamespaceResponse"}),
+          401 => OpenApiSpex.Operation.response("Unauthorized", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"}),
+          404 => OpenApiSpex.Operation.response("Namespace not found", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"}),
+          500 => OpenApiSpex.Operation.response("Server Error", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"})
+        }
+      }
+    }
+  end
+
+  defp namespace_pleroma_sync_path do
+    %OpenApiSpex.PathItem{
+      post: %OpenApiSpex.Operation{
+        summary: "Sync Namespace with Pleroma",
+        description: """
+        Sync namespace documents and data with the associated Pleroma account.
+
+        Sync modes:
+        - `metadata_only`: Sync only document metadata
+        - `full`: Full sync including document content as Pleroma posts
+        """,
+        operationId: "sync_namespace_pleroma",
+        tags: ["Namespaces", "Pleroma"],
+        security: [%{"BearerAuth" => []}],
+        requestBody: OpenApiSpex.Operation.request_body("Sync configuration", "application/json", %Reference{"$ref": "#/components/schemas/NamespaceSyncRequest"}, required: false),
+        responses: %{
+          200 => OpenApiSpex.Operation.response("Sync completed", "application/json", %Reference{"$ref": "#/components/schemas/NamespaceSyncResponse"}),
+          401 => OpenApiSpex.Operation.response("Unauthorized", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"}),
+          400 => OpenApiSpex.Operation.response("Bad Request", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"}),
+          500 => OpenApiSpex.Operation.response("Server Error", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"})
+        }
+      }
+    }
+  end
+
+  defp namespace_pleroma_account_path do
+    %OpenApiSpex.PathItem{
+      get: %OpenApiSpex.Operation{
+        summary: "Get Pleroma Account Info for Namespace",
+        description: """
+        Retrieve the Pleroma account information associated with a namespace.
+
+        Returns the Pleroma account details stored in the namespace configuration.
+        """,
+        operationId: "get_namespace_pleroma_account",
+        tags: ["Namespaces", "Pleroma"],
+        security: [%{"BearerAuth" => []}],
+        responses: %{
+          200 => OpenApiSpex.Operation.response("Pleroma account information", "application/json", %Reference{"$ref": "#/components/schemas/PleromaAccountResponse"}),
+          401 => OpenApiSpex.Operation.response("Unauthorized", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"}),
+          404 => OpenApiSpex.Operation.response("No Pleroma account found", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"}),
+          500 => OpenApiSpex.Operation.response("Server Error", "application/json", %Reference{"$ref": "#/components/schemas/ErrorResponse"})
+        }
+      }
+    }
+  end
+
+  # Namespace Pleroma Schemas
+
+  defp namespace_response_schema do
+    %Schema{
+      type: :object,
+      title: "Namespace Response",
+      description: "Response containing namespace information and Pleroma account details",
+      properties: %{
+        namespace: %Schema{
+          type: :object,
+          description: "Namespace information",
+          properties: %{
+            user_id: %Schema{
+              type: :string,
+              description: "Namespace user ID (Pleroma account ID)",
+              example: "12345"
+            },
+            tenant_id: %Schema{
+              type: :string,
+              description: "Tenant ID for multi-tenancy",
+              example: "default"
+            },
+            status: %Schema{
+              type: :string,
+              description: "Namespace health status",
+              enum: [:healthy, :degraded, :starting, :stopped],
+              example: "healthy"
+            },
+            started_at: %Schema{
+              type: :string,
+              format: :date_time,
+              description: "When the namespace was started",
+              example: "2024-01-01T00:00:00Z"
+            },
+            services: %Schema{
+              type: :array,
+              description: "Services running in the namespace",
+              items: %Schema{
+                type: :object,
+                properties: %{
+                  name: %Schema{
+                    type: :string,
+                    example: "data_router"
+                  },
+                  pid: %Schema{
+                    type: :string,
+                    example: "#PID<0.123.0>"
+                  },
+                  alive: %Schema{
+                    type: :boolean,
+                    example: true
+                  },
+                  node: %Schema{
+                    type: :string,
+                    example: "node@localhost"
+                  }
+                }
+              }
+            },
+            resource_usage: %Schema{
+              type: :object,
+              description: "Resource usage statistics",
+              properties: %{
+                documents: %Schema{
+                  type: :integer,
+                  description: "Number of documents",
+                  example: 42
+                },
+                storage_bytes: %Schema{
+                  type: :integer,
+                  description: "Storage used in bytes",
+                  example: 1048576
+                }
+              }
+            },
+            pleroma_account: %Schema{
+              type: :object,
+              description: "Associated Pleroma account information",
+              properties: %{
+                id: %Schema{
+                  type: :string,
+                  example: "12345"
+                },
+                username: %Schema{
+                  type: :string,
+                  example: "test_user"
+                },
+                acct: %Schema{
+                  type: :string,
+                  example: "test_user@localhost"
+                },
+                display_name: %Schema{
+                  type: :string,
+                  example: "Test User"
+                }
+              }
+            }
+          }
+        }
+      },
+      example: %{
+        namespace: %{
+          user_id: "12345",
+          tenant_id: "default",
+          status: "healthy",
+          started_at: "2024-01-01T00:00:00Z",
+          services: [
+            %{
+              name: "data_router",
+              pid: "#PID<0.123.0>",
+              alive: true,
+              node: "node@localhost"
+            }
+          ],
+          resource_usage: %{
+            documents: 42,
+            storage_bytes: 1048576
+          },
+          pleroma_account: %{
+            id: "12345",
+            username: "test_user",
+            acct: "test_user@localhost",
+            display_name: "Test User"
+          }
+        }
+      }
+    }
+  end
+
+  defp namespace_sync_request_schema do
+    %Schema{
+      type: :object,
+      title: "Namespace Sync Request",
+      description: "Request body for syncing namespace with Pleroma",
+      properties: %{
+        sync_mode: %Schema{
+          type: :string,
+          description: "Sync mode",
+          enum: ["metadata_only", "full"],
+          example: "metadata_only",
+          default: "metadata_only"
+        }
+      }
+    }
+  end
+
+  defp namespace_sync_response_schema do
+    %Schema{
+      type: :object,
+      title: "Namespace Sync Response",
+      description: "Response from namespace sync operation",
+      properties: %{
+        message: %Schema{
+          type: :string,
+          description: "Sync status message",
+          example: "Sync completed"
+        },
+        result: %Schema{
+          type: :object,
+          description: "Sync result details",
+          properties: %{
+            synced_count: %Schema{
+              type: :integer,
+              description: "Number of items synced",
+              example: 42
+            },
+            mode: %Schema{
+              type: :string,
+              description: "Sync mode used",
+              enum: ["metadata_only", "full"],
+              example: "metadata_only"
+            }
+          }
+        }
+      },
+      example: %{
+        message: "Sync completed",
+        result: %{
+          synced_count: 42,
+          mode: "metadata_only"
+        }
+      }
+    }
+  end
+
+  defp pleroma_account_response_schema do
+    %Schema{
+      type: :object,
+      title: "Pleroma Account Response",
+      description: "Response containing Pleroma account information",
+      properties: %{
+        account: %Schema{
+          type: :object,
+          description: "Pleroma account details",
+          properties: %{
+            id: %Schema{
+              type: :string,
+              description: "Pleroma account ID",
+              example: "12345"
+            },
+            username: %Schema{
+              type: :string,
+              description: "Username",
+              example: "test_user"
+            },
+            acct: %Schema{
+              type: :string,
+              description: "Account handle",
+              example: "test_user@localhost"
+            },
+            display_name: %Schema{
+              type: :string,
+              description: "Display name",
+              example: "Test User"
+            },
+            note: %Schema{
+              type: :string,
+              description: "Account bio/note",
+              example: "Test account for namespace integration"
+            },
+            avatar: %Schema{
+              type: :string,
+              description: "Avatar URL",
+              example: "https://pleroma.social/avatars/test_user.png"
+            },
+            locked: %Schema{
+              type: :boolean,
+              description: "Whether account is locked",
+              example: false
+            },
+            bot: %Schema{
+              type: :boolean,
+              description: "Whether account is a bot",
+              example: false
+            },
+            created_at: %Schema{
+              type: :string,
+              format: :date_time,
+              description: "Account creation timestamp",
+              example: "2024-01-01T00:00:00Z"
+            }
+          }
+        }
+      },
+      example: %{
+        account: %{
+          id: "12345",
+          username: "test_user",
+          acct: "test_user@localhost",
+          display_name: "Test User",
+          note: "Test account for namespace integration",
+          avatar: "",
+          locked: false,
+          bot: false,
+          created_at: "2024-01-01T00:00:00Z"
         }
       }
     }
