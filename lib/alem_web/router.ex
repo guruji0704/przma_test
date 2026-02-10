@@ -24,6 +24,20 @@ defmodule AlemWeb.Router do
     pipe_through :api
 
     get "/test-namespace", NamespaceController, :test
+
+    # Pleroma Authentication Endpoints
+    post "/v1/apps", AuthController, :register_app
+    post "/account/register", AuthController, :register_account
+    get "/v1/pleroma/captcha", AuthController, :get_captcha
+    post "/pleroma/delete_account", AuthController, :delete_account
+    post "/pleroma/disable_account", AuthController, :disable_account
+    get "/v1/pleroma/accounts/mfa", AuthController, :get_mfa
+  end
+
+  scope "/oauth", AlemWeb do
+    pipe_through :api
+
+    post "/token", AuthController, :get_token
   end
 
   scope "/api/swagger" do

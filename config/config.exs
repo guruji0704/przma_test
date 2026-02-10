@@ -78,6 +78,10 @@ config :alem, :file_storage,
 # JWT
 config :joken, default_signer: "your-secret-key-here"
 
+# Pleroma API Configuration
+config :alem, :pleroma,
+  base_url: System.get_env("PLEROMA_BASE_URL", "https://pleroma.social")
+
 # Assets
 config :esbuild,
   version: "0.25.4",

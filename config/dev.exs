@@ -2,7 +2,7 @@ import Config
 
 config :alem, Alem.Repo,
   username: "postgres",
-  password: "1245",
+  password: "postgres",
   hostname: "localhost",
   database: "alemmm_dev",
   stacktrace: true,

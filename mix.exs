@@ -60,6 +60,7 @@ defmodule Alem.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.1.1"},
       {:bandit, "~> 1.5"},
+      {:req, "~> 0.5"},
 
       # Distributed Systems
       {:horde, "~> 0.9.0"},
