@@ -23,7 +23,13 @@ end
 config :alem, AlemWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 # Pleroma API Configuration (can be overridden via PLEROMA_BASE_URL environment variable)
-pleroma_base_url = System.get_env("PLEROMA_BASE_URL") || "https://pleroma.social"
+# In development, default to local mock server unless explicitly set
+pleroma_base_url =
+  System.get_env("PLEROMA_BASE_URL") ||
+  case config_env() do
+    :dev -> "http://localhost:4001"
+    _ -> "https://pleroma.social"
+  end
 config :alem, :pleroma, base_url: pleroma_base_url
 
 if config_env() == :prod do

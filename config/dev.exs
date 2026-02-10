@@ -39,3 +39,6 @@ config :phoenix, :plug_init_mode, :runtime
 config :phoenix_live_view,
   debug_heex_annotations: true,
   enable_expensive_runtime_checks: true
+
+# Pleroma API Configuration - Use local mock server on port 4001
+config :alem, :pleroma, base_url: "http://localhost:4001"

@@ -24,6 +24,14 @@ defmodule Alem.Application do
       AlemWeb.Endpoint
     ]
 
+    # Start Pleroma mock server in development mode
+    children =
+      if Application.get_env(:alem, :dev_routes, false) do
+        children ++ [{Alem.PleromaMockServer, [port: 4001]}]
+      else
+        children
+      end
+
     opts = [strategy: :one_for_one, name: Alem.Supervisor]
     Supervisor.start_link(children, opts)
   end
