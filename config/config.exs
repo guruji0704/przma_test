@@ -8,7 +8,7 @@ config :alem,
 config :alem, Alem.Repo,
   database: "alemmm_dev",
   username: "postgres",
-  password: "1245",
+  password: "postgres",
   hostname: "localhost",
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -76,7 +76,7 @@ config :alem, :file_storage,
   allowed_extensions: ~w(.jpg .jpeg .png .gif .pdf .doc .docx .txt .mp4 .mov .avi)
 
 # JWT
-config :joken, default_signer: "your-secret-key-here"
+#config :joken, default_signer: "your-secret-key-here"
 
 # Pleroma API Configuration
 config :alem, :pleroma,

@@ -1,264 +1,189 @@
+# =============================================================================
+# AlemWeb.NamespacePleromaController
+# =============================================================================
+# Namespace management for PRZMA/ALEM system.
+#
+# Uses Pleroma-compatible auth via aliases:
+#   alias Alem.Auth
+#   alias Alem.Pleroma.User
+#
+# Key change from old mock version:
+#   OLD: Called mock server on port 4001 → always got user_id "12345"
+#   NEW: Calls Auth.verify_token/1 → gets real unique user.id from DB
+#
+# Based on Pleroma's authentication plug pattern:
+# Source: https://git.pleroma.social/pleroma/pleroma/src/branch/develop/lib/pleroma/web
+# =============================================================================
+
 defmodule AlemWeb.NamespacePleromaController do
   use AlemWeb, :controller
-  require Logger
 
-  alias Alem.Namespace
-  alias Alem.Namespace.PleromaIntegration
+  # ─── Pleroma-style aliases ──────────────────────────────────────────────────
+  alias Alem.Auth
+  alias Alem.Pleroma.User
+  # ────────────────────────────────────────────────────────────────────────────
 
-  @doc """
-  Create or get namespace for authenticated Pleroma user
-  POST /api/namespaces/pleroma
+  alias Alem.PleromaIntegration
+
+  @moduledoc """
+  Namespace management endpoints.
+  All endpoints require Bearer token authentication.
+  Token is verified against DB using Pleroma-compatible token schema.
   """
-  def create_or_get(conn, _params) do
-    # Get OAuth token from Authorization header
-    auth_header = Plug.Conn.get_req_header(conn, "authorization")
 
-    case extract_token(auth_header) do
-      nil ->
-        conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "Missing or invalid Authorization header"})
+  # ===========================================================================
+  # POST /api/namespaces/pleroma
+  # Create or get namespace for authenticated user
+  # ===========================================================================
 
-      token ->
-        # First verify token to get account ID
-        case verify_and_get_account_id(token) do
-          {:ok, account_id} ->
-            case PleromaIntegration.ensure_namespace_for_pleroma_account(account_id, token) do
-              {:ok, user_id, account_info} ->
-                # Get namespace status
-                case Namespace.status(user_id) do
-                  {:ok, status} ->
-                    conn
-                    |> put_status(:ok)
-                    |> json(%{
-                      namespace: %{
-                        user_id: user_id,
-                        tenant_id: status.tenant_id,
-                        status: status.health_status,
-                        started_at: status.started_at,
-                        pleroma_account: account_info
-                      }
-                    })
+  def create_or_get(conn, params) do
+    with {:ok, token}      <- extract_token(conn),
+         {:ok, account_id} <- verify_and_get_account_id(token) do
 
-                  error ->
-                    conn
-                    |> put_status(:internal_server_error)
-                    |> json(%{error: "Failed to get namespace status", details: inspect(error)})
-                end
+      case PleromaIntegration.create_or_get_namespace_for_pleroma_account(account_id, params) do
+        {:ok, namespace} ->
+          json(conn, %{status: "success", namespace: namespace})
 
-              {:error, :invalid_token} ->
-                conn
-                |> put_status(:unauthorized)
-                |> json(%{error: "Invalid Pleroma OAuth token"})
-
-              {:error, reason} ->
-                conn
-                |> put_status(:bad_request)
-                |> json(%{error: "Failed to create namespace", details: inspect(reason)})
-            end
-
-          {:error, :invalid_token} ->
-            conn
-            |> put_status(:unauthorized)
-            |> json(%{error: "Invalid Pleroma OAuth token"})
-
-          {:error, reason} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "Failed to verify token", details: inspect(reason)})
-        end
+        {:error, reason} ->
+          conn |> put_status(400) |> json(%{error: to_string(reason)})
+      end
+    else
+      error -> handle_auth_error(conn, error)
     end
   end
 
-  @doc """
-  Get namespace for authenticated Pleroma user
-  GET /api/namespaces/pleroma
-  """
+  # ===========================================================================
+  # GET /api/namespaces/pleroma
+  # Get namespace for authenticated user
+  # ===========================================================================
+
   def get(conn, _params) do
-    auth_header = Plug.Conn.get_req_header(conn, "authorization")
+    with {:ok, token}      <- extract_token(conn),
+         {:ok, account_id} <- verify_and_get_account_id(token) do
 
-    case extract_token(auth_header) do
-      nil ->
-        conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "Missing or invalid Authorization header"})
+      case PleromaIntegration.get_namespace_for_pleroma_account(account_id) do
+        {:ok, namespace} ->
+          json(conn, namespace)
 
-      token ->
-        case verify_and_get_account_id(token) do
-          {:ok, account_id} ->
-            case PleromaIntegration.get_namespace_for_pleroma_account(account_id, token) do
-              {:ok, user_id, account_info} ->
-                case Namespace.status(user_id) do
-                  {:ok, status} ->
-                    conn
-                    |> json(%{
-                      namespace: %{
-                        user_id: user_id,
-                        tenant_id: status.tenant_id,
-                        status: status.health_status,
-                        started_at: status.started_at,
-                        services: status.services,
-                        resource_usage: status.resource_usage,
-                        pleroma_account: account_info
-                      }
-                    })
+        {:error, :not_found} ->
+          conn |> put_status(404) |> json(%{error: "Namespace not found"})
 
-                  error ->
-                    conn
-                    |> put_status(:internal_server_error)
-                    |> json(%{error: "Failed to get namespace status", details: inspect(error)})
-                end
-
-              {:error, :namespace_not_found} ->
-                conn
-                |> put_status(:not_found)
-                |> json(%{error: "Namespace not found for this Pleroma account"})
-
-              {:error, :invalid_token} ->
-                conn
-                |> put_status(:unauthorized)
-                |> json(%{error: "Invalid Pleroma OAuth token"})
-
-              {:error, reason} ->
-                conn
-                |> put_status(:bad_request)
-                |> json(%{error: "Failed to get namespace", details: inspect(reason)})
-            end
-
-          {:error, :invalid_token} ->
-            conn
-            |> put_status(:unauthorized)
-            |> json(%{error: "Invalid Pleroma OAuth token"})
-
-          {:error, reason} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "Failed to verify token", details: inspect(reason)})
-        end
+        {:error, reason} ->
+          conn |> put_status(400) |> json(%{error: to_string(reason)})
+      end
+    else
+      error -> handle_auth_error(conn, error)
     end
   end
 
-  @doc """
-  Sync namespace with Pleroma
-  POST /api/namespaces/pleroma/sync
-  """
+  # ===========================================================================
+  # POST /api/namespaces/pleroma/sync
+  # Sync namespace data
+  # ===========================================================================
+
   def sync(conn, params) do
-    auth_header = Plug.Conn.get_req_header(conn, "authorization")
+    with {:ok, token}      <- extract_token(conn),
+         {:ok, account_id} <- verify_and_get_account_id(token) do
 
-    case extract_token(auth_header) do
-      nil ->
-        conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "Missing or invalid Authorization header"})
+      case PleromaIntegration.sync_namespace_for_pleroma_account(account_id, params) do
+        {:ok, result} ->
+          json(conn, %{status: "synced", result: result})
 
-      token ->
-        user_id = get_user_id_from_token(token)
-        sync_mode = params["sync_mode"] || "metadata_only"
-
-        opts = [
-          sync_mode: String.to_atom(sync_mode)
-        ]
-
-        case PleromaIntegration.sync_namespace_with_pleroma(user_id, token, opts) do
-          {:ok, sync_result} ->
-            conn
-            |> json(%{
-              message: "Sync completed",
-              result: sync_result
-            })
-
-          {:error, reason} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "Sync failed", details: inspect(reason)})
-        end
+        {:error, reason} ->
+          conn |> put_status(400) |> json(%{error: to_string(reason)})
+      end
+    else
+      error -> handle_auth_error(conn, error)
     end
   end
 
-  @doc """
-  Get Pleroma account info for namespace
-  GET /api/namespaces/pleroma/account
-  """
+  # ===========================================================================
+  # GET /api/namespaces/pleroma/account
+  # Get account info for authenticated user
+  # ===========================================================================
+
   def get_account_info(conn, _params) do
-    auth_header = Plug.Conn.get_req_header(conn, "authorization")
+    with {:ok, token}      <- extract_token(conn),
+         {:ok, account_id} <- verify_and_get_account_id(token),
+         user              <- Auth.get_user_by_id(account_id) do
 
-    case extract_token(auth_header) do
-      nil ->
-        conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "Missing or invalid Authorization header"})
+      case user do
+        nil ->
+          conn |> put_status(404) |> json(%{error: "User not found"})
 
-      token ->
-        user_id = get_user_id_from_token(token)
-
-        case PleromaIntegration.get_pleroma_account_info(user_id) do
-          {:ok, account_info} ->
-            conn
-            |> json(%{account: account_info})
-
-          {:error, :no_pleroma_account} ->
-            conn
-            |> put_status(:not_found)
-            |> json(%{error: "No Pleroma account associated with this namespace"})
-
-          {:error, reason} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "Failed to get account info", details: inspect(reason)})
-        end
+        user ->
+          json(conn, render_account_info(user))
+      end
+    else
+      error -> handle_auth_error(conn, error)
     end
   end
 
+  # ===========================================================================
   # Private helpers
+  # ===========================================================================
 
-  defp extract_token([header | _]) when is_binary(header) do
-    case String.split(header, " ") do
-      ["Bearer", token] -> token
-      _ -> nil
+  # Extract Bearer token from Authorization header
+  # Based on Pleroma's OAuthPlug pattern
+  defp extract_token(conn) do
+    case Plug.Conn.get_req_header(conn, "authorization") do
+      ["Bearer " <> token | _] ->
+        {:ok, String.trim(token)}
+
+      _ ->
+        {:error, :missing_token}
     end
   end
 
-  defp extract_token(_), do: nil
-
-  defp get_user_id_from_token(token) do
-    case verify_and_get_account_id(token) do
-      {:ok, account_id} -> account_id
-      _ -> "unknown"
-    end
-  end
-
+  # THE KEY CHANGE from mock server:
+  # OLD: called mock server HTTP request → always "12345"
+  # NEW: calls Auth.verify_token/1 → real user.id from oauth_tokens table
+  #
+  # Based on Pleroma.Plugs.OAuthPlug.call/2 pattern
   defp verify_and_get_account_id(token) do
-    pleroma_base_url = Application.get_env(:alem, :pleroma, [])[:base_url] ||
-      System.get_env("PLEROMA_BASE_URL") ||
-      "http://localhost:4001"
+    case Auth.verify_token(token) do
+      {:ok, %User{} = user} ->
+        {:ok, user.id}        # ← john's real unique id "mK92pqRtYuIoplKj"
+                               #    NOT the fake "12345" from the mock
 
-    url = "#{pleroma_base_url}/api/v1/accounts/verify_credentials"
-    headers = [{"Authorization", "Bearer #{token}"}, {"Content-Type", "application/json"}]
-
-    case Req.get(url, headers: headers) do
-      {:ok, %{status: 200, body: account_info}} ->
-        parsed_info = parse_response_body(account_info)
-        account_id = parsed_info["id"] || parsed_info[:id] || to_string(parsed_info["username"] || parsed_info[:username])
-        {:ok, account_id}
-
-      {:ok, %{status: status}} ->
-        Logger.error("Pleroma token verification failed: #{status}")
+      {:error, :invalid_token} ->
         {:error, :invalid_token}
-
-      {:error, reason} ->
-        Logger.error("Failed to verify Pleroma token: #{inspect(reason)}")
-        {:error, :connection_failed}
     end
   end
 
-  # Helper to parse response body - handles both string and map responses
-  defp parse_response_body(body) when is_binary(body) do
-    case Jason.decode(body) do
-      {:ok, decoded} -> decoded
-      {:error, _} -> body
+  # Handle auth errors uniformly
+  defp handle_auth_error(conn, error) do
+    case error do
+      {:error, :missing_token} ->
+        conn
+        |> put_status(401)
+        |> json(%{error: "Missing authorization token"})
+
+      {:error, :invalid_token} ->
+        conn
+        |> put_status(401)
+        |> json(%{error: "Invalid or expired token"})
+
+      _ ->
+        conn
+        |> put_status(401)
+        |> json(%{error: "Unauthorized"})
     end
   end
 
-  defp parse_response_body(body) when is_map(body), do: body
-  defp parse_response_body(body), do: body
+  # Render user account info
+  # Field names follow Pleroma.Web.MastoAPI.AccountView pattern
+  defp render_account_info(%User{} = user) do
+    %{
+      id:           user.id,
+      nickname:     user.nickname,
+      name:         user.name,
+      email:        user.email,
+      bio:          user.bio,
+      is_active:    user.is_active,
+      is_admin:     user.is_admin,
+      created_at:   NaiveDateTime.to_iso8601(user.inserted_at) <> "Z"
+      # NOTE: private_key is NOT included — security improvement
+    }
+  end
 end

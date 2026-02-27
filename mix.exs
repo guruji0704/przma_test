@@ -47,43 +47,42 @@ defmodule Alem.MixProject do
        compile: false,
        depth: 1},
 
-      # Email
+      # ── AUTH (NEW) ──────────────────────────────────────
+      # pbkdf2_elixir — password hashing
+      # replaces fake mock server password checking
+      {:pbkdf2_elixir, "~> 2.0"},
+
+      # ── API DOCS ────────────────────────────────────────
+      {:open_api_spex, "~> 3.18"},
+
+      # ── EMAIL ───────────────────────────────────────────
       {:swoosh, "~> 1.5"},
       {:finch, "~> 0.13"},
 
-      # Telemetry
+      # ── TELEMETRY ───────────────────────────────────────
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
 
-      # Utilities
+      # ── UTILITIES ───────────────────────────────────────
       {:gettext, "~> 0.26"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.1.1"},
       {:bandit, "~> 1.5"},
-      {:req, "~> 0.5"},
 
-      # Distributed Systems
+      # ── DISTRIBUTED SYSTEMS ─────────────────────────────
       {:horde, "~> 0.9.0"},
 
-      # Storage - S3/Object Storage
+      # ── STORAGE - S3 ────────────────────────────────────
       {:ex_aws, "~> 2.5"},
       {:ex_aws_s3, "~> 2.5"},
       {:hackney, "~> 1.20"},
       {:sweet_xml, "~> 0.7"},
 
-      # Storage - CouchDB
-      {:couchdb_connector, "~> 0.5.0"},
-      {:httpoison, "~> 0.10"},
+      # ── HTTP CLIENT ─────────────────────────────────────
+      {:req, "~> 0.4"},
 
+      # ── PLUG ────────────────────────────────────────────
       {:plug, "~> 1.15"},
-      {:multipart, "~> 0.4"},
-
-      # JWT
-      {:joken, "~> 2.6"},
-      {:jose, git: "https://github.com/potatosalad/erlang-jose.git", tag: "1.11.10", override: true},
-
-      # API Documentation
-      {:open_api_spex, "~> 3.18"}
     ]
   end
 

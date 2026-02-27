@@ -1,263 +1,329 @@
+# =============================================================================
+# AlemWeb.AuthController
+# =============================================================================
+# Pleroma-compatible OAuth REST API + DID endpoint.
+#
+# Based on Pleroma.Web.OAuth.OAuthController and MastodonAPI.AccountController
+# Source: https://git.pleroma.social/pleroma/pleroma/src/branch/develop/lib/pleroma/web
+# =============================================================================
+
 defmodule AlemWeb.AuthController do
   use AlemWeb, :controller
-  require Logger
 
-  defp pleroma_base_url do
-    Application.get_env(:alem, :pleroma, [])[:base_url] ||
-      System.get_env("PLEROMA_BASE_URL") ||
-      "https://pleroma.social"
-  end
+  alias Alem.Auth
+  alias Alem.Pleroma.User
+  alias Alem.Pleroma.Web.OAuth.Token
+  alias Alem.DID
 
-  # Helper to parse response body - handles both string and map responses
-  defp parse_response_body(body) when is_binary(body) do
-    case Jason.decode(body) do
-      {:ok, decoded} -> decoded
-      {:error, _} -> body
-    end
-  end
-
-  defp parse_response_body(body) when is_map(body), do: body
-  defp parse_response_body(body), do: body
-
-  @doc """
-  Register an OAuth application
-  POST /api/v1/apps
-  """
-  def register_app(conn, params) do
-    url = "#{pleroma_base_url()}/api/v1/apps"
-    Logger.info("Calling Pleroma API: POST #{url}")
-
-    # Prepare request body
-    body = %{
-      "client_name" => params["client_name"] || params[:client_name],
-      "redirect_uris" => params["redirect_uris"] || params[:redirect_uris] || "",
-      "scopes" => params["scopes"] || params[:scopes] || "read write follow push",
-      "website" => params["website"] || params[:website]
-    }
-    |> Enum.reject(fn {_, v} -> is_nil(v) end)
-    |> Map.new()
-
-    case Req.post(url, json: body) do
-      {:ok, %{status: status, body: response_body}} when status in [200, 201] ->
-        Logger.info("OAuth app registered successfully")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:ok, %{status: status, body: response_body}} ->
-        Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:error, reason} ->
-        Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
-        conn
-        |> put_status(:bad_gateway)
-        |> json(%{error: "Failed to connect to Pleroma API", details: inspect(reason)})
-    end
-  end
-
-  @doc """
-  Get OAuth token
-  POST /oauth/token
-  """
-  def get_token(conn, params) do
-    url = "#{pleroma_base_url()}/oauth/token"
-    Logger.info("Calling Pleroma API: POST #{url}")
-
-    # Prepare form data for OAuth token request
-    form_data =
-      params
-      |> Enum.reject(fn {_, v} -> is_nil(v) or v == "" end)
-      |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end)
-
-    case Req.post(url, form: form_data) do
-      {:ok, %{status: status, body: response_body}} when status in [200, 201] ->
-        Logger.info("OAuth token obtained successfully")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:ok, %{status: status, body: response_body}} ->
-        Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:error, reason} ->
-        Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
-        conn
-        |> put_status(:bad_gateway)
-        |> json(%{error: "Failed to connect to Pleroma API", details: inspect(reason)})
-    end
-  end
-
-  @doc """
-  Register a new user account
-  POST /api/account/register
-  """
-  def register_account(conn, params) do
-    url = "#{pleroma_base_url()}/api/account/register"
-    Logger.info("Calling Pleroma API: POST #{url}")
-
-    # Prepare request body
-    body =
-      params
-      |> Enum.reject(fn {_, v} -> is_nil(v) or v == "" end)
-      |> Map.new()
-
-    case Req.post(url, json: body) do
-      {:ok, %{status: status, body: response_body}} when status in [200, 201] ->
-        Logger.info("Account registered successfully")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:ok, %{status: status, body: response_body}} ->
-        Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:error, reason} ->
-        Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
-        conn
-        |> put_status(:bad_gateway)
-        |> json(%{error: "Failed to connect to Pleroma API", details: inspect(reason)})
-    end
-  end
-
-  @doc """
-  Get captcha for registration
-  GET /api/v1/pleroma/captcha
-  """
+  # ===========================================================================
+  # GET /api/v1/pleroma/captcha
+  # ===========================================================================
   def get_captcha(conn, _params) do
-    url = "#{pleroma_base_url()}/api/v1/pleroma/captcha"
-    Logger.info("Calling Pleroma API: GET #{url}")
-    |> IO.inspect(label: "url")
-
-    case Req.get(url) do
-      {:ok, %{status: 200, body: response_body}} ->
-        Logger.info("Captcha retrieved successfully")
-        conn |> json(parse_response_body(response_body))
-
-      {:ok, %{status: status, body: response_body}} ->
-        Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:error, reason} ->
-        Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
-        conn
-        |> put_status(:bad_gateway)
-        |> json(%{error: "Failed to connect to Pleroma API", details: inspect(reason)})
+    case Auth.generate_captcha() do
+      {:ok, captcha} -> json(conn, captcha)
+      {:error, _}    -> conn |> put_status(500) |> json(%{error: "Failed to generate captcha"})
     end
   end
 
-  @doc """
-  Delete account
-  POST /api/pleroma/delete_account
-  """
+  # ===========================================================================
+  # POST /api/v1/apps
+  # ===========================================================================
+  def register_app(conn, params) do
+    attrs = %{
+      name:          params["client_name"],
+      redirect_uris: params["redirect_uris"] || "urn:ietf:wg:oauth:2.0:oob",
+      scopes:        parse_scopes(params["scopes"]),
+      website:       params["website"]
+    }
+
+    case Auth.register_app(attrs) do
+      {:ok, app} ->
+        json(conn, %{
+          id:            app.id,
+          name:          app.name,
+          website:       app.website,
+          redirect_uri:  app.redirect_uris,
+          client_id:     app.client_id,
+          client_secret: app.client_secret,
+          vapid_key:     nil
+        })
+
+      {:error, changeset} ->
+        conn |> put_status(422) |> json(%{error: format_errors(changeset)})
+    end
+  end
+
+  # ===========================================================================
+  # POST /api/v1/account/register
+  # ===========================================================================
+  def register_account(conn, params) do
+    captcha_token    = params["captcha_token"]
+    captcha_solution = params["captcha_solution"]
+
+    with :ok         <- verify_captcha_step(captcha_token, captcha_solution),
+         user_attrs  = build_user_attrs(params),
+         {:ok, user} <- Auth.register_user(user_attrs) do
+
+      conn
+      |> put_status(200)
+      |> json(render_account(user))
+    else
+      {:error, :invalid_captcha} ->
+        conn |> put_status(400) |> json(%{error: "Invalid or expired captcha token"})
+
+      {:error, :wrong_captcha_answer} ->
+        conn |> put_status(400) |> json(%{error: "Wrong captcha answer"})
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        conn |> put_status(400) |> json(%{error: format_errors(changeset)})
+
+      {:error, reason} ->
+        conn |> put_status(400) |> json(%{error: to_string(reason)})
+    end
+  end
+
+  # ===========================================================================
+  # POST /oauth/token
+  # ===========================================================================
+  def get_token(conn, params) do
+    case params["grant_type"] do
+      "password"           -> handle_password_grant(conn, params)
+      "client_credentials" -> handle_client_credentials_grant(conn, params)
+      _                    -> conn |> put_status(400) |> json(%{error: "unsupported_grant_type"})
+    end
+  end
+
+  # ===========================================================================
+  # GET /api/v1/accounts/verify_credentials
+  # ===========================================================================
+  def verify_credentials(conn, _params) do
+    with {:ok, token} <- extract_bearer_token(conn),
+         {:ok, user}  <- Auth.verify_token(token) do
+      json(conn, render_account(user))
+    else
+      {:error, :missing_token} -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token} -> conn |> put_status(401) |> json(%{error: "Invalid or expired token"})
+    end
+  end
+
+  # ===========================================================================
+  # DELETE /oauth/token — logout
+  # ===========================================================================
+  def revoke_token(conn, params) do
+    token_string = params["token"] || extract_bearer_token_string(conn)
+
+    case Auth.revoke_token(token_string) do
+      {:ok, _}         -> json(conn, %{message: "Token revoked successfully"})
+      {:error, :not_found} -> conn |> put_status(404) |> json(%{error: "Token not found"})
+      {:error, _}      -> conn |> put_status(400) |> json(%{error: "Could not revoke token"})
+    end
+  end
+
+  # ===========================================================================
+  # GET /api/v1/accounts/did
+  # Get the authenticated user's DID (Decentralized Identifier)
+  # ===========================================================================
+  def get_did(conn, _params) do
+    with {:ok, token} <- extract_bearer_token(conn),
+         {:ok, user}  <- Auth.verify_token(token) do
+
+      case user.did_id do
+        nil ->
+          # DID not yet generated — generate now and store (backward compat)
+          did_id = Alem.DID.generate(user.id)
+          user
+          |> Alem.Pleroma.User.did_changeset(did_id)
+          |> Alem.Repo.update!()
+
+          json(conn, render_did(user.id, user.nickname, did_id))
+
+        did_id ->
+          json(conn, render_did(user.id, user.nickname, did_id))
+      end
+    else
+      {:error, :missing_token} -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token} -> conn |> put_status(401) |> json(%{error: "Invalid or expired token"})
+    end
+  end
+
+  # ===========================================================================
+  # POST /api/pleroma/delete_account
+  # ===========================================================================
   def delete_account(conn, params) do
-    url = "#{pleroma_base_url()}/api/pleroma/delete_account"
-    Logger.info("Calling Pleroma API: POST #{url}")
-
-    # Get authorization header from request
-    auth_header = Plug.Conn.get_req_header(conn, "authorization")
-
-    headers =
-      if auth_header != [] do
-        [{"authorization", List.first(auth_header)}]
-      else
-        []
-      end
-
-    body = %{
-      "password" => params["password"] || params[:password]
-    }
-    |> Enum.reject(fn {_, v} -> is_nil(v) or v == "" end)
-    |> Map.new()
-
-    case Req.post(url, json: body, headers: headers) do
-      {:ok, %{status: status, body: response_body}} when status in [200, 201, 204] ->
-        Logger.info("Account deletion requested")
-        parsed_body = parse_response_body(response_body || %{message: "Account deletion scheduled"})
-        conn |> put_status(status) |> json(parsed_body)
-
-      {:ok, %{status: status, body: response_body}} ->
-        Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:error, reason} ->
-        Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
-        conn
-        |> put_status(:bad_gateway)
-        |> json(%{error: "Failed to connect to Pleroma API", details: inspect(reason)})
+    with {:ok, token_string} <- extract_bearer_token(conn),
+         {:ok, user}         <- Auth.verify_token(token_string),
+         {:ok, _}            <- Auth.authenticate_user(user.nickname, params["password"]) do
+      Auth.revoke_all_tokens(user.id)
+      json(conn, %{status: "success"})
+    else
+      {:error, :missing_token}       -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token}       -> conn |> put_status(401) |> json(%{error: "Invalid token"})
+      {:error, :invalid_credentials} -> conn |> put_status(403) |> json(%{error: "Invalid password"})
+      {:error, reason}               -> conn |> put_status(400) |> json(%{error: inspect(reason)})
     end
   end
 
-  @doc """
-  Disable account
-  POST /api/pleroma/disable_account
-  """
+  # ===========================================================================
+  # POST /api/pleroma/disable_account
+  # ===========================================================================
   def disable_account(conn, params) do
-    url = "#{pleroma_base_url()}/api/pleroma/disable_account"
-    Logger.info("Calling Pleroma API: POST #{url}")
-
-    # Get authorization header from request
-    auth_header = Plug.Conn.get_req_header(conn, "authorization")
-
-    headers =
-      if auth_header != [] do
-        [{"authorization", List.first(auth_header)}]
-      else
-        []
-      end
-
-    body = %{
-      "password" => params["password"] || params[:password]
-    }
-    |> Enum.reject(fn {_, v} -> is_nil(v) or v == "" end)
-    |> Map.new()
-
-    case Req.post(url, json: body, headers: headers) do
-      {:ok, %{status: status, body: response_body}} when status in [200, 201, 204] ->
-        Logger.info("Account disable requested")
-        parsed_body = parse_response_body(response_body || %{message: "Account disabled"})
-        conn |> put_status(status) |> json(parsed_body)
-
-      {:ok, %{status: status, body: response_body}} ->
-        Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
-
-      {:error, reason} ->
-        Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
-        conn
-        |> put_status(:bad_gateway)
-        |> json(%{error: "Failed to connect to Pleroma API", details: inspect(reason)})
+    with {:ok, token_string} <- extract_bearer_token(conn),
+         {:ok, user}         <- Auth.verify_token(token_string),
+         {:ok, _}            <- Auth.authenticate_user(user.nickname, params["password"]) do
+      Auth.disable_user(user.id)
+      json(conn, %{status: "success"})
+    else
+      {:error, :missing_token}       -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token}       -> conn |> put_status(401) |> json(%{error: "Invalid token"})
+      {:error, :invalid_credentials} -> conn |> put_status(403) |> json(%{error: "Invalid password"})
+      {:error, reason}               -> conn |> put_status(400) |> json(%{error: inspect(reason)})
     end
   end
 
-  @doc """
-  Get MFA settings
-  GET /api/v1/pleroma/accounts/mfa
-  """
+  # ===========================================================================
+  # GET /api/v1/pleroma/accounts/mfa
+  # ===========================================================================
   def get_mfa(conn, _params) do
-    url = "#{pleroma_base_url()}/api/v1/pleroma/accounts/mfa"
-    Logger.info("Calling Pleroma API: GET #{url}")
+    json(conn, %{
+      enabled: false,
+      backup_codes: [],
+      totp: %{enabled: false, provisioning_uri: nil}
+    })
+  end
 
-    # Get authorization header from request
-    auth_header = Plug.Conn.get_req_header(conn, "authorization")
+  # ===========================================================================
+  # Private helpers
+  # ===========================================================================
 
-    headers =
-      if auth_header != [] do
-        [{"authorization", List.first(auth_header)}]
-      else
-        []
-      end
+  defp handle_password_grant(conn, params) do
+    nickname  = params["username"]
+    password  = params["password"]
+    client_id = params["client_id"]
 
-    case Req.get(url, headers: headers) do
-      {:ok, %{status: 200, body: response_body}} ->
-        Logger.info("MFA settings retrieved successfully")
-        conn |> json(parse_response_body(response_body))
+    case Auth.login(nickname, password, client_id) do
+      {:ok, token, user} ->
+        json(conn, %{
+          access_token:  token.token,
+          token_type:    "Bearer",
+          scope:         Enum.join(token.scopes, " "),
+          created_at:    token.inserted_at |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(),
+          expires_in:    Token.expires_in(token),
+          refresh_token: token.refresh_token,
+          me:            user.nickname,
+          did:           user.did_id   # ← include DID in login response
+        })
 
-      {:ok, %{status: status, body: response_body}} ->
-        Logger.error("Pleroma API error: #{status} - URL: #{url} - Response: #{inspect(response_body)}")
-        conn |> put_status(status) |> json(parse_response_body(response_body))
+      {:error, :invalid_credentials} ->
+        conn |> put_status(401) |> json(%{error: "Invalid nickname or password"})
 
-      {:error, reason} ->
-        Logger.error("Failed to call Pleroma API: #{inspect(reason)}")
-        conn
-        |> put_status(:bad_gateway)
-        |> json(%{error: "Failed to connect to Pleroma API", details: inspect(reason)})
+      {:error, :account_disabled} ->
+        conn |> put_status(403) |> json(%{error: "Account is disabled"})
+
+      {:error, _} ->
+        conn |> put_status(400) |> json(%{error: "Login failed"})
     end
+  end
+
+  defp handle_client_credentials_grant(conn, params) do
+    case Auth.authenticate_client(params["client_id"], params["client_secret"]) do
+      {:ok, _app} ->
+        case Auth.create_token(nil, nil) do
+          {:ok, token} ->
+            json(conn, %{
+              access_token: token.token,
+              token_type:   "Bearer",
+              scope:        Enum.join(token.scopes, " "),
+              created_at:   token.inserted_at |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix()
+            })
+
+          {:error, _} ->
+            conn |> put_status(400) |> json(%{error: "Could not create token"})
+        end
+
+      {:error, :invalid_credentials} ->
+        conn |> put_status(401) |> json(%{error: "Invalid client credentials"})
+    end
+  end
+
+  defp verify_captcha_step(token, solution) do
+    case Auth.verify_captcha(token, solution) do
+      {:ok, _}         -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp build_user_attrs(params) do
+    %{
+      nickname: params["nickname"],
+      email:    params["email"],
+      password: params["password"],
+      name:     params["fullname"] || params["nickname"],
+      bio:      params["bio"]
+    }
+  end
+
+  defp render_account(%User{} = user) do
+    %{
+      id:           user.id,
+      username:     user.nickname,
+      acct:         user.nickname,
+      display_name: user.name || user.nickname,
+      note:         user.bio || "",
+      avatar:       user.avatar || "",
+      created_at:   NaiveDateTime.to_iso8601(user.inserted_at) <> "Z",
+      locked:       false,
+      bot:          false,
+      # DID included in account response
+      did:          user.did_id,
+      pleroma: %{
+        is_admin:     user.is_admin,
+        is_moderator: user.is_moderator,
+        is_active:    user.is_active
+      }
+    }
+  end
+
+  defp render_did(user_id, nickname, did_id) do
+    {:ok, fingerprint} = DID.fingerprint(did_id)
+    %{
+      user_id:        user_id,
+      nickname:       nickname,
+      did:            did_id,
+      did_method:     "przma",
+      fingerprint:    fingerprint,
+      namespace_key:  DID.namespace_key(did_id),
+      description:    "This DID is your unique decentralized identifier. One per user, never changes."
+    }
+  end
+
+  defp extract_bearer_token(conn) do
+    case Plug.Conn.get_req_header(conn, "authorization") do
+      ["Bearer " <> token | _] -> {:ok, token}
+      _                        -> {:error, :missing_token}
+    end
+  end
+
+  defp extract_bearer_token_string(conn) do
+    case extract_bearer_token(conn) do
+      {:ok, token} -> token
+      _            -> nil
+    end
+  end
+
+  defp parse_scopes(nil), do: ["read", "write"]
+  defp parse_scopes(scopes) when is_list(scopes), do: scopes
+  defp parse_scopes(scopes) when is_binary(scopes) do
+    String.split(scopes, " ", trim: true)
+  end
+
+  defp format_errors(%Ecto.Changeset{} = changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {msg, opts} ->
+      Enum.reduce(opts, msg, fn {key, value}, acc ->
+        String.replace(acc, "%{#{key}}", to_string(value))
+      end)
+    end)
+    |> Enum.map(fn {field, messages} -> "#{field}: #{Enum.join(messages, ", ")}" end)
+    |> Enum.join("; ")
   end
 end

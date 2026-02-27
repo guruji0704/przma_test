@@ -1,36 +1,35 @@
 defmodule Alem.Application do
+  @moduledoc false
   use Application
 
   @impl true
   def start(_type, _args) do
     children = [
-      AlemWeb.Telemetry,
+      # Database
       Alem.Repo,
-      {Phoenix.PubSub, name: Alem.PubSub},
+
+      # Telemetry
+      AlemWeb.Telemetry,
+
+      # DNS
       {DNSCluster, query: Application.get_env(:alem, :dns_cluster_query) || :ignore},
+
+      # PubSub
+      {Phoenix.PubSub, name: Alem.PubSub},
+
+      # Email
       {Finch, name: Alem.Finch},
 
-      # Horde for distributed namespaces
-      {Horde.Registry,
-        name: Alem.Namespace.HordeRegistry,
-        keys: :unique,
-        members: :auto},
+      # Distributed namespace management
+      #Alem.Namespace.HordeSupervisor,
 
-      {Horde.DynamicSupervisor,
-        name: Alem.Namespace.DynamicSupervisor,
-        strategy: :one_for_one,
-        members: :auto},
-
+      # Web endpoint (Phoenix on port 4201)
       AlemWeb.Endpoint
     ]
 
-    # Start Pleroma mock server in development mode
-    children =
-      if Application.get_env(:alem, :dev_routes, false) do
-        children ++ [{Alem.PleromaMockServer, [port: 4001]}]
-      else
-        children
-      end
+    # NOTE: PleromaMockServer is REMOVED.
+    # Authentication now uses real database via Alem.Auth module.
+    # No more fake server on port 4001.
 
     opts = [strategy: :one_for_one, name: Alem.Supervisor]
     Supervisor.start_link(children, opts)

@@ -20,41 +20,50 @@ defmodule AlemWeb.Router do
     plug OpenApiSpex.Plug.PutApiSpec, module: AlemWeb.Swagger
   end
 
+  # ── PUBLIC API (no auth required) ────────────────────────
   scope "/api", AlemWeb do
     pipe_through :api
 
-    get "/test-namespace", NamespaceController, :test
+    get  "/test-namespace",           NamespaceController, :test
 
-    # Pleroma-Namespace Integration Endpoints
-    post "/namespaces/pleroma", NamespacePleromaController, :create_or_get
-    get "/namespaces/pleroma", NamespacePleromaController, :get
-    post "/namespaces/pleroma/sync", NamespacePleromaController, :sync
-    get "/namespaces/pleroma/account", NamespacePleromaController, :get_account_info
+    # ── Auth endpoints ──
+    get  "/v1/pleroma/captcha",       AuthController, :get_captcha
+    post "/v1/apps",                  AuthController, :register_app
+    post "/v1/account/register",      AuthController, :register_account
+    post "/account/register",         AuthController, :register_account
 
-    # Pleroma Authentication Endpoints
-    post "/v1/apps", AuthController, :register_app
-    post "/account/register", AuthController, :register_account
-    get "/v1/pleroma/captcha", AuthController, :get_captcha
-    post "/pleroma/delete_account", AuthController, :delete_account
-    post "/pleroma/disable_account", AuthController, :disable_account
-    get "/v1/pleroma/accounts/mfa", AuthController, :get_mfa
+    # ── Account endpoints (require Bearer token internally) ──
+    get  "/v1/accounts/verify_credentials", AuthController, :verify_credentials
+    get  "/v1/accounts/did",                AuthController, :get_did   # ← NEW: get user DID
+
+    # ── Account management (require Bearer + password) ──
+    post "/pleroma/delete_account",   AuthController, :delete_account
+    post "/pleroma/disable_account",  AuthController, :disable_account
+    get  "/v1/pleroma/accounts/mfa",  AuthController, :get_mfa
+
+    # ── Namespace endpoints (require Bearer token) ──
+    post "/namespaces/pleroma",         NamespacePleromaController, :create_or_get
+    get  "/namespaces/pleroma",         NamespacePleromaController, :get
+    post "/namespaces/pleroma/sync",    NamespacePleromaController, :sync
+    get  "/namespaces/pleroma/account", NamespacePleromaController, :get_account_info
   end
 
+  # ── OAuth token endpoint ──────────────────────────────────
   scope "/oauth", AlemWeb do
     pipe_through :api
 
-    post "/token", AuthController, :get_token
+    post   "/token",  AuthController, :get_token
+    delete "/token",  AuthController, :revoke_token
   end
 
+  # ── Swagger UI ───────────────────────────────────────────
   scope "/api/swagger" do
     pipe_through :browser
-
     get "/", OpenApiSpex.Plug.SwaggerUI, path: "/api/swagger/openapi.json"
   end
 
   scope "/api/swagger" do
     pipe_through [:swagger]
-
     get "/openapi.json", OpenApiSpex.Plug.RenderSpec, []
   end
 
@@ -63,7 +72,6 @@ defmodule AlemWeb.Router do
 
     scope "/dev" do
       pipe_through :browser
-
       live_dashboard "/dashboard", metrics: AlemWeb.Telemetry
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
