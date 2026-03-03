@@ -1,10 +1,12 @@
 use crate::{AppState, device};
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Emitter};
 use base64::Engine;
 
+const SQLD_URL: &str = "http://172.235.17.68:8080";
+
 // ══════════════════════════════════════════════════════════════════════════
-// Background Sync Engine
+// Background Sync Engine - Starts on app launch
 // ══════════════════════════════════════════════════════════════════════════
 
 pub async fn start(app: AppHandle) {
@@ -25,51 +27,55 @@ pub async fn start(app: AppHandle) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Main Sync Cycle
+// Main Sync Cycle - MADE PUBLIC for manual triggering
 // ══════════════════════════════════════════════════════════════════════════
 
-async fn run_sync_cycle(app: &AppHandle) -> Result<(usize, usize), String> {
+pub async fn run_sync_cycle(app: &AppHandle) -> Result<(usize, usize), String> {
     let state = app.state::<AppState>();
     let conn  = state.db.connect().map_err(|e| e.to_string())?;
 
     log::info!("═══════════════════════════════════════════");
     log::info!("[Sync] Starting sync cycle...");
 
-    // Check credentials AND get sqld_url
+    // Check credentials
     let mut rows = conn.query(
-        "SELECT server_url, access_token, user_id, sqld_url FROM local_identity WHERE id = 'singleton'",
+        "SELECT server_url, access_token, user_id FROM local_identity WHERE id = 'singleton'",
         (),
     ).await.map_err(|e| e.to_string())?;
 
-    let (server_url, access_token, user_id, sqld_url) = if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        let url = get_text(&row, 0);
-        let token = get_text(&row, 1);
-        let uid = get_text(&row, 2);
-        let sqld = get_text(&row, 3);
+    let (server_url, access_token, user_id) = if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+        let url = match row.get_value(0).ok() {
+            Some(libsql::Value::Text(s)) if !s.is_empty() => s,
+            _ => {
+                log::warn!("[Sync] ❌ No server URL - skipping sync");
+                return Ok((0, 0));
+            }
+        };
+        let token = match row.get_value(1).ok() {
+            Some(libsql::Value::Text(s)) if !s.is_empty() => s,
+            _ => {
+                log::warn!("[Sync] ❌ No access token - user not logged in");
+                return Ok((0, 0));
+            }
+        };
+        let uid = match row.get_value(2).ok() {
+            Some(libsql::Value::Text(s)) if !s.is_empty() => s,
+            _ => {
+                log::warn!("[Sync] ❌ No user_id");
+                return Ok((0, 0));
+            }
+        };
         
-        if url.is_empty() || token.is_empty() { 
-            log::warn!("[Sync] ❌ Missing credentials");
-            return Ok((0, 0)); 
-        }
-        
-        (url, token, uid, sqld)
+        (url, token, uid)
     } else {
         log::warn!("[Sync] ❌ No identity found");
         return Ok((0, 0));
     };
 
-    log::info!("[Sync] ✅ Credentials OK");
-    log::info!("  Server: {}", server_url);
-    log::info!("  User ID: {}", user_id);
-    log::info!("  Sqld URL: {}", sqld_url);
-
     let device_id = device::get_or_create_device_id(&conn).await?;
-    log::info!("[Sync] Device ID: {}", device_id);
 
-    let pushed = push_documents(&conn, &server_url, &access_token, &device_id).await?;
-    
-    // Use dynamic sqld_url for pull
-    let pulled = pull_documents(&conn, &user_id, &device_id, &sqld_url).await?;
+    let pushed = push_documents(&conn, &server_url, &access_token, &device_id, app).await?;
+    let pulled = pull_documents(&conn, &user_id, &device_id).await?;
 
     conn.execute(
         "UPDATE local_identity SET last_sync_at = datetime('now') WHERE id = 'singleton'",
@@ -91,11 +97,11 @@ async fn push_documents(
     server_url: &str,
     access_token: &str,
     device_id: &str,
+    app: &AppHandle, // Added AppHandle for events
 ) -> Result<usize, String> {
     log::info!("[Push] Checking for pending documents...");
     
-    // (Counting logic omitted for brevity, same as original)
-
+    // ✅ REMOVED "AND status != 'failed'" to allow retries
     let mut docs = conn.query(
         "SELECT id, filename, automerge_state, text_content, last_modified_at, status
          FROM documents
@@ -106,16 +112,32 @@ async fn push_documents(
 
     let mut pending = Vec::new();
     while let Some(row) = docs.next().await.map_err(|e| e.to_string())? {
-        let doc_id = get_text(&row, 0);
-        let filename = get_text(&row, 1);
+        let doc_id = match row.get_value(0).ok() {
+            Some(libsql::Value::Text(s)) => s,
+            _ => continue,
+        };
+        let filename = match row.get_value(1).ok() {
+            Some(libsql::Value::Text(s)) => s,
+            _ => continue,
+        };
         let automerge_state = match row.get_value(2).ok() {
             Some(libsql::Value::Blob(b)) => b,
-            _ => { log::warn!("[Push] Doc {} has no CRDT state!", doc_id); continue; }
+            _ => continue,
         };
-        let text_content = get_text(&row, 3);
-        let last_modified_at = get_text(&row, 4);
+        let text_content = match row.get_value(3).ok() {
+            Some(libsql::Value::Text(s)) => s,
+            _ => String::new(),
+        };
+        let last_modified_at = match row.get_value(4).ok() {
+            Some(libsql::Value::Text(s)) => s,
+            _ => chrono::Utc::now().to_rfc3339(),
+        };
+        let status = match row.get_value(5).ok() {
+            Some(libsql::Value::Text(s)) => s,
+            _ => "unknown".to_string(),
+        };
         
-        pending.push((doc_id, filename, automerge_state, text_content, last_modified_at));
+        pending.push((doc_id, filename, automerge_state, text_content, last_modified_at, status));
     }
 
     if pending.is_empty() {
@@ -127,7 +149,21 @@ async fn push_documents(
 
     let mut pushed = 0;
 
-    for (doc_id, filename, automerge_state, text_content, last_modified_at) in pending {
+    for (doc_id, filename, automerge_state, text_content, last_modified_at, current_status) in pending {
+        // ✅ FIX: If previously failed, reset to 'pending' visually before retry
+        if current_status == "failed" {
+            log::info!("[Push] Retrying failed document: {}", filename);
+            conn.execute(
+                "UPDATE documents SET status = 'pending' WHERE id = ?",
+                libsql::params![doc_id.clone()],
+            ).await.map_err(|e| e.to_string())?;
+            
+            // Emit event to frontend to update UI to "Pending"
+            let _ = app.emit("sync-status", serde_json::json!({"id": doc_id, "status": "pending"}));
+        }
+
+        log::info!("[Push] Uploading '{}'...", filename);
+
         match upload_crdt_document(
             server_url,
             &doc_id,
@@ -139,6 +175,8 @@ async fn push_documents(
             access_token,
         ).await {
             Ok(_) => {
+                log::info!("[Push] ✅ Upload successful for '{}'", filename);
+                
                 conn.execute(
                     "UPDATE documents SET
                         is_synced = 1,
@@ -149,14 +187,21 @@ async fn push_documents(
                     libsql::params![doc_id.clone()],
                 ).await.map_err(|e| e.to_string())?;
                 
+                // Emit event to frontend to update UI to "Synced"
+                let _ = app.emit("sync-status", serde_json::json!({"id": doc_id, "status": "synced"}));
+                
                 pushed += 1;
             }
             Err(e) => {
                 log::error!("[Push] ❌ Upload failed for '{}': {}", filename, e);
+                
                 conn.execute(
                     "UPDATE documents SET status = 'failed' WHERE id = ?",
                     libsql::params![doc_id.clone()],
                 ).await.map_err(|e| e.to_string())?;
+                
+                // Emit event to frontend to update UI to "Failed"
+                let _ = app.emit("sync-status", serde_json::json!({"id": doc_id, "status": "failed"}));
             }
         }
     }
@@ -165,27 +210,17 @@ async fn push_documents(
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// PULL: Download documents from sqld
+// PULL: Download documents from sqld (metadata) + S3 (content)
 // ══════════════════════════════════════════════════════════════════════════
 
 async fn pull_documents(
     conn: &libsql::Connection,
     user_id: &str,
     device_id: &str,
-    sqld_url: &str, // Dynamic URL
 ) -> Result<usize, String> {
-    // If sqld_url is empty, use fallback or skip
-    if sqld_url.is_empty() {
-        log::warn!("[Pull] No sqld_url configured, skipping pull");
-        return Ok(0);
-    }
-
     let last_sync = get_last_sync_at(conn).await?;
 
     let client = reqwest::Client::new();
-
-    // Convert libsql:// to http:// if necessary
-    let http_url = sqld_url.replace("libsql://", "http://");
 
     let body = serde_json::json!({
         "requests": [
@@ -204,7 +239,7 @@ async fn pull_documents(
     });
 
     let response = client
-        .post(format!("{}/v3/pipeline", http_url))
+        .post(format!("{}/v3/pipeline", SQLD_URL))
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -226,13 +261,12 @@ async fn pull_documents(
         let remote_filename    = row[1]["value"].as_str().unwrap_or("").to_string();
         let remote_device      = row[2]["value"].as_str().unwrap_or("").to_string();
         let remote_modified    = row[3]["value"].as_str().unwrap_or("").to_string();
+        let _s3_content_key    = row[4]["value"].as_str().unwrap_or("").to_string();
 
-        // Skip documents from this device
         if remote_device == device_id {
             continue;
         }
 
-        // (S3 content download logic would go here)
         let text_content = String::from("(Content in S3)");
 
         let exists = doc_exists(conn, &remote_doc_id).await?;
@@ -276,7 +310,7 @@ async fn pull_documents(
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Upload to Phoenix
+// Upload to Phoenix (S3 + sqld)
 // ══════════════════════════════════════════════════════════════════════════
 
 async fn upload_crdt_document(
@@ -322,15 +356,8 @@ async fn upload_crdt_document(
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Helpers
+// Helper Functions
 // ══════════════════════════════════════════════════════════════════════════
-
-fn get_text(row: &libsql::Row, idx: i32) -> String {
-    match row.get_value(idx).ok() {
-        Some(libsql::Value::Text(s)) => s,
-        _ => String::new(),
-    }
-}
 
 async fn get_last_sync_at(conn: &libsql::Connection) -> Result<String, String> {
     let mut rows = conn.query(
@@ -340,7 +367,7 @@ async fn get_last_sync_at(conn: &libsql::Connection) -> Result<String, String> {
 
     if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
         match row.get_value(0).ok() {
-            Some(libsql::Value::Text(s)) if !s.is_empty() => Ok(s),
+            Some(libsql::Value::Text(s)) => Ok(s),
             _ => Ok("2020-01-01T00:00:00Z".to_string()),
         }
     } else {

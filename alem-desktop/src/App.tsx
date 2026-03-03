@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event"
 import { confirm } from "@tauri-apps/plugin-dialog";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -380,6 +381,39 @@ export default function App() {
     window.addEventListener("offline", down);
     return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
   }, []);
+
+
+  useEffect(() => {
+    // ✅ Listen for events from Rust
+    const unlisten = listen<{ id: string; status: string }>("sync-status", (event) => {
+      const { id, status } = event.payload;
+      
+      console.log(`[Event] Doc ${id} status changed to ${status}`);
+
+      // Update the specific document in the list
+      setDocs((prevDocs) =>
+        prevDocs.map((d) =>
+          d.id === id
+            ? {
+                ...d,
+                status: status,
+                is_synced: status === "synced" ? 1 : 0,
+              }
+            : d
+        )
+      );
+       // Show toast for retries or completion
+       if (status === "pending") addToast(`🔄 Retrying sync...`, "info");
+       if (status === "synced")  addToast(`✅ File synced`, "success");
+       if (status === "failed")  addToast(`❌ Sync failed`, "error");
+ 
+       // Refresh global counts
+       loadSyncStatus();
+     });
+ 
+     return () => { unlisten.then(f => f()); };
+   }, []);
+
 
   useEffect(() => {
     const init = async () => {

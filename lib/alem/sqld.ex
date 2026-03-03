@@ -40,7 +40,7 @@ defmodule Alem.Sqld do
   end
 
   # ══════════════════════════════════════════════════════════════════════════
-  # Execute Function
+  # Execute Function - WITH ERROR HANDLING
   # ══════════════════════════════════════════════════════════════════════════
 
   def execute(sql, args \\ []) do
@@ -56,9 +56,23 @@ defmodule Alem.Sqld do
       headers: [{"content-type", "application/json"}],
       receive_timeout: 10_000
     ) do
-      {:ok, %{status: 200}} -> :ok
-      {:ok, %{status: s, body: b}} -> {:error, {:http, s, b}}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{status: 200, body: resp_body}} ->
+        # ✅ FIX: Check for SQL errors inside the 200 OK response
+        case resp_body do
+          %{"results" => [%{"response" => %{"error" => error}} | _]} ->
+            Logger.error("[sqld] SQL Error: #{inspect(error)}")
+            {:error, {:sql_error, error}}
+          _ ->
+            :ok
+        end
+
+      {:ok, %{status: status, body: resp_body}} ->
+        Logger.error("[sqld] HTTP #{status}: #{inspect(resp_body)}")
+        {:error, {:http, status}}
+
+      {:error, reason} ->
+        Logger.error("[sqld] Request failed: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 
@@ -66,13 +80,10 @@ defmodule Alem.Sqld do
   # Encoders
   # ══════════════════════════════════════════════════════════════════════════
 
-  # Handle BLOB correctly for sqld (requires base64 for binary)
   defp encode_arg(v) when is_binary(v) do
-    # Check if it's valid text (UTF-8)
     if String.valid?(v) do
       %{"type" => "text", "value" => v}
     else
-      # It's raw binary (CRDT state), send as base64 blob
       %{"type" => "blob", "base64" => Base.encode64(v)}
     end
   end

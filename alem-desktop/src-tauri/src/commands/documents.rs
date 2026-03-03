@@ -1,14 +1,14 @@
-use tauri::State;
-use crate::{AppState, crdt::CRDTDocument, device};
+use crate::{AppState, device, sync::engine};
+use tauri::AppHandle;
 use uuid::Uuid;
 
-// ✅ ADD #[tauri::command]
 #[tauri::command]
 pub async fn create_document(
     filename: String,
     text_content: String,
     tags: Vec<String>,
-    state: State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
+    app: AppHandle, // ✅ Add AppHandle
 ) -> Result<(), String> {
     let conn = state.db.connect().map_err(|e| e.to_string())?;
     
@@ -17,8 +17,7 @@ pub async fn create_document(
     
     log::info!("📝 [CRDT] Creating document '{}'", filename);
     
-    // ✅ Create CRDT document
-    let crdt_doc = CRDTDocument::new(
+    let crdt_doc = crate::crdt::CRDTDocument::new(
         doc_id.clone(),
         filename.clone(),
         text_content.clone(),
@@ -27,16 +26,14 @@ pub async fn create_document(
     
     let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
     
-    let doc_id_clone = doc_id.clone();
-    
     conn.execute(
         "INSERT INTO documents (
             id, filename, automerge_state, text_content, tags,
             device_id, last_modified_at, status, needs_upload, is_synced
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, 0)",
         libsql::params![
-            doc_id,
-            filename,
+            doc_id.clone(),
+                        filename,
             crdt_doc.automerge_state,
             text_content,
             tags_json,
@@ -47,16 +44,23 @@ pub async fn create_document(
     .await
     .map_err(|e| e.to_string())?;
     
-    log::info!("✅ [CRDT] Document created (ID: {})", doc_id_clone);
+    log::info!("✅ [CRDT] Document created (ID: {})", doc_id);
+
+    // ✅ TRIGGER: Immediate background sync
+    tokio::spawn(async move {
+        log::info!("🚀 [AutoSync] Triggering immediate sync for new document...");
+        let _ = engine::run_sync_cycle(&app).await;
+    });
+
     Ok(())
 }
 
-// ✅ ADD #[tauri::command]
 #[tauri::command]
 pub async fn update_document(
     id: String,
     text_content: String,
-    state: State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
+    app: AppHandle, // ✅ Add AppHandle
 ) -> Result<(), String> {
     let conn = state.db.connect().map_err(|e| e.to_string())?;
     let device_id = device::get_or_create_device_id(&conn).await?;
@@ -82,7 +86,7 @@ pub async fn update_document(
             _ => return Err("Filename not found".to_string()),
         };
         
-        let mut crdt_doc = CRDTDocument::from_db(
+        let mut crdt_doc = crate::crdt::CRDTDocument::from_db(
             id.clone(),
             filename,
             automerge_state,
@@ -114,15 +118,21 @@ pub async fn update_document(
         .map_err(|e| e.to_string())?;
         
         log::info!("✅ [CRDT] Document updated");
+
+        // ✅ TRIGGER: Immediate background sync
+        tokio::spawn(async move {
+            log::info!("🚀 [AutoSync] Triggering immediate sync for updated document...");
+            let _ = engine::run_sync_cycle(&app).await;
+        });
+
         Ok(())
     } else {
         Err("Document not found".to_string())
     }
 }
 
-// ✅ ADD #[tauri::command]
 #[tauri::command]
-pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentInfo>, String> {
+pub async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<DocumentInfo>, String> {
     let conn = state.db.connect().map_err(|e| e.to_string())?;
     
     let mut rows = conn
@@ -149,18 +159,15 @@ pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentIn
     Ok(docs)
 }
 
-// ✅ ADD #[tauri::command]
 #[tauri::command]
-pub async fn delete_document(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_document(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let conn = state.db.connect().map_err(|e| e.to_string())?;
-    
-    let id_clone = id.clone();
     
     conn.execute("DELETE FROM documents WHERE id = ?", libsql::params![id])
         .await
         .map_err(|e| e.to_string())?;
     
-    log::info!("🗑️ [CRDT] Document deleted: {}", id_clone);
+    log::info!("🗑️ [CRDT] Document deleted");
     Ok(())
 }
 
