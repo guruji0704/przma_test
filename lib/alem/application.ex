@@ -1,45 +1,47 @@
 defmodule Alem.Application do
+  @moduledoc false
   use Application
 
   @impl true
   def start(_type, _args) do
-    # Ensure the local data directory exists before the repo starts
-    data_dir = Application.get_env(:alem, :local_first_data_dir, "priv/local_data")
-    File.mkdir_p!(data_dir)
-
     children = [
-      AlemWeb.Telemetry,
-      # Primary PostgreSQL repo
+      # Database
       Alem.Repo,
-      # Server-side SQLite repo for local-first offline queue & metadata
-      Alem.LocalFirst.LibSQLRepo,
-      {Phoenix.PubSub, name: Alem.PubSub},
+
+      # Telemetry
+      AlemWeb.Telemetry,
+
+      # DNS
       {DNSCluster, query: Application.get_env(:alem, :dns_cluster_query) || :ignore},
+
+      # PubSub
+      {Phoenix.PubSub, name: Alem.PubSub},
+
+      # Email
       {Finch, name: Alem.Finch},
-      # Horde for distributed namespaces
-      {Horde.Registry,
-       name: Alem.Namespace.HordeRegistry, keys: :unique, members: :auto},
-      {Horde.DynamicSupervisor,
-       name: Alem.Namespace.DynamicSupervisor,
-       strategy: :one_for_one,
-       members: :auto},
-      # Registry for SyncManager processes
-      {Registry, keys: :unique, name: Alem.LocalFirst.SyncRegistry},
+
+      Alem.Sync.Manager,
+
+      # Distributed namespace management
+      #Alem.Namespace.HordeSupervisor,
+
+      # Web endpoint (Phoenix on port 4201)
       AlemWeb.Endpoint
     ]
 
-    children =
-      if Application.get_env(:alem, :dev_routes, false) do
-        children ++ [{Alem.PleromaMockServer, [port: 4001]}]
-      else
-        children
-      end
-
+    # NOTE: PleromaMockServer is REMOVED.
+    # Authentication now uses real database via Alem.Auth module.
+    # No more fake server on port 4001.
+    Task.start(fn ->
+      Process.sleep(2_000)  # wait for app to settle
+      Alem.Sqld.ensure_schema()
+    end)
+    
     opts = [strategy: :one_for_one, name: Alem.Supervisor]
-
-    Task.start(fn -> Alem.LocalFirst.SqldSchema.setup() end)
-
     Supervisor.start_link(children, opts)
+     # Bootstrap sqld schema after startup
+
+
   end
 
   @impl true

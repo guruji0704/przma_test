@@ -1,186 +1,189 @@
-// src-tauri/src/commands/documents.rs
-use crate::{db::models::{Document, row_to_document}, AppState};
-use serde::Deserialize;
 use tauri::State;
+use crate::{AppState, crdt::CRDTDocument, device};
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize)]
-pub struct CreateDocumentInput {
-    pub filename:     String,
-    pub content_type: String,
-    pub local_path:   String,
-    pub file_size:    i64,
-    pub content_hash: String,
-    pub text_content: Option<String>,
-    pub metadata:     Option<serde_json::Value>,
-    pub tags:         Option<Vec<String>>,
-}
-
+// ✅ ADD #[tauri::command]
 #[tauri::command]
 pub async fn create_document(
-    input: CreateDocumentInput,
+    filename: String,
+    text_content: String,
+    tags: Vec<String>,
     state: State<'_, AppState>,
-) -> Result<Document, String> {
+) -> Result<(), String> {
     let conn = state.db.connect().map_err(|e| e.to_string())?;
-
-    let id       = Uuid::new_v4().to_string();
-    let metadata = serde_json::to_string(&input.metadata.unwrap_or(serde_json::json!({}))).unwrap_or_else(|_| "{}".into());
-    let tags     = serde_json::to_string(&input.tags.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
-
-    // Read identity from libsql
-    let mut id_rows = conn.query(
-        "SELECT COALESCE(user_id,'anonymous'), COALESCE(tenant_id,'default')
-         FROM local_identity WHERE id='singleton'",
-        (),
-    ).await.map_err(|e| e.to_string())?;
-
-    let (user_id, tenant_id) = if let Some(row) = id_rows.next().await.map_err(|e| e.to_string())? {
-        use libsql::Value;
-        let uid = match row.get_value(0).ok() { Some(Value::Text(s)) => s, _ => "anonymous".into() };
-        let tid = match row.get_value(1).ok() { Some(Value::Text(s)) => s, _ => "default".into()   };
-        (uid, tid)
-    } else {
-        ("anonymous".into(), "default".into())
-    };
-
+    
+    let doc_id = Uuid::new_v4().to_string();
+    let device_id = device::get_or_create_device_id(&conn).await?;
+    
+    log::info!("📝 [CRDT] Creating document '{}'", filename);
+    
+    // ✅ Create CRDT document
+    let crdt_doc = CRDTDocument::new(
+        doc_id.clone(),
+        filename.clone(),
+        text_content.clone(),
+        device_id.clone(),
+    )?;
+    
+    let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
+    
+    let doc_id_clone = doc_id.clone();
+    
     conn.execute(
         "INSERT INTO documents (
-             id, user_id, tenant_id, filename, content_type, file_size,
-             content_hash, local_path, text_content, metadata, tags,
-             status, needs_upload
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'local',1)",
+            id, filename, automerge_state, text_content, tags,
+            device_id, last_modified_at, status, needs_upload, is_synced
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, 0)",
         libsql::params![
-            id.clone(), user_id.clone(), tenant_id,
-            input.filename, input.content_type, input.file_size,
-            input.content_hash, input.local_path,
-            input.text_content.unwrap_or_default(), metadata, tags,
+            doc_id,
+            filename,
+            crdt_doc.automerge_state,
+            text_content,
+            tags_json,
+            device_id,
+            crdt_doc.last_modified_at,
         ],
-    ).await.map_err(|e| format!("Insert failed: {e}"))?;
-
-    // Queue upload operation
-    let op_id   = Uuid::new_v4().to_string();
-    let payload = format!("{{\"doc_id\":\"{id}\"}}");
-    conn.execute(
-        "INSERT INTO offline_operations (id, user_id, op_type, payload)
-         VALUES (?1, ?2, 'upload_document', ?3)",
-        libsql::params![op_id, user_id, payload],
-    ).await.map_err(|e| format!("Queue op failed: {e}"))?;
-
-    get_document(id, state).await
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    
+    log::info!("✅ [CRDT] Document created (ID: {})", doc_id_clone);
+    Ok(())
 }
 
-#[tauri::command]
-pub async fn get_documents(state: State<'_, AppState>) -> Result<Vec<Document>, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
-    let mut rows = conn.query(
-        "SELECT id, user_id, tenant_id, filename, content_type, file_size, content_hash,
-                local_path, object_key, text_content, metadata, tags, status,
-                local_version, server_version, is_synced, needs_upload, needs_download,
-                sync_error, last_synced_at, created_at, updated_at
-         FROM documents WHERE status != 'deleted' ORDER BY created_at DESC",
-        (),
-    ).await.map_err(|e| e.to_string())?;
-
-    let mut docs = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        if let Ok(doc) = row_to_document(&row) { docs.push(doc); }
-    }
-    Ok(docs)
-}
-
-#[tauri::command]
-pub async fn get_document(id: String, state: State<'_, AppState>) -> Result<Document, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
-    let mut rows = conn.query(
-        "SELECT id, user_id, tenant_id, filename, content_type, file_size, content_hash,
-                local_path, object_key, text_content, metadata, tags, status,
-                local_version, server_version, is_synced, needs_upload, needs_download,
-                sync_error, last_synced_at, created_at, updated_at
-         FROM documents WHERE id = ?1",
-        libsql::params![id],
-    ).await.map_err(|e| e.to_string())?;
-
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        row_to_document(&row).map_err(|e| e.to_string())
-    } else {
-        Err(format!("Document not found"))
-    }
-}
-
-#[tauri::command]
-pub async fn search_documents(query: String, state: State<'_, AppState>) -> Result<Vec<Document>, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
-    let mut rows = conn.query(
-        "SELECT d.id, d.user_id, d.tenant_id, d.filename, d.content_type, d.file_size, d.content_hash,
-                d.local_path, d.object_key, d.text_content, d.metadata, d.tags, d.status,
-                d.local_version, d.server_version, d.is_synced, d.needs_upload, d.needs_download,
-                d.sync_error, d.last_synced_at, d.created_at, d.updated_at
-         FROM documents d
-         JOIN documents_fts fts ON d.id = fts.id
-         WHERE d.status != 'deleted' AND documents_fts MATCH ?1
-         ORDER BY rank",
-        libsql::params![query],
-    ).await.map_err(|e| e.to_string())?;
-
-    let mut docs = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        if let Ok(doc) = row_to_document(&row) { docs.push(doc); }
-    }
-    Ok(docs)
-}
-
+// ✅ ADD #[tauri::command]
 #[tauri::command]
 pub async fn update_document(
     id: String,
-    filename: Option<String>,
-    _metadata: Option<serde_json::Value>,
-    _tags: Option<Vec<String>>,
+    text_content: String,
     state: State<'_, AppState>,
-) -> Result<Document, String> {
-    if let Some(name) = filename {
-        let conn = state.db.connect().map_err(|e| e.to_string())?;
+) -> Result<(), String> {
+    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let device_id = device::get_or_create_device_id(&conn).await?;
+    
+    log::info!("✏️ [CRDT] Updating document '{}'", id);
+    
+    let mut rows = conn
+        .query(
+            "SELECT automerge_state, filename FROM documents WHERE id = ?",
+            libsql::params![id.clone()],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    
+    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+        let automerge_state = match row.get_value(0).ok() {
+            Some(libsql::Value::Blob(b)) => b,
+            _ => return Err("Invalid CRDT state".to_string()),
+        };
+        
+        let filename = match row.get_value(1).ok() {
+            Some(libsql::Value::Text(s)) => s,
+            _ => return Err("Filename not found".to_string()),
+        };
+        
+        let mut crdt_doc = CRDTDocument::from_db(
+            id.clone(),
+            filename,
+            automerge_state,
+            device_id.clone(),
+            chrono::Utc::now().to_rfc3339(),
+            false,
+            true,
+        )?;
+        
+        crdt_doc.update_content(text_content.clone())?;
+        
         conn.execute(
-            "UPDATE documents
-             SET filename = ?1, local_version = local_version + 1,
-                 needs_upload = 1, is_synced = 0, status = 'local',
-                 updated_at = datetime('now')
-             WHERE id = ?2",
-            libsql::params![name, id.clone()],
-        ).await.map_err(|e| format!("Update failed: {e}"))?;
+            "UPDATE documents SET 
+                automerge_state = ?,
+                text_content = ?,
+                last_modified_at = ?,
+                needs_upload = 1,
+                is_synced = 0,
+                status = 'pending'
+             WHERE id = ?",
+            libsql::params![
+                crdt_doc.automerge_state,
+                text_content,
+                crdt_doc.last_modified_at,
+                id,
+            ],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        
+        log::info!("✅ [CRDT] Document updated");
+        Ok(())
+    } else {
+        Err("Document not found".to_string())
     }
-    get_document(id, state).await
 }
 
+// ✅ ADD #[tauri::command]
+#[tauri::command]
+pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentInfo>, String> {
+    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    
+    let mut rows = conn
+        .query(
+            "SELECT id, filename, text_content, is_synced, status, created_at 
+             FROM documents ORDER BY created_at DESC",
+            (),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    
+    let mut docs = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+        docs.push(DocumentInfo {
+            id: get_text_value(&row, 0),
+            filename: get_text_value(&row, 1),
+            text_content: get_text_value(&row, 2),
+            is_synced: get_int_value(&row, 3),
+            status: get_text_value(&row, 4),
+            created_at: get_text_value(&row, 5),
+        });
+    }
+    
+    Ok(docs)
+}
+
+// ✅ ADD #[tauri::command]
 #[tauri::command]
 pub async fn delete_document(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let conn = state.db.connect().map_err(|e| e.to_string())?;
-
-    let mut rows = conn.query(
-        "SELECT user_id FROM documents WHERE id = ?1",
-        libsql::params![id.clone()],
-    ).await.map_err(|e| e.to_string())?;
-
-    let user_id = if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        match row.get_value(0).ok() {
-            Some(libsql::Value::Text(s)) => s,
-            _ => return Err("User ID not found".into()),
-        }
-    } else {
-        return Err(format!("Document {id} not found"));
-    };
-
-    conn.execute(
-        "UPDATE documents SET status = 'deleted', updated_at = datetime('now') WHERE id = ?1",
-        libsql::params![id.clone()],
-    ).await.map_err(|e| format!("Delete failed: {e}"))?;
-
-    let op_id   = Uuid::new_v4().to_string();
-    let payload = format!("{{\"doc_id\":\"{id}\"}}");
-    conn.execute(
-        "INSERT INTO offline_operations (id, user_id, op_type, payload)
-         VALUES (?1, ?2, 'delete_document', ?3)",
-        libsql::params![op_id, user_id, payload],
-    ).await.map_err(|e| format!("Queue delete failed: {e}"))?;
-
+    
+    let id_clone = id.clone();
+    
+    conn.execute("DELETE FROM documents WHERE id = ?", libsql::params![id])
+        .await
+        .map_err(|e| e.to_string())?;
+    
+    log::info!("🗑️ [CRDT] Document deleted: {}", id_clone);
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct DocumentInfo {
+    pub id: String,
+    pub filename: String,
+    pub text_content: String,
+    pub is_synced: i64,
+    pub status: String,
+    pub created_at: String,
+}
+
+fn get_text_value(row: &libsql::Row, index: i32) -> String {
+    match row.get_value(index).ok() {
+        Some(libsql::Value::Text(s)) => s,
+        _ => String::new(),
+    }
+}
+
+fn get_int_value(row: &libsql::Row, index: i32) -> i64 {
+    match row.get_value(index).ok() {
+        Some(libsql::Value::Integer(i)) => i,
+        _ => 0,
+    }
 }

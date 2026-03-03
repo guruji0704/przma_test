@@ -51,23 +51,19 @@ defmodule AlemWeb.Router do
     get "/pleroma/accounts/mfa", AuthController, :get_mfa
     post "/oauth/token", AuthController, :get_token
 
-    # Local-First Endpoints
-    post "/local/init", LocalFirstController, :init_local_user
-    post "/local/documents", LocalFirstController, :add_local_document
-    get "/local/documents", LocalFirstController, :list_local_documents
-    post "/local/sync/to-server", LocalFirstController, :sync_to_server
-    post "/local/sync/from-server", LocalFirstController, :sync_from_server
-    get "/local/sync/status", LocalFirstController, :get_sync_status
-    get "/local/offline-queue", LocalFirstController, :get_offline_queue
-    post "/local/offline-queue/retry", LocalFirstController, :retry_failed_operations
-    get "/local/health", LocalFirstController, :health_check
 
-    # Server Changes API for sync
-    get "/sync/changes", SyncController, :get_changes
-    post "/sync/apply", SyncController, :apply_changes
-    get "/health", HealthController, :check
-    post "/sync/upload-url", SyncController, :get_upload_url
-    put "/sync/upload/:doc_id", SyncController, :upload_file
+
+  end
+
+  scope "/api/v1/sync", AlemWeb do
+    pipe_through :api
+
+    post "/upload-url", SyncController, :get_upload_url
+    post "/apply", SyncController, :apply_changes
+    get  "/changes", SyncController, :get_changes
+    get  "/stats", SyncController, :get_stats
+    post "/upload", SyncController, :upload_document
+    post "/crdt/upload", SyncController, :crdt_upload
 
   end
 

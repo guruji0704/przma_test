@@ -3,26 +3,24 @@ defmodule Alem.Repo.Migrations.CreateDocuments do
 
   def change do
     create table(:documents, primary_key: false) do
-      add :id, :string, primary_key: true
+      add :id, :binary_id, primary_key: true
       add :user_id, :string, null: false
+      add :tenant_id, :string, null: false
       add :filename, :string, null: false
       add :content_type, :string
+      add :file_size, :bigint
+      add :content_hash, :string
       add :object_key, :string
       add :text_content, :text
-      add :metadata, :map
-      add :status, :string, default: "processing"
+      add :metadata, :map, default: %{}
+      add :status, :string, default: "pending"
 
-      timestamps(type: :utc_datetime)
+      timestamps()
     end
 
     create index(:documents, [:user_id])
+    create index(:documents, [:tenant_id])
     create index(:documents, [:status])
-    create index(:documents, [:filename])
-
-    # Full-text search index
-    execute(
-      "CREATE INDEX documents_text_content_idx ON documents USING GIN (to_tsvector('english', text_content))",
-      "DROP INDEX documents_text_content_idx"
-    )
+    create index(:documents, [:content_hash])
   end
 end

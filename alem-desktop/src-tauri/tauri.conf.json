@@ -1,12 +1,13 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "alem-desktop",
-  "version": "0.1.0",
-  "identifier": "com.dhina.alem-desktop",
+  
+  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
+  "productName": "Alem",
+    "version": "0.1.0",
+  "identifier": "com.alem.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
   "app": {

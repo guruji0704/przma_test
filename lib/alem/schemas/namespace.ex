@@ -11,9 +11,6 @@ defmodule Alem.Schemas.Namespace do
 
   schema "namespaces" do
     field :tenant_id, :string
-    field :did, :string
-    field :identity_type, :string, default: "pleroma"
-    field :pleroma_account_id, :string
     field :config, :map, default: %{}
     field :status, :string, default: "active"
     field :document_count, :integer, default: 0
@@ -26,23 +23,9 @@ defmodule Alem.Schemas.Namespace do
 
   def changeset(namespace, attrs) do
     namespace
-    |> cast(attrs, [:id, :tenant_id, :did, :identity_type, :pleroma_account_id, :config, :status,
-                    :document_count, :vector_count, :storage_bytes, :last_activity_at])
+    |> cast(attrs, [:id, :tenant_id, :config, :status, :document_count, :vector_count,
+                    :storage_bytes, :last_activity_at])
     |> validate_required([:id, :tenant_id])
     |> validate_inclusion(:status, ["active", "suspended", "deleted"])
-    |> validate_inclusion(:identity_type, ["pleroma", "did", "hybrid"])
-    |> validate_did()
-  end
-
-  defp validate_did(changeset) do
-    case get_change(changeset, :did) do
-      nil -> changeset
-      did ->
-        if Alem.Identity.DID.valid?(did) do
-          changeset
-        else
-          add_error(changeset, :did, "is not a valid DID format")
-        end
-    end
   end
 end
