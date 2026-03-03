@@ -26,45 +26,50 @@ defmodule AlemWeb.Router do
     get "/test-namespace", NamespaceController, :test
 
     # DID (Decentralized Identifier) Endpoints
-    post "/did/generate", DIDController, :generate
-    post "/did/validate", DIDController, :validate
-    get "/did/:did/resolve", DIDController, :resolve
-    get "/did/:did", DIDController, :show
+    post "/did/generate",      DIDController, :generate
+    post "/did/validate",      DIDController, :validate
+    get  "/did/:did/resolve",  DIDController, :resolve
+    get  "/did/:did",          DIDController, :show
 
     # Identity Resolution Endpoints
-    get "/identity/resolve/:identifier", IdentityController, :resolve
-    post "/identity/compare", IdentityController, :compare
-    get "/identity/:identifier/identifiers", IdentityController, :identifiers
+    get  "/identity/resolve/:identifier",     IdentityController, :resolve
+    post "/identity/compare",                 IdentityController, :compare
+    get  "/identity/:identifier/identifiers", IdentityController, :identifiers
 
-    # Namespace Management Endpoints (require authentication)
-    post "/namespaces", NamespacePleromaController, :create_or_get
-    get "/namespaces", NamespacePleromaController, :get
-    post "/namespaces/sync", NamespacePleromaController, :sync
-    get "/namespaces/account", NamespacePleromaController, :get_account_info
+    # Namespace Endpoints
+    post "/namespaces",         NamespacePleromaController, :create_or_get
+    get  "/namespaces",         NamespacePleromaController, :get
+    post "/namespaces/sync",    NamespacePleromaController, :sync
+    get  "/namespaces/account", NamespacePleromaController, :get_account_info
 
-    # Pleroma Authentication Endpoints
-    post "/apps", AuthController, :register_app
-    post "/account/register", AuthController, :register_account
-    get "/pleroma/captcha", AuthController, :get_captcha
-    post "/pleroma/delete_account", AuthController, :delete_account
-    post "/pleroma/disable_account", AuthController, :disable_account
-    get "/pleroma/accounts/mfa", AuthController, :get_mfa
-    post "/oauth/token", AuthController, :get_token
+    # Auth Endpoints
+    post "/apps",                     AuthController, :register_app
+    post "/account/register",         AuthController, :register_account
+    get  "/pleroma/captcha",           AuthController, :get_captcha
+    post "/pleroma/delete_account",    AuthController, :delete_account
+    post "/pleroma/disable_account",   AuthController, :disable_account
+    get  "/pleroma/accounts/mfa",      AuthController, :get_mfa
+    post "/oauth/token",               AuthController, :get_token
+    get  "/accounts/verify_credentials", AuthController, :verify_credentials
+    get  "/accounts/did",              AuthController, :get_did
 
-
-
+    # ── Session Endpoints ──────────────────────────────────
+    get    "/sessions",      AuthController, :list_sessions        # list all active sessions
+    # delete "/sessions/all",  AuthController, :revoke_all_sessions  # logout from every device
+    # delete "/sessions/:id",  AuthController, :revoke_session       # logout from one device
+    delete "/sessions", AuthController, :revoke_all_sessions
+    delete "/sessions/:id", AuthController, :revoke_session
   end
 
   scope "/api/v1/sync", AlemWeb do
     pipe_through :api
 
-    post "/upload-url", SyncController, :get_upload_url
-    post "/apply", SyncController, :apply_changes
-    get  "/changes", SyncController, :get_changes
-    get  "/stats", SyncController, :get_stats
-    post "/upload", SyncController, :upload_document
-    post "/crdt/upload", SyncController, :crdt_upload
-
+    post "/upload-url",   SyncController, :get_upload_url
+    post "/apply",        SyncController, :apply_changes
+    get  "/changes",      SyncController, :get_changes
+    get  "/stats",        SyncController, :get_stats
+    post "/upload",       SyncController, :upload_document
+    post "/crdt/upload",  SyncController, :crdt_upload
   end
 
   scope "/api/swagger" do

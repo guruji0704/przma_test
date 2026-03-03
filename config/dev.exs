@@ -2,9 +2,9 @@ import Config
 
 config :alem, Alem.Repo,
   username: "postgres",
-  password: "1245",
+  password: "new.P@ssw0rd",
   hostname: "localhost",
-  database: "alemmm_dev",
+  database: "alem_dev_1",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10

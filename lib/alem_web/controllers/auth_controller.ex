@@ -2,10 +2,10 @@ defmodule AlemWeb.AuthController do
   use AlemWeb, :controller
 
   alias Alem.Auth
+  alias Alem.Session                              # ← CHANGE 1: add this alias
   alias Alem.Pleroma.User
   alias Alem.Pleroma.Web.OAuth.Token
   alias Alem.DID
-  alias Alem.Namespace
 
   # ===========================================================================
   # GET /api/v1/pleroma/captcha
@@ -54,51 +54,28 @@ defmodule AlemWeb.AuthController do
 
     with :ok         <- verify_captcha_step(captcha_token, captcha_solution),
          user_attrs  = build_user_attrs(params),
-         {:ok, user} <- Auth.register_user(user_attrs),
-         {:ok, namespace} <- Namespace.create_for_user(user) do
-
-      namespace_key = DID.namespace_key(user.did_id)
+         {:ok, user} <- Auth.register_user(user_attrs) do
 
       conn
       |> put_status(200)
-      |> json(%{
-        account: render_account(user),
-        did: user.did_id,
-        namespace: %{
-          id: namespace_key,
-          created: true
-        },
-        sync_config: %{
-          sqld_url: "http://172.235.17.68:8080",
-          s3_bucket: "perkeep",
-          s3_prefix: "user/#{namespace_key}/"
-        }
-      })
+      |> json(render_account(user))
     else
       {:error, :invalid_captcha} ->
-        conn
-        |> put_status(400)
-        |> json(%{error: "Invalid or expired captcha token"})
+        conn |> put_status(400) |> json(%{error: "Invalid or expired captcha token"})
 
       {:error, :wrong_captcha_answer} ->
-        conn
-        |> put_status(400)
-        |> json(%{error: "Wrong captcha answer"})
+        conn |> put_status(400) |> json(%{error: "Wrong captcha answer"})
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        conn
-        |> put_status(400)
-        |> json(%{error: format_changeset_errors(changeset)})
+        conn |> put_status(400) |> json(%{error: format_errors(changeset)})
 
       {:error, reason} ->
-        conn
-        |> put_status(400)
-        |> json(%{error: "Registration failed: #{inspect(reason)}"})
+        conn |> put_status(400) |> json(%{error: to_string(reason)})
     end
   end
 
   # ===========================================================================
-  # POST /oauth/token
+  # POST /api/v1/oauth/token  (or /oauth/token)
   # ===========================================================================
   def get_token(conn, params) do
     case params["grant_type"] do
@@ -106,6 +83,151 @@ defmodule AlemWeb.AuthController do
       "client_credentials" -> handle_client_credentials_grant(conn, params)
       _                    -> conn |> put_status(400) |> json(%{error: "unsupported_grant_type"})
     end
+  end
+
+  # ===========================================================================
+  # GET /api/v1/accounts/verify_credentials
+  # ===========================================================================
+  def verify_credentials(conn, _params) do
+    with {:ok, token} <- extract_bearer_token(conn),
+         {:ok, user}  <- Auth.verify_token(token) do
+      json(conn, render_account(user))
+    else
+      {:error, :missing_token} -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token} -> conn |> put_status(401) |> json(%{error: "Invalid or expired token"})
+    end
+  end
+
+  # ===========================================================================
+  # DELETE /oauth/token — logout current token
+  # ===========================================================================
+  def revoke_token(conn, params) do
+    token_string = params["token"] || extract_bearer_token_string(conn)
+
+    case Auth.revoke_token(token_string) do
+      {:ok, _}             -> json(conn, %{message: "Token revoked successfully"})
+      {:error, :not_found} -> conn |> put_status(404) |> json(%{error: "Token not found"})
+      {:error, _}          -> conn |> put_status(400) |> json(%{error: "Could not revoke token"})
+    end
+  end
+
+  # ===========================================================================
+  # GET /api/v1/accounts/did
+  # ===========================================================================
+  def get_did(conn, _params) do
+    with {:ok, token} <- extract_bearer_token(conn),
+         {:ok, user}  <- Auth.verify_token(token) do
+
+      case user.did_id do
+        nil ->
+          did_id = Alem.DID.generate(user.id)
+          user
+          |> Alem.Pleroma.User.did_changeset(did_id)
+          |> Alem.Repo.update!()
+          json(conn, render_did(user.id, user.nickname, did_id))
+
+        did_id ->
+          json(conn, render_did(user.id, user.nickname, did_id))
+      end
+    else
+      {:error, :missing_token} -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token} -> conn |> put_status(401) |> json(%{error: "Invalid or expired token"})
+    end
+  end
+
+  # ===========================================================================
+  # CHANGE 2: NEW — GET /api/v1/sessions
+  # ===========================================================================
+  def list_sessions(conn, _params) do
+    with {:ok, token} <- extract_bearer_token(conn),
+         {:ok, user}  <- Auth.verify_token(token) do
+
+      sessions = Session.list_active(user.id)
+      json(conn, %{sessions: Enum.map(sessions, &render_session/1)})
+    else
+      {:error, :missing_token} -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token} -> conn |> put_status(401) |> json(%{error: "Invalid or expired token"})
+    end
+  end
+
+  # ===========================================================================
+  # CHANGE 2: NEW — DELETE /api/v1/sessions/:id
+  # ===========================================================================
+  def revoke_session(conn, %{"id" => session_id}) do
+    with {:ok, token} <- extract_bearer_token(conn),
+         {:ok, user}  <- Auth.verify_token(token) do
+
+      case Session.revoke(session_id, user.id) do
+        {:ok, _}             -> json(conn, %{message: "Session revoked"})
+        {:error, :not_found} -> conn |> put_status(404) |> json(%{error: "Session not found"})
+      end
+    else
+      {:error, :missing_token} -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token} -> conn |> put_status(401) |> json(%{error: "Invalid or expired token"})
+    end
+  end
+
+  # ===========================================================================
+  # CHANGE 2: NEW — DELETE /api/v1/sessions  (logout from ALL devices)
+  # ===========================================================================
+  def revoke_all_sessions(conn, _params) do
+    with {:ok, token} <- extract_bearer_token(conn),
+         {:ok, user}  <- Auth.verify_token(token) do
+
+      Session.revoke_all(user.id)
+      Auth.revoke_all_tokens(user.id)
+      json(conn, %{message: "Logged out from all devices"})
+    else
+      {:error, :missing_token} -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token} -> conn |> put_status(401) |> json(%{error: "Invalid or expired token"})
+    end
+  end
+
+  # ===========================================================================
+  # POST /api/v1/pleroma/delete_account
+  # ===========================================================================
+  def delete_account(conn, params) do
+    with {:ok, token_string} <- extract_bearer_token(conn),
+         {:ok, user}         <- Auth.verify_token(token_string),
+         {:ok, _}            <- Auth.authenticate_user(user.nickname, params["password"]) do
+      Auth.revoke_all_tokens(user.id)
+      Session.revoke_all(user.id)
+      json(conn, %{status: "success"})
+    else
+      {:error, :missing_token}       -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token}       -> conn |> put_status(401) |> json(%{error: "Invalid token"})
+      {:error, :invalid_credentials} -> conn |> put_status(403) |> json(%{error: "Invalid password"})
+      {:error, reason}               -> conn |> put_status(400) |> json(%{error: inspect(reason)})
+    end
+  end
+
+  # ===========================================================================
+  # POST /api/v1/pleroma/disable_account
+  # ===========================================================================
+  def disable_account(conn, params) do
+    with {:ok, token_string} <- extract_bearer_token(conn),
+         {:ok, user}         <- Auth.verify_token(token_string),
+         {:ok, _}            <- Auth.authenticate_user(user.nickname, params["password"]) do
+      Auth.disable_user(user.id)
+      Session.revoke_all(user.id)
+      json(conn, %{status: "success"})
+    else
+      {:error, :missing_token}       -> conn |> put_status(401) |> json(%{error: "Missing token"})
+      {:error, :invalid_token}       -> conn |> put_status(401) |> json(%{error: "Invalid token"})
+      {:error, :invalid_credentials} -> conn |> put_status(403) |> json(%{error: "Invalid password"})
+      {:error, reason}               -> conn |> put_status(400) |> json(%{error: inspect(reason)})
+    end
+  end
+
+  # ===========================================================================
+  # GET /api/v1/pleroma/accounts/mfa
+  # ===========================================================================
+  def get_mfa(conn, _params) do
+    json(conn, %{
+      enabled: false,
+      backup_codes: [],
+      totp: %{enabled: false, provisioning_uri: nil}
+    })
   end
 
   # ===========================================================================
@@ -117,15 +239,13 @@ defmodule AlemWeb.AuthController do
     password  = params["password"]
     client_id = params["client_id"]
 
+    # CHANGE 3: capture conn_info before the case
+    conn_info = Session.conn_info(conn)
+
     case Auth.login(nickname, password, client_id) do
       {:ok, token, user} ->
-        # Generate sync config
-        namespace_key = DID.namespace_key(user.did_id)
-        sync_config = %{
-          sqld_url: "http://172.235.17.68:8080",
-          s3_bucket: "perkeep",
-          s3_prefix: "user/#{namespace_key}/"
-        }
+        # CHANGE 3: create session on every successful login
+        Session.create(user.id, conn_info)
 
         json(conn, %{
           access_token:  token.token,
@@ -135,10 +255,7 @@ defmodule AlemWeb.AuthController do
           expires_in:    Token.expires_in(token),
           refresh_token: token.refresh_token,
           me:            user.nickname,
-          did:           user.did_id,
-          # Added for Tauri client
-          sync_config:   sync_config,
-          account:       render_account(user)
+          did:           user.did_id
         })
 
       {:error, :invalid_credentials} ->
@@ -171,6 +288,17 @@ defmodule AlemWeb.AuthController do
       {:error, :invalid_credentials} ->
         conn |> put_status(401) |> json(%{error: "Invalid client credentials"})
     end
+  end
+
+  defp render_session(s) do
+    %{
+      id:             s.id,
+      device:         s.device || "unknown",
+      ip_address:     s.ip_address || "unknown",
+      user_agent:     s.user_agent || "",
+      last_active_at: s.last_active_at,
+      created_at:     s.inserted_at
+    }
   end
 
   defp verify_captcha_step(token, solution) do
@@ -210,6 +338,33 @@ defmodule AlemWeb.AuthController do
     }
   end
 
+  defp render_did(user_id, nickname, did_id) do
+    {:ok, fingerprint} = DID.fingerprint(did_id)
+    %{
+      user_id:       user_id,
+      nickname:      nickname,
+      did:           did_id,
+      did_method:    "przma",
+      fingerprint:   fingerprint,
+      namespace_key: DID.namespace_key(did_id),
+      description:   "This DID is your unique decentralized identifier. One per user, never changes."
+    }
+  end
+
+  defp extract_bearer_token(conn) do
+    case Plug.Conn.get_req_header(conn, "authorization") do
+      ["Bearer " <> token | _] -> {:ok, token}
+      _                        -> {:error, :missing_token}
+    end
+  end
+
+  defp extract_bearer_token_string(conn) do
+    case extract_bearer_token(conn) do
+      {:ok, token} -> token
+      _            -> nil
+    end
+  end
+
   defp parse_scopes(nil), do: ["read", "write"]
   defp parse_scopes(scopes) when is_list(scopes), do: scopes
   defp parse_scopes(scopes) when is_binary(scopes) do
@@ -224,18 +379,6 @@ defmodule AlemWeb.AuthController do
       end)
     end)
     |> Enum.map(fn {field, messages} -> "#{field}: #{Enum.join(messages, ", ")}" end)
-    |> Enum.join("; ")
-  end
-
-  defp format_changeset_errors(%Ecto.Changeset{} = changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Enum.reduce(opts, msg, fn {key, value}, acc ->
-        String.replace(acc, "%{#{key}}", to_string(value))
-      end)
-    end)
-    |> Enum.map(fn {field, messages} ->
-      "#{field}: #{Enum.join(messages, ", ")}"
-    end)
     |> Enum.join("; ")
   end
 end
