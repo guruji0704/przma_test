@@ -153,6 +153,7 @@ pub async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Doc
             is_synced: get_int_value(&row, 3),
             status: get_text_value(&row, 4),
             created_at: get_text_value(&row, 5),
+            updated_at: get_text_value(&row, 6)
         });
     }
     
@@ -179,6 +180,7 @@ pub struct DocumentInfo {
     pub is_synced: i64,
     pub status: String,
     pub created_at: String,
+    pub updated_at: String
 }
 
 fn get_text_value(row: &libsql::Row, index: i32) -> String {

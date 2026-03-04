@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event"
+import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -11,6 +11,7 @@ interface Doc {
   is_synced: number;
   status: string;
   created_at: string;
+  updated_at: string;
 }
 
 interface SyncStatus {
@@ -367,6 +368,9 @@ export default function App() {
 
   // New doc
   const [newDoc, setNewDoc] = useState({ filename: "", content: "", tags: "" });
+  
+  // ✅ NEW: Edit State
+  const [editingDoc, setEditingDoc] = useState<Doc | null>(null);
 
   const addToast = (msg: string, type: Toast["type"] = "info") => {
     const id = toastId++;
@@ -381,39 +385,22 @@ export default function App() {
     window.addEventListener("offline", down);
     return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
   }, []);
-
-
+  
+  // ✅ Listen for sync-status events from Rust
   useEffect(() => {
-    // ✅ Listen for events from Rust
-    const unlisten = listen<{ id: string; status: string }>("sync-status", (event) => {
-      const { id, status } = event.payload;
-      
-      console.log(`[Event] Doc ${id} status changed to ${status}`);
-
-      // Update the specific document in the list
-      setDocs((prevDocs) =>
-        prevDocs.map((d) =>
-          d.id === id
-            ? {
-                ...d,
-                status: status,
-                is_synced: status === "synced" ? 1 : 0,
-              }
-            : d
-        )
-      );
-       // Show toast for retries or completion
-       if (status === "pending") addToast(`🔄 Retrying sync...`, "info");
-       if (status === "synced")  addToast(`✅ File synced`, "success");
-       if (status === "failed")  addToast(`❌ Sync failed`, "error");
- 
-       // Refresh global counts
-       loadSyncStatus();
-     });
- 
-     return () => { unlisten.then(f => f()); };
-   }, []);
-
+    if (typeof window !== 'undefined' && (window as any).__TAURI__) {
+      const unlisten = listen<{ id: string; status: string }>("sync-status", (event) => {
+        const { id, status } = event.payload;
+        setDocs((prevDocs) =>
+          prevDocs.map((d) =>
+            d.id === id ? { ...d, status: status, is_synced: status === "synced" ? 1 : 0 } : d
+          )
+        );
+        loadSyncStatus();
+      });
+      return () => { unlisten.then(f => f()); };
+    }
+  }, []);
 
   useEffect(() => {
     const init = async () => {
@@ -515,13 +502,34 @@ export default function App() {
     }
   };
 
+  // ✅ NEW: Update Document Function
+  const updateDoc = async () => {
+    if (!editingDoc || !editingDoc.text_content.trim()) {
+      addToast("❌ Content cannot be empty", "error");
+      return;
+    }
+
+    try {
+      await invoke("update_document", {
+        id: editingDoc.id,
+        textContent: editingDoc.text_content,
+      });
+      addToast("✅ Document updated & syncing...", "success");
+      setEditingDoc(null);
+      loadDocs();
+      loadSyncStatus();
+      setTab("docs");
+    } catch (err) {
+      addToast(`❌ ${err}`, "error");
+    }
+  };
+
   // ── Registration flow ──────────────────────────────────────────────────
 
   const loadCaptcha = async () => {
     setRegLoading(true);
     setRegMsg(null);
     try {
-      // No extra args — backend doesn't accept serverUrl
       const res = await invoke<CaptchaResponse>("get_captcha");
       setCaptcha({ token: res.token, answer: res.answer_data });
       setRegStep(2);
@@ -555,8 +563,6 @@ export default function App() {
       if (result.success) {
         setRegStep(3);
         setRegMsg({ text: result.message || "Account created! Please sign in.", type: "success" });
-        // Auto-switch to login after 2s — pre-fill with USERNAME (not email)
-        // Pleroma only accepts nickname for login, never email
         const savedUsername = regForm.username;
         const savedPassword = regForm.password;
         setTimeout(() => {
@@ -651,7 +657,6 @@ export default function App() {
         <div className="auth-container">
           <div className="auth-title">ALEM</div>
 
-          {/* Tab switcher */}
           <div className="auth-tabs">
             <button
               className={`auth-tab ${authMode === "register" ? "active" : ""}`}
@@ -667,29 +672,19 @@ export default function App() {
             </button>
           </div>
 
-          {/* ── Register ── */}
           {authMode === "register" && (
             <div>
-              {regMsg && (
-                <div className={`alert alert-${regMsg.type}`}>{regMsg.text}</div>
-              )}
-
+              {regMsg && <div className={`alert alert-${regMsg.type}`}>{regMsg.text}</div>}
               {regStep === 1 && (
                 <div>
                   <p style={{ marginBottom: 32, color: "#94A9C9", fontSize: 14, lineHeight: 1.7 }}>
                     Create your account to receive a decentralized identifier and start syncing documents securely.
                   </p>
-                  <button
-                    className="btn"
-                    onClick={loadCaptcha}
-                    disabled={regLoading}
-                    style={{ width: "100%" }}
-                  >
+                  <button className="btn" onClick={loadCaptcha} disabled={regLoading} style={{ width: "100%" }}>
                     {regLoading ? "⊙ Loading..." : "✦ Begin Registration"}
                   </button>
                 </div>
               )}
-
               {regStep === 2 && (
                 <div>
                   {captcha && (
@@ -698,65 +693,40 @@ export default function App() {
                       <div className="captcha-code">{captcha.answer}</div>
                     </div>
                   )}
-                  <input className="input" placeholder="Username" value={regForm.username}
-                    onChange={e => setRegForm({ ...regForm, username: e.target.value })} disabled={regLoading} />
-                  <input className="input" placeholder="Email" type="email" value={regForm.email}
-                    onChange={e => setRegForm({ ...regForm, email: e.target.value })} disabled={regLoading} />
-                  <input className="input" placeholder="Password" type="password" value={regForm.password}
-                    onChange={e => setRegForm({ ...regForm, password: e.target.value })} disabled={regLoading} />
-                  <input className="input" placeholder="Confirm Password" type="password" value={regForm.confirm}
-                    onChange={e => setRegForm({ ...regForm, confirm: e.target.value })} disabled={regLoading} />
-                  <input className="input" placeholder="Enter Verification Code" value={regForm.code}
-                    onChange={e => setRegForm({ ...regForm, code: e.target.value })} disabled={regLoading} />
+                  <input className="input" placeholder="Username" value={regForm.username} onChange={e => setRegForm({ ...regForm, username: e.target.value })} disabled={regLoading} />
+                  <input className="input" placeholder="Email" type="email" value={regForm.email} onChange={e => setRegForm({ ...regForm, email: e.target.value })} disabled={regLoading} />
+                  <input className="input" placeholder="Password" type="password" value={regForm.password} onChange={e => setRegForm({ ...regForm, password: e.target.value })} disabled={regLoading} />
+                  <input className="input" placeholder="Confirm Password" type="password" value={regForm.confirm} onChange={e => setRegForm({ ...regForm, confirm: e.target.value })} disabled={regLoading} />
+                  <input className="input" placeholder="Enter Verification Code" value={regForm.code} onChange={e => setRegForm({ ...regForm, code: e.target.value })} disabled={regLoading} />
                   <div className="btn-group">
-                    <button className="btn" onClick={handleRegister} disabled={regLoading}>
-                      {regLoading ? "⊙ Creating..." : "✦ Create Account"}
-                    </button>
-                    <button className="btn btn-secondary" onClick={loadCaptcha} disabled={regLoading}>
-                      ↺ New Code
-                    </button>
+                    <button className="btn" onClick={handleRegister} disabled={regLoading}>{regLoading ? "⊙ Creating..." : "✦ Create Account"}</button>
+                    <button className="btn btn-secondary" onClick={loadCaptcha} disabled={regLoading}>↺ New Code</button>
                   </div>
                 </div>
               )}
-
               {regStep === 3 && (
                 <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 28, marginBottom: 16, fontWeight: 600, color: "#00E0C6" }}>
-                    ✓ Registration Complete
-                  </div>
+                  <div style={{ fontSize: 28, marginBottom: 16, fontWeight: 600, color: "#00E0C6" }}>✓ Registration Complete</div>
                   <div style={{ color: "#94A9C9" }}>Redirecting to sign in...</div>
                 </div>
               )}
             </div>
           )}
 
-          {/* ── Login ── */}
           {authMode === "login" && (
             <div>
-              {loginMsg && (
-                <div className={`alert alert-${loginMsg.type}`}>{loginMsg.text}</div>
-              )}
-              <input className="input" placeholder="Username (nickname)" value={loginForm.identifier}
-                onChange={e => setLoginForm({ ...loginForm, identifier: e.target.value })}
-                disabled={loginLoading} />
-              <input className="input" placeholder="Password" type="password" value={loginForm.password}
-                onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
-                disabled={loginLoading}
-                onKeyDown={e => e.key === "Enter" && handleLogin()} />
+              {loginMsg && <div className={`alert alert-${loginMsg.type}`}>{loginMsg.text}</div>}
+              <input className="input" placeholder="Username (nickname)" value={loginForm.identifier} onChange={e => setLoginForm({ ...loginForm, identifier: e.target.value })} disabled={loginLoading} />
+              <input className="input" placeholder="Password" type="password" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} disabled={loginLoading} onKeyDown={e => e.key === "Enter" && handleLogin()} />
               <div style={{ fontSize: 11, color: "#94A9C9", marginBottom: 16, marginTop: -8, fontFamily: "'JetBrains Mono', monospace" }}>
                 ⓘ Use your <strong style={{ color: "#4A9EFF" }}>username</strong>, not your email address
               </div>
-              <button className="btn" onClick={handleLogin} disabled={loginLoading} style={{ width: "100%" }}>
-                {loginLoading ? "⊙ Signing in..." : "⊙ Sign In"}
-              </button>
+              <button className="btn" onClick={handleLogin} disabled={loginLoading} style={{ width: "100%" }}>{loginLoading ? "⊙ Signing in..." : "⊙ Sign In"}</button>
             </div>
           )}
         </div>
       </div>
-
-      <div className="toast-container">
-        {toasts.map(t => <div key={t.id} className={`toast ${t.type}`}>{t.msg}</div>)}
-      </div>
+      <div className="toast-container">{toasts.map(t => <div key={t.id} className={`toast ${t.type}`}>{t.msg}</div>)}</div>
     </>
   );
 
@@ -765,31 +735,23 @@ export default function App() {
     <>
       <style>{css}</style>
       <div className="app">
-
         <header className="header">
           <div className="logo">ALEM</div>
           <div className="header-right">
-            <div>
-              <span className={`sync-dot ${isOnline ? "online" : "offline"}`} />
-              {isOnline ? "CONNECTED" : "OFFLINE"}
-            </div>
-            <div style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>
-              {did}
-            </div>
-            <button className="btn btn-danger" onClick={handleLogout} style={{ padding: "6px 16px", fontSize: 12 }}>
-              Logout
-            </button>
+            <div><span className={`sync-dot ${isOnline ? "online" : "offline"}`} />{isOnline ? "CONNECTED" : "OFFLINE"}</div>
+            <div style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{did}</div>
+            <button className="btn btn-danger" onClick={handleLogout} style={{ padding: "6px 16px", fontSize: 12 }}>Logout</button>
           </div>
         </header>
 
         <nav className="sidebar">
           {[
-            { id: "docs"     as const, label: "◉ Documents",    badge: null },
-            { id: "create"   as const, label: "⊕ New Document",  badge: null },
-            { id: "sync"     as const, label: "⟲ Sync",          badge: pending.length || null },
-            { id: "identity" as const, label: "⬢ Identity",      badge: null },
+            { id: "docs" as const, label: "◉ Documents", badge: null },
+            { id: "create" as const, label: "⊕ New Document", badge: null },
+            { id: "sync" as const, label: "⟲ Sync", badge: pending.length || null },
+            { id: "identity" as const, label: "⬢ Identity", badge: null },
           ].map(n => (
-            <div key={n.id} className={`nav-item ${tab === n.id ? "active" : ""}`} onClick={() => setTab(n.id)}>
+            <div key={n.id} className={`nav-item ${tab === n.id ? "active" : ""}`} onClick={() => { setTab(n.id); setEditingDoc(null); }}>
               <span>{n.label}</span>
               {n.badge != null && <span className="badge">{n.badge}</span>}
             </div>
@@ -805,37 +767,68 @@ export default function App() {
           </div>
 
           <div className="panel">
-
             {/* ── Documents tab ── */}
             {tab === "docs" && (
               <>
-                <div className="panel-title">Documents</div>
-                <div className="panel-sub">{docs.length} total · {syncStatus.synced} synced to cloud</div>
-                {docs.length === 0 ? (
-                  <div className="empty">
-                    <div className="empty-icon">◉</div>
-                    <div style={{ fontSize: 16, marginBottom: 8 }}>No documents yet</div>
-                    <div style={{ fontSize: 13 }}>Create your first document to get started</div>
-                  </div>
-                ) : (
-                  <div className="doc-list">
-                    {docs.map(d => (
-                      <div key={d.id} className="doc-item">
-                        <div className="doc-info">
-                          <div className="doc-name">{d.filename}</div>
-                          <div className="doc-meta">{new Date(d.created_at).toLocaleString()}</div>
-                        </div>
-                        <div className="doc-status">
-                          <span className={`tag ${d.is_synced === 1 ? "tag-synced" : d.status === "failed" ? "tag-failed" : "tag-pending"}`}>
-                            {d.is_synced === 1 ? "synced" : d.status}
-                          </span>
-                          <button className="btn btn-danger" onClick={() => delDoc(d.id)} style={{ padding: "6px 14px", fontSize: 12 }}>
-                            Delete
-                          </button>
-                        </div>
+                {/* ✅ Edit Mode */}
+                {editingDoc ? (
+                  <>
+                    <div className="panel-title">Editing: {editingDoc.filename}</div>
+                    <div className="panel-sub">Modify content below. Changes will sync automatically.</div>
+                    
+                    <div className="card">
+                      <div style={{ marginBottom: 16, color: "#94A9C9", fontSize: 12 }}>
+                        Last Modified: {new Date(editingDoc.updated_at || editingDoc.created_at).toLocaleString()}
                       </div>
-                    ))}
-                  </div>
+                      
+                      <textarea 
+                        className="input" 
+                        rows={12}
+                        value={editingDoc.text_content}
+                        onChange={(e) => setEditingDoc({ ...editingDoc, text_content: e.target.value })}
+                        placeholder="Document content..."
+                      />
+
+                      <div style={{ display: "flex", gap: "12px", marginTop: "16px" }}>
+                        <button className="btn" onClick={updateDoc} style={{ flex: 1 }}>💾 Save Changes</button>
+                        <button className="btn btn-secondary" onClick={() => setEditingDoc(null)} style={{ flex: 1 }}>✖ Cancel</button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  // List Mode
+                  <>
+                    <div className="panel-title">Documents</div>
+                    <div className="panel-sub">{docs.length} total · {syncStatus.synced} synced to cloud</div>
+                    {docs.length === 0 ? (
+                      <div className="empty">
+                        <div className="empty-icon">◉</div>
+                        <div style={{ fontSize: 16, marginBottom: 8 }}>No documents yet</div>
+                        <div style={{ fontSize: 13 }}>Create your first document to get started</div>
+                      </div>
+                    ) : (
+                      <div className="doc-list">
+                        {docs.map(d => (
+                          <div key={d.id} className="doc-item">
+                            <div className="doc-info">
+                              <div className="doc-name">{d.filename}</div>
+                              <div className="doc-meta">{new Date(d.created_at).toLocaleString()}</div>
+                            </div>
+                            <div className="doc-status">
+                              <span className={`tag ${d.is_synced === 1 ? "tag-synced" : d.status === "failed" ? "tag-failed" : "tag-pending"}`}>
+                                {d.is_synced === 1 ? "synced" : d.status}
+                              </span>
+                              
+                              {/* ✅ Edit Button */}
+                              <button className="btn" onClick={() => setEditingDoc(d)} style={{ padding: "6px 14px", fontSize: 12 }}>Edit</button>
+                              
+                              <button className="btn btn-danger" onClick={() => delDoc(d.id)} style={{ padding: "6px 14px", fontSize: 12 }}>Delete</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </>
             )}
@@ -846,15 +839,10 @@ export default function App() {
                 <div className="panel-title">New Document</div>
                 <div className="panel-sub">Create a local document · Automatically syncs when online</div>
                 <div className="card">
-                  <input className="input" placeholder="Filename (e.g., project-notes.txt)"
-                    value={newDoc.filename} onChange={e => setNewDoc({ ...newDoc, filename: e.target.value })} />
-                  <textarea className="input" placeholder="Document content..." rows={12}
-                    value={newDoc.content} onChange={e => setNewDoc({ ...newDoc, content: e.target.value })} />
-                  <input className="input" placeholder="Tags (comma separated)"
-                    value={newDoc.tags} onChange={e => setNewDoc({ ...newDoc, tags: e.target.value })} />
-                  <button className="btn" onClick={createDoc} style={{ width: "100%" }}>
-                    ⊕ Create Document
-                  </button>
+                  <input className="input" placeholder="Filename (e.g., project-notes.txt)" value={newDoc.filename} onChange={e => setNewDoc({ ...newDoc, filename: e.target.value })} />
+                  <textarea className="input" placeholder="Document content..." rows={12} value={newDoc.content} onChange={e => setNewDoc({ ...newDoc, content: e.target.value })} />
+                  <input className="input" placeholder="Tags (comma separated)" value={newDoc.tags} onChange={e => setNewDoc({ ...newDoc, tags: e.target.value })} />
+                  <button className="btn" onClick={createDoc} style={{ width: "100%" }}>⊕ Create Document</button>
                 </div>
               </>
             )}
@@ -870,9 +858,7 @@ export default function App() {
                     <span style={{ fontWeight: 600 }}>{isOnline ? "Connected to server" : "Offline mode"}</span>
                   </div>
                   <button className="btn" onClick={syncNow} disabled={!isOnline || syncStatus.pending === 0} style={{ width: "100%" }}>
-                    {isOnline
-                      ? (syncStatus.pending > 0 ? `⟲ Sync ${syncStatus.pending} Document(s)` : "✓ Everything Synced")
-                      : "⚠ Offline — Waiting for connection"}
+                    {isOnline ? (syncStatus.pending > 0 ? `⟲ Sync ${syncStatus.pending} Document(s)` : "✓ Everything Synced") : "⚠ Offline — Waiting for connection"}
                   </button>
                 </div>
 
@@ -890,19 +876,6 @@ export default function App() {
                     <button className="btn btn-danger" onClick={syncNow} style={{ marginTop: 16 }}>↺ Retry Failed</button>
                   </div>
                 )}
-
-                <div className="sync-flow">
-                  <div style={{ fontWeight: 600, marginBottom: 16, fontSize: 15 }}>Synchronization Flow</div>
-                  {[
-                    "1. Create document → Save to local libsql database",
-                    "2. Queue for sync → Status: PENDING",
-                    "3. Request upload credentials → POST /api/v1/sync/upload",
-                    "4. Upload to S3 object storage → Encrypted transfer",
-                    "5. Update server metadata → PostgreSQL + sqld replication",
-                    "6. Mark as synced → Status: SYNCED",
-                    "7. Background sync runs every 30 seconds",
-                  ].map((s, i) => <div key={i} className="sync-step">{s}</div>)}
-                </div>
               </>
             )}
 
@@ -924,14 +897,10 @@ export default function App() {
                 </div>
               </>
             )}
-
           </div>
         </main>
       </div>
-
-      <div className="toast-container">
-        {toasts.map(t => <div key={t.id} className={`toast ${t.type}`}>{t.msg}</div>)}
-      </div>
+      <div className="toast-container">{toasts.map(t => <div key={t.id} className={`toast ${t.type}`}>{t.msg}</div>)}</div>
     </>
   );
 }
