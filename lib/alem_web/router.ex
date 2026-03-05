@@ -53,6 +53,10 @@ defmodule AlemWeb.Router do
     get  "/accounts/verify_credentials", AuthController, :verify_credentials
     get  "/accounts/did",              AuthController, :get_did
 
+    # Email verification
+    post "/account/verify_email", AuthController, :verify_email
+    post "/account/resend_otp",   AuthController, :resend_otp
+
     # ── Session Endpoints ──────────────────────────────────
     get    "/sessions",      AuthController, :list_sessions        # list all active sessions
     # delete "/sessions/all",  AuthController, :revoke_all_sessions  # logout from every device

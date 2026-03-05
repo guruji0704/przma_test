@@ -50,6 +50,8 @@ defmodule Alem.MixProject do
       # Email
       {:swoosh, "~> 1.5"},
       {:finch, "~> 0.13"},
+      {:gen_smtp, "~> 1.2"},
+      {:castore, "~> 1.0"},
 
       # Telemetry
       {:telemetry_metrics, "~> 1.0"},

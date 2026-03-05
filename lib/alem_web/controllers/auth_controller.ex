@@ -1,8 +1,10 @@
 defmodule AlemWeb.AuthController do
   use AlemWeb, :controller
+  require Logger
 
   alias Alem.Auth
-  alias Alem.Session                              # ← CHANGE 1: add this alias
+  alias Alem.Auth.OTP
+  alias Alem.Session
   alias Alem.Pleroma.User
   alias Alem.Pleroma.Web.OAuth.Token
   alias Alem.DID
@@ -47,18 +49,39 @@ defmodule AlemWeb.AuthController do
 
   # ===========================================================================
   # POST /api/v1/account/register
+  #
+  # Flow:
+  #   1. Verify captcha
+  #   2. Create user + DID
+  #   3. Generate secure OTP (hashed in DB, plaintext only in email)
+  #   4. Send OTP email via Alem.Auth.OTP
+  #   5. Return user_id so client can POST /verify_email
   # ===========================================================================
   def register_account(conn, params) do
     captcha_token    = params["captcha_token"]
     captcha_solution = params["captcha_solution"]
 
     with :ok         <- verify_captcha_step(captcha_token, captcha_solution),
-         user_attrs  = build_user_attrs(params),
+         user_attrs  =  build_user_attrs(params),
          {:ok, user} <- Auth.register_user(user_attrs) do
+
+      # Generate secure OTP: stores hash in DB, emails plaintext
+      case OTP.generate_and_send(user) do
+        {:ok, _} ->
+          Logger.info("[Auth] OTP sent to #{user.email} for user #{user.id}")
+
+        {:error, reason} ->
+          Logger.warning("[Auth] OTP send failed for #{user.id}: #{inspect(reason)}")
+      end
 
       conn
       |> put_status(200)
-      |> json(render_account(user))
+      |> json(%{
+        message:   "Registration successful. Check #{user.email} for your 6-digit verification code.",
+        user_id:   user.id,
+        email:     user.email,
+        next_step: "POST /api/v1/account/verify_email with {user_id, code}"
+      })
     else
       {:error, :invalid_captcha} ->
         conn |> put_status(400) |> json(%{error: "Invalid or expired captcha token"})
@@ -75,7 +98,112 @@ defmodule AlemWeb.AuthController do
   end
 
   # ===========================================================================
-  # POST /api/v1/oauth/token  (or /oauth/token)
+  # POST /api/v1/account/verify_email
+  #
+  # Body: { "user_id": "...", "code": "123456" }
+  #
+  # Security:
+  #   - OTP is stored as Pbkdf2 hash — plaintext never persisted
+  #   - Max 3 attempts before lockout
+  #   - Expires in 10 minutes
+  #   - Constant-time comparison via Pbkdf2.verify_pass
+  # ===========================================================================
+  def verify_email(conn, %{"user_id" => user_id, "code" => code}) do
+    case Alem.Repo.get(User, user_id) do
+      nil ->
+        conn |> put_status(404) |> json(%{error: "User not found"})
+
+      %{is_verified: true} ->
+        conn |> put_status(400) |> json(%{error: "Email already verified. You can log in."})
+
+      user ->
+        case OTP.verify(user, code) do
+          {:ok, _verified_user} ->
+            Logger.info("[Auth] ✅ Email verified for user #{user.id}")
+            conn
+            |> put_status(200)
+            |> json(%{
+              ok:        true,
+              message:   "Email verified successfully. You can now log in.",
+              user_id:   user.id,
+              next_step: "POST /api/v1/oauth/token"
+            })
+
+          {:error, :max_attempts} ->
+            Logger.warning("[Auth] Max OTP attempts for user #{user.id}")
+            conn
+            |> put_status(429)
+            |> json(%{error: "Too many attempts. Request a new code via /resend_otp."})
+
+          {:error, :expired} ->
+            conn
+            |> put_status(400)
+            |> json(%{error: "Code expired. Use POST /api/v1/account/resend_otp to get a new one."})
+
+          {:error, :invalid} ->
+            remaining = max(0, 3 - (user.otp_attempts + 1))
+            conn
+            |> put_status(400)
+            |> json(%{error: "Invalid code. #{remaining} attempt(s) remaining."})
+        end
+    end
+  end
+
+  def verify_email(conn, _params) do
+    conn
+    |> put_status(400)
+    |> json(%{error: "user_id and code are required"})
+  end
+
+  # ===========================================================================
+  # POST /api/v1/account/resend_otp
+  #
+  # Body: { "user_id": "..." }
+  #
+  # Security:
+  #   - Checks user exists and is not already verified
+  #   - Rate limited (max 3 resends per hour via OTP module)
+  #   - Generates a fresh hash, invalidates old code
+  # ===========================================================================
+  def resend_otp(conn, %{"user_id" => user_id}) do
+    case Alem.Repo.get(User, user_id) do
+      nil ->
+        conn |> put_status(404) |> json(%{error: "User not found"})
+
+      %{is_verified: true} ->
+        conn |> put_status(400) |> json(%{error: "Email already verified. You can log in."})
+
+      user ->
+        case OTP.generate_and_send(user) do
+          {:ok, _} ->
+            Logger.info("[Auth] OTP resent to #{user.email}")
+            conn
+            |> put_status(200)
+            |> json(%{
+              ok:      true,
+              message: "New verification code sent to #{user.email}. Valid for 10 minutes."
+            })
+
+          {:error, :rate_limited} ->
+            conn
+            |> put_status(429)
+            |> json(%{error: "Too many resend requests. Please wait before trying again."})
+
+          {:error, reason} ->
+            Logger.error("[Auth] Resend OTP failed for #{user.id}: #{inspect(reason)}")
+            conn
+            |> put_status(500)
+            |> json(%{error: "Failed to send code. Please try again shortly."})
+        end
+    end
+  end
+
+  def resend_otp(conn, _params) do
+    conn |> put_status(400) |> json(%{error: "user_id is required"})
+  end
+
+  # ===========================================================================
+  # POST /api/v1/oauth/token
   # ===========================================================================
   def get_token(conn, params) do
     case params["grant_type"] do
@@ -99,7 +227,7 @@ defmodule AlemWeb.AuthController do
   end
 
   # ===========================================================================
-  # DELETE /oauth/token — logout current token
+  # DELETE /oauth/token  — logout current token
   # ===========================================================================
   def revoke_token(conn, params) do
     token_string = params["token"] || extract_bearer_token_string(conn)
@@ -118,17 +246,15 @@ defmodule AlemWeb.AuthController do
     with {:ok, token} <- extract_bearer_token(conn),
          {:ok, user}  <- Auth.verify_token(token) do
 
-      case user.did_id do
+      did_id = case user.did_id do
         nil ->
-          did_id = Alem.DID.generate(user.id)
-          user
-          |> Alem.Pleroma.User.did_changeset(did_id)
-          |> Alem.Repo.update!()
-          json(conn, render_did(user.id, user.nickname, did_id))
-
-        did_id ->
-          json(conn, render_did(user.id, user.nickname, did_id))
+          new_did = DID.generate(user.id)
+          user |> User.did_changeset(new_did) |> Alem.Repo.update!()
+          new_did
+        existing -> existing
       end
+
+      json(conn, render_did(user.id, user.nickname, did_id))
     else
       {:error, :missing_token} -> conn |> put_status(401) |> json(%{error: "Missing token"})
       {:error, :invalid_token} -> conn |> put_status(401) |> json(%{error: "Invalid or expired token"})
@@ -136,12 +262,11 @@ defmodule AlemWeb.AuthController do
   end
 
   # ===========================================================================
-  # CHANGE 2: NEW — GET /api/v1/sessions
+  # GET /api/v1/sessions
   # ===========================================================================
   def list_sessions(conn, _params) do
     with {:ok, token} <- extract_bearer_token(conn),
          {:ok, user}  <- Auth.verify_token(token) do
-
       sessions = Session.list_active(user.id)
       json(conn, %{sessions: Enum.map(sessions, &render_session/1)})
     else
@@ -151,12 +276,11 @@ defmodule AlemWeb.AuthController do
   end
 
   # ===========================================================================
-  # CHANGE 2: NEW — DELETE /api/v1/sessions/:id
+  # DELETE /api/v1/sessions/:id
   # ===========================================================================
   def revoke_session(conn, %{"id" => session_id}) do
     with {:ok, token} <- extract_bearer_token(conn),
          {:ok, user}  <- Auth.verify_token(token) do
-
       case Session.revoke(session_id, user.id) do
         {:ok, _}             -> json(conn, %{message: "Session revoked"})
         {:error, :not_found} -> conn |> put_status(404) |> json(%{error: "Session not found"})
@@ -168,12 +292,11 @@ defmodule AlemWeb.AuthController do
   end
 
   # ===========================================================================
-  # CHANGE 2: NEW — DELETE /api/v1/sessions  (logout from ALL devices)
+  # DELETE /api/v1/sessions  — logout from ALL devices
   # ===========================================================================
   def revoke_all_sessions(conn, _params) do
     with {:ok, token} <- extract_bearer_token(conn),
          {:ok, user}  <- Auth.verify_token(token) do
-
       Session.revoke_all(user.id)
       Auth.revoke_all_tokens(user.id)
       json(conn, %{message: "Logged out from all devices"})
@@ -238,25 +361,33 @@ defmodule AlemWeb.AuthController do
     nickname  = params["username"]
     password  = params["password"]
     client_id = params["client_id"]
-
-    # CHANGE 3: capture conn_info before the case
     conn_info = Session.conn_info(conn)
 
     case Auth.login(nickname, password, client_id) do
       {:ok, token, user} ->
-        # CHANGE 3: create session on every successful login
-        Session.create(user.id, conn_info)
+        if !user.is_verified do
+          conn
+          |> put_status(403)
+          |> json(%{
+            error:     "Email not verified. Check your inbox for the 6-digit code.",
+            user_id:   user.id,
+            email:     user.email,
+            next_step: "POST /api/v1/account/verify_email with {user_id, code}"
+          })
+        else
+          Session.create(user.id, conn_info)
 
-        json(conn, %{
-          access_token:  token.token,
-          token_type:    "Bearer",
-          scope:         Enum.join(token.scopes, " "),
-          created_at:    token.inserted_at |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(),
-          expires_in:    Token.expires_in(token),
-          refresh_token: token.refresh_token,
-          me:            user.nickname,
-          did:           user.did_id
-        })
+          json(conn, %{
+            access_token:  token.token,
+            token_type:    "Bearer",
+            scope:         Enum.join(token.scopes, " "),
+            created_at:    token.inserted_at |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix(),
+            expires_in:    Token.expires_in(token),
+            refresh_token: token.refresh_token,
+            me:            user.nickname,
+            did:           user.did_id
+          })
+        end
 
       {:error, :invalid_credentials} ->
         conn |> put_status(401) |> json(%{error: "Invalid nickname or password"})
@@ -280,7 +411,6 @@ defmodule AlemWeb.AuthController do
               scope:        Enum.join(token.scopes, " "),
               created_at:   token.inserted_at |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_unix()
             })
-
           {:error, _} ->
             conn |> put_status(400) |> json(%{error: "Could not create token"})
         end
@@ -288,17 +418,6 @@ defmodule AlemWeb.AuthController do
       {:error, :invalid_credentials} ->
         conn |> put_status(401) |> json(%{error: "Invalid client credentials"})
     end
-  end
-
-  defp render_session(s) do
-    %{
-      id:             s.id,
-      device:         s.device || "unknown",
-      ip_address:     s.ip_address || "unknown",
-      user_agent:     s.user_agent || "",
-      last_active_at: s.last_active_at,
-      created_at:     s.inserted_at
-    }
   end
 
   defp verify_captcha_step(token, solution) do
@@ -347,7 +466,18 @@ defmodule AlemWeb.AuthController do
       did_method:    "przma",
       fingerprint:   fingerprint,
       namespace_key: DID.namespace_key(did_id),
-      description:   "This DID is your unique decentralized identifier. One per user, never changes."
+      description:   "Your unique decentralized identifier. One per user, never changes."
+    }
+  end
+
+  defp render_session(s) do
+    %{
+      id:             s.id,
+      device:         s.device || "unknown",
+      ip_address:     s.ip_address || "unknown",
+      user_agent:     s.user_agent || "",
+      last_active_at: s.last_active_at,
+      created_at:     s.inserted_at
     }
   end
 
@@ -365,11 +495,9 @@ defmodule AlemWeb.AuthController do
     end
   end
 
-  defp parse_scopes(nil), do: ["read", "write"]
-  defp parse_scopes(scopes) when is_list(scopes), do: scopes
-  defp parse_scopes(scopes) when is_binary(scopes) do
-    String.split(scopes, " ", trim: true)
-  end
+  defp parse_scopes(nil),                  do: ["read", "write"]
+  defp parse_scopes(s) when is_list(s),    do: s
+  defp parse_scopes(s) when is_binary(s),  do: String.split(s, " ", trim: true)
 
   defp format_errors(%Ecto.Changeset{} = changeset) do
     changeset
