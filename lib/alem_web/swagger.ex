@@ -53,6 +53,19 @@ defmodule AlemWeb.Swagger do
 
         ## DID (Decentralized Identifier)
         Every user gets one DID at registration: `did:przma:<sha256-fingerprint>`
+
+        ---
+
+        ## Forgot Password Flow
+        ### Step A — Request reset link
+        `POST /api/v1/account/forgot_password`
+        Submit your email. A reset link is sent if the email is registered.
+        Always returns 200 (prevents email enumeration).
+
+        ### Step B — Reset password
+        `POST /api/v1/account/reset_password`
+        Submit `user_id` + `token` from the email link + new password.
+        Token expires in **15 minutes**. Max 3 attempts.
         """
       },
       servers: [
@@ -125,7 +138,7 @@ defmodule AlemWeb.Swagger do
 
         # ── Resend OTP ────────────────────────────────────────────────────────
         "/api/v1/account/resend_otp" => %OpenApiSpex.PathItem{
-          post: op_body("Resend Code", "Email Verification", "resend_otp",
+          post: op_body("Resend Verification Code", "Email Verification", "resend_otp",
             """
             Resend the 6-digit verification code to your email.
 
@@ -215,6 +228,59 @@ defmodule AlemWeb.Swagger do
               404 => resp("Not found", "ErrorResponse")})
         },
 
+        # ── Forgot Password ───────────────────────────────────────────────────
+        "/api/v1/account/forgot_password" => %OpenApiSpex.PathItem{
+          post: op_body("Forgot Password — Request Reset Link", "Account Management", "forgot_password",
+            """
+            Request a password reset link by email.
+
+            **Security:**
+            - Always returns 200 — prevents email enumeration attacks
+            - Reset link expires in **15 minutes**
+            - Rate limited: **60 seconds** cooldown between requests
+            - Token is stored as Pbkdf2 hash — plaintext only in the email
+
+            **On success:**
+            - An email is sent from noreply@przma.com
+            - The link contains `user_id` and `token` query params
+            - Use those in `POST /api/v1/account/reset_password`
+            """,
+            "ForgotPasswordRequest",
+            %{200 => resp("Reset email sent (or silently ignored if email not found)", "MessageResponse"),
+              400 => resp("email field missing", "ErrorResponse"),
+              429 => resp("Rate limited — wait 60 seconds", "ErrorResponse")})
+        },
+
+        # ── Reset Password ────────────────────────────────────────────────────
+        "/api/v1/account/reset_password" => %OpenApiSpex.PathItem{
+          post: op_body("Reset Password — Set New Password", "Account Management", "reset_password",
+            """
+            Reset your password using the link received by email.
+
+            **How to get `user_id` and `token`:**
+            Copy them from the reset URL in your email:
+            `http://.../?user_id=XXX&token=YYY`
+
+            **Password rules:**
+            - Minimum 8 characters
+            - `password` and `password_confirmation` must match
+
+            **Security:**
+            - Token is **single-use** — cleared immediately after success
+            - Token is stored as Pbkdf2 hash — constant-time comparison
+            - Max **3 wrong attempts** → token invalidated automatically
+            - Token expires after **15 minutes**
+            - All existing sessions remain active (only password changes)
+
+            **On success:** log in via `POST /api/v1/oauth/token` with new password
+            """,
+            "ResetPasswordRequest",
+            %{200 => resp("Password reset successfully — you can now log in", "VerifyEmailResponse"),
+              400 => resp("Invalid token, expired, or passwords don't match", "ErrorResponse"),
+              404 => resp("No password reset was requested for this account", "ErrorResponse"),
+              429 => resp("Too many attempts — request a new reset link", "ErrorResponse")})
+        },
+
         # ── Delete Account ────────────────────────────────────────────────────
         "/api/v1/pleroma/delete_account" => %OpenApiSpex.PathItem{
           post: op_auth_body("Delete Account", "Account Management", "delete_account",
@@ -264,6 +330,8 @@ defmodule AlemWeb.Swagger do
           "VerifyEmailRequest"     => verify_email_request_schema(),
           "ResendOTPRequest"       => resend_otp_request_schema(),
           "PasswordConfirmRequest" => password_confirm_schema(),
+          "ForgotPasswordRequest"  => forgot_password_request_schema(),
+          "ResetPasswordRequest"   => reset_password_request_schema(),
 
           # ── Response schemas ──────────────────────────────────────────────
           "RegisterAppResponse"  => register_app_response_schema(),
@@ -378,6 +446,52 @@ defmodule AlemWeb.Swagger do
       required: [:password],
       properties: %{
         password: %Schema{type: :string, format: :password, example: "securepassword123"}
+      }
+    }
+  end
+
+  defp forgot_password_request_schema do
+    %Schema{
+      type: :object, title: "ForgotPasswordRequest",
+      required: [:email],
+      properties: %{
+        email: %Schema{
+          type: :string,
+          format: :email,
+          description: "The email address registered to your account",
+          example: "mani@example.com"
+        }
+      }
+    }
+  end
+
+  defp reset_password_request_schema do
+    %Schema{
+      type: :object, title: "ResetPasswordRequest",
+      required: [:user_id, :token, :password, :password_confirmation],
+      properties: %{
+        user_id: %Schema{
+          type: :string,
+          description: "`user_id` from the reset link URL in your email",
+          example: "mK92pqRtYuIoplKj"
+        },
+        token: %Schema{
+          type: :string,
+          description: "`token` from the reset link URL in your email",
+          example: "abc123xyz_base64url_token..."
+        },
+        password: %Schema{
+          type: :string,
+          format: :password,
+          description: "New password — minimum 8 characters",
+          example: "NewSecurePass@123"
+        },
+        password_confirmation: %Schema{
+          type: :string,
+          format: :password,
+          description: "Must exactly match `password`",
+          example: "NewSecurePass@123"
+        }
       }
     }
   end
@@ -543,7 +657,8 @@ defmodule AlemWeb.Swagger do
       type: :object, title: "MessageResponse",
       properties: %{
         ok:      %Schema{type: :boolean, example: true},
-        message: %Schema{type: :string, example: "Email verified successfully"}
+        message: %Schema{type: :string, example: "Email verified successfully"},
+        note:    %Schema{type: :string, example: "Link expires in 15 minutes.", nullable: true}
       }
     }
   end

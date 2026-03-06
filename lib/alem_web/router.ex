@@ -4,8 +4,6 @@ defmodule AlemWeb.Router do
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
-    plug :fetch_live_flash
-    plug :put_root_layout, html: {AlemWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
   end
@@ -20,6 +18,7 @@ defmodule AlemWeb.Router do
     plug OpenApiSpex.Plug.PutApiSpec, module: AlemWeb.Swagger
   end
 
+  # ── API Routes ────────────────────────────────────────────────────────────
   scope "/api/v1", AlemWeb do
     pipe_through :api
 
@@ -43,39 +42,43 @@ defmodule AlemWeb.Router do
     get  "/namespaces/account", NamespacePleromaController, :get_account_info
 
     # Auth Endpoints
-    post "/apps",                     AuthController, :register_app
-    post "/account/register",         AuthController, :register_account
-    get  "/pleroma/captcha",           AuthController, :get_captcha
-    post "/pleroma/delete_account",    AuthController, :delete_account
-    post "/pleroma/disable_account",   AuthController, :disable_account
-    get  "/pleroma/accounts/mfa",      AuthController, :get_mfa
-    post "/oauth/token",               AuthController, :get_token
+    post "/apps",                        AuthController, :register_app
+    post "/account/register",            AuthController, :register_account
+    get  "/pleroma/captcha",             AuthController, :get_captcha
+    post "/pleroma/delete_account",      AuthController, :delete_account
+    post "/pleroma/disable_account",     AuthController, :disable_account
+    get  "/pleroma/accounts/mfa",        AuthController, :get_mfa
+    post "/oauth/token",                 AuthController, :get_token
     get  "/accounts/verify_credentials", AuthController, :verify_credentials
-    get  "/accounts/did",              AuthController, :get_did
+    get  "/accounts/did",                AuthController, :get_did
 
-    # Email verification
+    # Email Verification
     post "/account/verify_email", AuthController, :verify_email
     post "/account/resend_otp",   AuthController, :resend_otp
 
-    # ── Session Endpoints ──────────────────────────────────
-    get    "/sessions",      AuthController, :list_sessions        # list all active sessions
-    # delete "/sessions/all",  AuthController, :revoke_all_sessions  # logout from every device
-    # delete "/sessions/:id",  AuthController, :revoke_session       # logout from one device
-    delete "/sessions", AuthController, :revoke_all_sessions
+    # Forgot / Reset Password
+    post "/account/forgot_password", AuthController, :forgot_password
+    post "/account/reset_password",  AuthController, :reset_password
+
+    # Session Endpoints
+    get    "/sessions",     AuthController, :list_sessions
+    delete "/sessions",     AuthController, :revoke_all_sessions
     delete "/sessions/:id", AuthController, :revoke_session
   end
 
+  # ── Sync Routes ───────────────────────────────────────────────────────────
   scope "/api/v1/sync", AlemWeb do
     pipe_through :api
 
-    post "/upload-url",   SyncController, :get_upload_url
-    post "/apply",        SyncController, :apply_changes
-    get  "/changes",      SyncController, :get_changes
-    get  "/stats",        SyncController, :get_stats
-    post "/upload",       SyncController, :upload_document
-    post "/crdt/upload",  SyncController, :crdt_upload
+    post "/upload-url",  SyncController, :get_upload_url
+    post "/apply",       SyncController, :apply_changes
+    get  "/changes",     SyncController, :get_changes
+    get  "/stats",       SyncController, :get_stats
+    post "/upload",      SyncController, :upload_document
+    post "/crdt/upload", SyncController, :crdt_upload
   end
 
+  # ── Swagger UI ────────────────────────────────────────────────────────────
   scope "/api/swagger" do
     pipe_through :browser
     get "/", OpenApiSpex.Plug.SwaggerUI, path: "/api/swagger/openapi.json"
@@ -86,6 +89,7 @@ defmodule AlemWeb.Router do
     get "/openapi.json", OpenApiSpex.Plug.RenderSpec, []
   end
 
+  # ── Dev Routes ────────────────────────────────────────────────────────────
   if Application.compile_env(:alem, :dev_routes) do
     import Phoenix.LiveDashboard.Router
 

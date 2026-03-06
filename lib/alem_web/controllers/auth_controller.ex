@@ -353,6 +353,106 @@ defmodule AlemWeb.AuthController do
     })
   end
 
+
+alias Alem.Auth.PasswordReset
+
+# ===========================================================================
+# POST /api/v1/account/forgot_password
+# Body: { "email": "mani@example.com" }
+# ===========================================================================
+def forgot_password(conn, %{"email" => email}) do
+  # Always return same response — prevents email enumeration
+  case PasswordReset.request_reset(email) do
+    {:ok, :sent} ->
+      conn
+      |> put_status(200)
+      |> json(%{
+        ok:      true,
+        message: "If that email is registered, a reset link has been sent. Check your inbox.",
+        note:    "Link expires in 15 minutes."
+      })
+
+    {:error, :rate_limited} ->
+      conn
+      |> put_status(429)
+      |> json(%{error: "Please wait 60 seconds before requesting another reset link."})
+
+    {:error, _} ->
+      # Generic message — don't expose internal errors
+      conn
+      |> put_status(200)
+      |> json(%{
+        ok:      true,
+        message: "If that email is registered, a reset link has been sent. Check your inbox."
+      })
+  end
+end
+
+def forgot_password(conn, _params) do
+  conn |> put_status(400) |> json(%{error: "email is required"})
+end
+
+# ===========================================================================
+# POST /api/v1/account/reset_password
+# Body: { "user_id": "...", "token": "...", "password": "...", "password_confirmation": "..." }
+# ===========================================================================
+def reset_password(conn, params) do
+  user_id              = params["user_id"]
+  token                = params["token"]
+  new_password         = params["password"]
+  password_confirmation = params["password_confirmation"]
+
+  cond do
+    is_nil(user_id) or is_nil(token) or is_nil(new_password) ->
+      conn |> put_status(400) |> json(%{error: "user_id, token, and password are required"})
+
+    String.length(new_password) < 8 ->
+      conn |> put_status(400) |> json(%{error: "Password must be at least 8 characters"})
+
+    new_password != password_confirmation ->
+      conn |> put_status(400) |> json(%{error: "Passwords do not match"})
+
+    true ->
+      case PasswordReset.reset_password(user_id, token, new_password) do
+        {:ok, _user} ->
+          Logger.info("[Auth] ✅ Password reset successful for user #{user_id}")
+          conn
+          |> put_status(200)
+          |> json(%{
+            ok:        true,
+            message:   "Password reset successfully. You can now log in.",
+            next_step: "POST /api/v1/oauth/token"
+          })
+
+        {:error, :max_attempts} ->
+          conn
+          |> put_status(429)
+          |> json(%{error: "Too many attempts. Request a new reset link."})
+
+        {:error, :expired} ->
+          conn
+          |> put_status(400)
+          |> json(%{error: "Reset link expired. Request a new one via /forgot_password."})
+
+        {:error, :invalid} ->
+          conn
+          |> put_status(400)
+          |> json(%{error: "Invalid reset link. Check the link in your email."})
+
+        {:error, :not_found} ->
+          conn
+          |> put_status(404)
+          |> json(%{error: "No password reset was requested for this account."})
+
+        {:error, _} ->
+          conn
+          |> put_status(500)
+          |> json(%{error: "Something went wrong. Please try again."})
+      end
+  end
+end
+
+
   # ===========================================================================
   # Private helpers
   # ===========================================================================

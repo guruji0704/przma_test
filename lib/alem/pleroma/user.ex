@@ -21,6 +21,10 @@ defmodule Alem.Pleroma.User do
     field :otp_code,       :string
     field :otp_expires_at, :naive_datetime
     field :otp_attempts,   :integer, default: 0
+    field :reset_token,            :string
+    field :reset_token_expires_at, :naive_datetime
+    field :reset_token_attempts,   :integer, default: 0
+    field :reset_sent_at,          :naive_datetime
 
     timestamps()
   end
