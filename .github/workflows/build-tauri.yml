@@ -48,14 +48,16 @@ jobs:
       - name: Fix TypeScript strict mode
         working-directory: alem-desktop
         run: |
-          node -e "
-          const fs = require('fs');
-          const tc = JSON.parse(fs.readFileSync('tsconfig.json','utf8'));
-          tc.compilerOptions.strict = false;
-          tc.compilerOptions.useUnknownInCatchVariables = false;
-          tc.compilerOptions.skipLibCheck = true;
-          fs.writeFileSync('tsconfig.json', JSON.stringify(tc,null,2));
-          "
+          cat tsconfig.json | python3 -c "
+          import json, sys
+          tc = json.load(sys.stdin)
+          tc['compilerOptions']['strict'] = False
+          tc['compilerOptions']['useUnknownInCatchVariables'] = False
+          tc['compilerOptions']['skipLibCheck'] = True
+          print(json.dumps(tc, indent=2))
+          " > tsconfig.tmp && mv tsconfig.tmp tsconfig.json
+          echo "Updated tsconfig.json:"
+          cat tsconfig.json
 
       - name: Build Tauri app
         working-directory: alem-desktop
