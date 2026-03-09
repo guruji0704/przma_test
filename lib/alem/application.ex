@@ -36,7 +36,7 @@ defmodule Alem.Application do
       Process.sleep(2_000)  # wait for app to settle
       Alem.Sqld.ensure_schema()
     end)
-    
+
     opts = [strategy: :one_for_one, name: Alem.Supervisor]
     Supervisor.start_link(children, opts)
      # Bootstrap sqld schema after startup

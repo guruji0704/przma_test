@@ -17,6 +17,14 @@ defmodule Alem.Pleroma.User do
     field :is_admin, :boolean, default: false
     field :is_moderator, :boolean, default: false
     field :did_id, :string
+    field :is_verified,    :boolean, default: false
+    field :otp_code,       :string
+    field :otp_expires_at, :naive_datetime
+    field :otp_attempts,   :integer, default: 0
+    field :reset_token,            :string
+    field :reset_token_expires_at, :naive_datetime
+    field :reset_token_attempts,   :integer, default: 0
+    field :reset_sent_at,          :naive_datetime
 
     timestamps()
   end
@@ -39,6 +47,33 @@ defmodule Alem.Pleroma.User do
     |> cast(%{did_id: did_id}, [:did_id])
     |> validate_required([:did_id])
     |> unique_constraint(:did_id)
+  end
+
+  def generate_otp do
+    :rand.uniform(999999)
+    |> Integer.to_string()
+    |> String.pad_leading(6, "0")
+  end
+
+  def otp_changeset(user, otp_code) do
+    expires_at = NaiveDateTime.add(NaiveDateTime.utc_now(), 600, :second)
+    |> NaiveDateTime.truncate(:second)
+
+    user
+    |> Ecto.Changeset.change(%{
+      otp_code: otp_code,
+      otp_expires_at: expires_at,
+      otp_attempts: 0
+    })
+  end
+
+  def verify_otp_changeset(user) do
+    user
+    |> Ecto.Changeset.change(%{
+      is_verified: true,
+      otp_code: nil,
+      otp_expires_at: nil
+    })
   end
 
   defp put_password_hash(%Ecto.Changeset{valid?: true, changes: %{password: password}} = changeset) do

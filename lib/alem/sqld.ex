@@ -52,12 +52,14 @@ defmodule Alem.Sqld do
     })
 
     case Req.post("#{@sqld_url}/v3/pipeline",
-      body: body,
-      headers: [{"content-type", "application/json"}],
-      receive_timeout: 10_000
-    ) do
+           body: body,
+           headers: [{"content-type", "application/json"}],
+           receive_timeout: 15_000,
+           # ✅ FIX: Automatically retry on connection closed or timeout
+           retry: :transient,
+           max_retries: 3
+         ) do
       {:ok, %{status: 200, body: resp_body}} ->
-        # ✅ FIX: Check for SQL errors inside the 200 OK response
         case resp_body do
           %{"results" => [%{"response" => %{"error" => error}} | _]} ->
             Logger.error("[sqld] SQL Error: #{inspect(error)}")

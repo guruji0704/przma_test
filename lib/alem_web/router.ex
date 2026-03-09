@@ -59,7 +59,22 @@ defmodule AlemWeb.Router do
     # delete "/sessions/:id",  AuthController, :revoke_session       # logout from one device
     delete "/sessions", AuthController, :revoke_all_sessions
     delete "/sessions/:id", AuthController, :revoke_session
+
+
+
+    post "/account/verify_email", AuthController, :verify_email
+    post "/account/resend_otp",   AuthController, :resend_otp
+
+    post "/account/reset_password",  AuthController, :reset_password
+    post "/account/forgot_password", AuthController, :forgot_password
+
   end
+  scope "/", AlemWeb do
+    pipe_through :browser
+    get "/reset-password", AuthController, :reset_password_page
+  end
+
+
 
   scope "/api/v1/sync", AlemWeb do
     pipe_through :api

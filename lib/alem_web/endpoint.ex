@@ -44,9 +44,12 @@ defmodule AlemWeb.Endpoint do
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
   plug Plug.Parsers,
-    parsers: [:urlencoded, :multipart, :json],
-    pass: ["*/*"],
-    json_decoder: Phoenix.json_library()
+  parsers: [:urlencoded, :multipart, :json],
+  pass: ["*/*"],
+  json_decoder: Phoenix.json_library(),
+  length: 100_000_000,    
+  read_length: 100_000_000,
+  read_timeout: 60_000
 
   plug Plug.MethodOverride
   plug Plug.Head
@@ -56,6 +59,6 @@ defmodule AlemWeb.Endpoint do
   origins: ["http://localhost:1420", "http://localhost:4000", "tauri://localhost"],
   allow_headers: :all,
   allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-  
+
   plug AlemWeb.Router
 end

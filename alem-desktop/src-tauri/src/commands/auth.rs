@@ -1,5 +1,6 @@
 use tauri::State;
 use crate::AppState;
+use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════
 // Response Structs
@@ -13,18 +14,33 @@ pub struct CaptchaResponse {
     pub seconds_valid: i64,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Deserialize)]
+struct ApiMessageResponse {
+    message: Option<String>,
+    error: Option<String>,
+    user_id: Option<String>,
+    email: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct RegisterResponse {
     pub success: bool,
-    pub did: Option<String>,
+    pub user_id: Option<String>,
+    pub email: Option<String>,
     pub message: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 pub struct LoginResponse {
     pub success: bool,
     pub did: Option<String>,
     pub access_token: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct GenericResponse {
+    pub success: bool,
+    pub message: String,
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -32,18 +48,22 @@ pub struct LoginResponse {
 // ══════════════════════════════════════════════════════════════════════════
 
 async fn get_server_url(conn: &libsql::Connection) -> String {
-    let Ok(mut rows) = conn
+    let real_url = "http://localhost:4000"; 
+
+    if let Ok(mut rows) = conn
         .query("SELECT server_url FROM local_identity WHERE id = 'singleton'", ())
         .await
-    else {
-        return "http://localhost:4000".to_string();
-    };
-    if let Ok(Some(row)) = rows.next().await {
-        if let Ok(libsql::Value::Text(s)) = row.get_value(0) {
-            if !s.is_empty() { return s; }
+    {
+        if let Ok(Some(row)) = rows.next().await {
+            if let Ok(libsql::Value::Text(s)) = row.get_value(0) {
+                if !s.is_empty() && !s.contains("localhost") {
+                    return s;
+                }
+            }
         }
     }
-    "http://localhost:4000".to_string()
+    
+    real_url.to_string()
 }
 
 fn get_text(row: &libsql::Row, idx: i32) -> String {
@@ -94,7 +114,7 @@ pub async fn register_account(
     let conn = state.db.connect().map_err(|e| e.to_string())?;
     let server_url = get_server_url(&conn).await;
 
-    log::info!("Registering: {}", nickname);
+    log::info!("Registering: {} @ {}", nickname, server_url);
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/register", server_url))
@@ -108,22 +128,152 @@ pub async fn register_account(
         .send().await
         .map_err(|e| format!("Network error: {}", e))?;
 
-    if !resp.status().is_success() {
-        let body = resp.text().await.unwrap_or_default();
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
         log::error!("Registration failed: {}", body);
         return Err(format!("Registration failed: {}", body));
     }
 
-    let result: serde_json::Value = resp.json().await
-        .map_err(|e| format!("Failed to parse registration response: {}", e))?;
+    // Parse the JSON response
+    let result: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("JSON parse error: {}", e))?;
 
     log::info!("Registration response: {}", result);
 
+    // Extract user_id and message from the new flow
+    let user_id = result["user_id"].as_str().map(|s| s.to_string());
+    let resp_email = result["email"].as_str().map(|s| s.to_string());
+    let message = result["message"].as_str().unwrap_or("Registration successful. Check your email for the verification code.").to_string();
+
     Ok(RegisterResponse {
         success: true,
-        did:     result["did"].as_str().map(|s| s.to_string()),
-        message: "Registration successful. Please sign in.".to_string(),
+        user_id,
+        email: resp_email,
+        message,
     })
+}
+
+#[tauri::command]
+pub async fn verify_email(
+    user_id: String,
+    code: String,
+    state: State<'_, AppState>,
+) -> Result<GenericResponse, String> {
+    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let server_url = get_server_url(&conn).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/account/verify_email", server_url))
+        .json(&serde_json::json!({
+            "user_id": user_id,
+            "code": code,
+        }))
+        .send().await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let result: ApiMessageResponse = serde_json::from_str(&body).unwrap_or(ApiMessageResponse { message: None, error: Some(body.clone()), user_id: None, email: None });
+
+    if status.is_success() {
+        Ok(GenericResponse {
+            success: true,
+            message: result.message.unwrap_or("Email verified successfully.".to_string()),
+        })
+    } else {
+        Err(result.error.unwrap_or(format!("Verification failed: {}", status)))
+    }
+}
+
+#[tauri::command]
+pub async fn resend_otp(
+    user_id: String,
+    state: State<'_, AppState>,
+) -> Result<GenericResponse, String> {
+    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let server_url = get_server_url(&conn).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/account/resend_otp", server_url))
+        .json(&serde_json::json!({ "user_id": user_id }))
+        .send().await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let result: ApiMessageResponse = serde_json::from_str(&body).unwrap_or(ApiMessageResponse { message: None, error: Some(body.clone()), user_id: None, email: None });
+
+    if status.is_success() {
+        Ok(GenericResponse {
+            success: true,
+            message: result.message.unwrap_or("New code sent.".to_string()),
+        })
+    } else {
+        Err(result.error.unwrap_or(format!("Resend failed: {}", status)))
+    }
+}
+
+#[tauri::command]
+pub async fn forgot_password(
+    email: String,
+    state: State<'_, AppState>,
+) -> Result<GenericResponse, String> {
+    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let server_url = get_server_url(&conn).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/account/forgot_password", server_url))
+        .json(&serde_json::json!({ "email": email }))
+        .send().await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let result: ApiMessageResponse = serde_json::from_str(&body).unwrap_or(ApiMessageResponse { message: None, error: Some(body.clone()), user_id: None, email: None });
+
+    // Always returns 200 OK with generic message to prevent enumeration, according to controller logic
+    Ok(GenericResponse {
+        success: status.is_success(),
+        message: result.message.unwrap_or("If that email is registered, a reset link has been sent.".to_string()),
+    })
+}
+
+#[tauri::command]
+pub async fn reset_password(
+    user_id: String,
+    token: String,
+    password: String,
+    confirm: String,
+    state: State<'_, AppState>,
+) -> Result<GenericResponse, String> {
+    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let server_url = get_server_url(&conn).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/v1/account/reset_password", server_url))
+        .json(&serde_json::json!({
+            "user_id": user_id,
+            "token": token,
+            "password": password,
+            "password_confirmation": confirm
+        }))
+        .send().await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let result: ApiMessageResponse = serde_json::from_str(&body).unwrap_or(ApiMessageResponse { message: None, error: Some(body.clone()), user_id: None, email: None });
+
+    if status.is_success() {
+        Ok(GenericResponse {
+            success: true,
+            message: result.message.unwrap_or("Password reset successfully.".to_string()),
+        })
+    } else {
+        Err(result.error.unwrap_or(format!("Reset failed: {}", status)))
+    }
 }
 
 #[tauri::command]
@@ -157,7 +307,6 @@ pub async fn login(
 
     let client = reqwest::Client::new();
 
-    // ── Step 1: get token ───────────────────────────────────────────────
     let token_resp = client
         .post(format!("{}/api/v1/oauth/token", server_url))
         .json(&serde_json::json!({
@@ -185,8 +334,6 @@ pub async fn login(
         .ok_or_else(|| format!("No access_token in response: {}", token_data))?
         .to_string();
 
-    // ── Step 2: Resolve DID ─────────────────────────────────────────────
-    // Priority: did -> account.did -> me -> account.id
     let did: String =
         if let Some(d) = token_data["did"].as_str().filter(|s| s.starts_with("did:")) {
             d.to_string()
@@ -219,14 +366,12 @@ pub async fn login(
 
     let user_id = did.splitn(3, ':').nth(2).unwrap_or(&identifier).to_string();
 
-    // ── Step 3: Extract Sync Config (New!) ──────────────────────────────
-    let sqld_url = token_data["sync_config"]["sqld_url"].as_str().map(|s| s.to_string());
-    let s3_bucket = token_data["sync_config"]["s3_bucket"].as_str().map(|s| s.to_string());
-    let s3_prefix = token_data["sync_config"]["s3_prefix"].as_str().map(|s| s.to_string());
+    let _sqld_url = token_data["sync_config"]["sqld_url"].as_str().map(|s| s.to_string());
+    let _s3_bucket = token_data["sync_config"]["s3_bucket"].as_str().map(|s| s.to_string());
+    let _s3_prefix = token_data["sync_config"]["s3_prefix"].as_str().map(|s| s.to_string());
 
     log::info!("Login OK  username={} did={} user_id={}", username, did, user_id);
 
-    // ── Step 4: persist ─────────────────────────────────────────────────
     conn.execute(
         "INSERT INTO local_identity (
             id, did, user_id, username, access_token, server_url, updated_at
@@ -259,7 +404,6 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
 
     let conn = state.db.connect().map_err(|e| e.to_string())?;
 
-    // 1. Clear identity (existing logic)
     conn.execute(
         "UPDATE local_identity SET
             did          = NULL,
@@ -278,7 +422,6 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     .await
     .map_err(|e| format!("Database error: {}", e))?;
 
-    // 2. ⚠️ FIX: Delete all local documents to prevent data leakage
     conn.execute("DELETE FROM documents", ())
         .await
         .map_err(|e| format!("Failed to clear documents: {}", e))?;

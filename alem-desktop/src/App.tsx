@@ -12,6 +12,9 @@ interface Doc {
   status: string;
   created_at: string;
   updated_at: string;
+  content_type: string;
+  version: number;
+  conflict_copy_of: string | null;
 }
 
 interface SyncStatus {
@@ -36,7 +39,8 @@ interface CaptchaResponse {
 
 interface RegisterResponse {
   success: boolean;
-  did: string | null;
+  user_id: string | null;
+  email: string | null;
   message: string;
 }
 
@@ -44,6 +48,11 @@ interface LoginResponse {
   success: boolean;
   did: string | null;
   access_token: string | null;
+}
+
+interface GenericResponse {
+  success: boolean;
+  message: string;
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────
@@ -150,22 +159,6 @@ const css = `
   }
   .panel-sub { color:#94A9C9; font-size:13px; margin-bottom:32px; }
 
-  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:32px; }
-
-  .stat {
-    border:1px solid #1E3A5F; padding:20px;
-    background:linear-gradient(135deg,#141B2D 0%,#0F1520 100%);
-    border-radius:12px; transition:all 0.3s cubic-bezier(0.4,0,0.2,1);
-  }
-  .stat:hover { border-color:#4A9EFF; transform:translateY(-4px); box-shadow:0 8px 24px rgba(74,158,255,0.2); }
-
-  .stat-value {
-    font-size:36px; font-weight:700; line-height:1; margin-bottom:8px;
-    background:linear-gradient(135deg,#4A9EFF 0%,#FFB800 100%);
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
-  }
-  .stat-label { font-size:11px; color:#94A9C9; text-transform:uppercase; letter-spacing:0.5px; font-weight:500; }
-
   .card { border:1px solid #1E3A5F; padding:24px; margin-bottom:20px; background:linear-gradient(135deg,#141B2D 0%,#0F1520 100%); border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.2); }
 
   .doc-list { display:flex; flex-direction:column; gap:12px; }
@@ -181,6 +174,7 @@ const css = `
   .doc-info { flex:1; min-width:0; }
   .doc-name { font-weight:600; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#F0F4F8; }
   .doc-meta { font-size:12px; color:#94A9C9; font-family:'JetBrains Mono',monospace; }
+  .doc-conflict { color: #FF6B6B; font-size: 11px; margin-left: 8px; font-weight: 600; }
 
   .doc-status { display:flex; align-items:center; gap:12px; }
 
@@ -236,7 +230,6 @@ const css = `
     to   { transform:translateX(0);    opacity:1; }
   }
 
-  /* ── Full-screen views ── */
   .fullscreen {
     height:100vh;
     display:flex;
@@ -255,7 +248,6 @@ const css = `
 
   .boot-steps { display:flex; flex-direction:column; gap:12px; font-size:14px; color:#94A9C9; }
 
-  /* ── Auth card ── */
   .auth-container { max-width:480px; width:100%; padding:48px; }
 
   .auth-title {
@@ -319,14 +311,6 @@ const css = `
   .status-item { color:#94A9C9; }
   .status-item strong { color:#F0F4F8; font-weight:600; margin-left:6px; }
 
-  .sync-flow { border:1px solid #1E3A5F; padding:20px; margin-top:20px; border-radius:12px; background:linear-gradient(135deg,#141B2D 0%,#0F1520 100%); }
-
-  .sync-step {
-    padding:10px 0 10px 20px; border-left:2px solid #1E3A5F; margin-bottom:10px;
-    font-size:13px; color:#94A9C9; font-family:'JetBrains Mono',monospace; transition:all 0.2s;
-  }
-  .sync-step:hover { border-left-color:#4A9EFF; color:#F0F4F8; padding-left:24px; }
-
   .label {
     font-size:11px; color:#94A9C9; text-transform:uppercase;
     letter-spacing:0.5px; font-weight:500; margin-bottom:8px; display:block;
@@ -337,6 +321,19 @@ const css = `
   }
   .alert-success { border-color:#00E0C6; background:rgba(0,224,198,0.1); color:#00E0C6; }
   .alert-error   { border-color:#FF6B6B; background:rgba(255,107,107,0.1); color:#FF6B6B; }
+  
+  .version-tag {
+    font-size: 10px;
+    color: #94A9C9;
+    background: rgba(30, 58, 95, 0.5);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  
+  a { color: #4A9EFF; text-decoration: none; }
+  a:hover { text-decoration: underline; }
 `;
 
 let toastId = 0;
@@ -351,26 +348,28 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
-  // Auth mode: register or login
-  const [authMode, setAuthMode] = useState<"register" | "login">("register");
-
-  // Register state
+  // Auth state
+  const [authMode, setAuthMode] = useState<"register" | "login" | "forgot">("register");
   const [regStep, setRegStep] = useState<1 | 2 | 3>(1);
   const [captcha, setCaptcha] = useState<{ token: string; answer: string } | null>(null);
   const [regForm, setRegForm] = useState({ username: "", email: "", password: "", confirm: "", code: "" });
   const [regMsg, setRegMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [regLoading, setRegLoading] = useState(false);
+  const [regUserId, setRegUserId] = useState<string | null>(null);
 
-  // Login state
   const [loginForm, setLoginForm] = useState({ identifier: "", password: "" });
   const [loginMsg, setLoginMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
 
-  // New doc
+  // Reset Password State
+  const [resetStep, setResetStep] = useState<1 | 2>(1);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetForm, setResetForm] = useState({ userId: "", token: "", password: "", confirm: "" });
+  const [resetMsg, setResetMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
+
   const [newDoc, setNewDoc] = useState({ filename: "", content: "", tags: "" });
-  
-  // ✅ NEW: Edit State
   const [editingDoc, setEditingDoc] = useState<Doc | null>(null);
+  const [localPath, setLocalPath] = useState<string | null>(null);
 
   const addToast = (msg: string, type: Toast["type"] = "info") => {
     const id = toastId++;
@@ -386,10 +385,9 @@ export default function App() {
     return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
   }, []);
   
-  // ✅ Listen for sync-status events from Rust
   useEffect(() => {
     if (typeof window !== 'undefined' && (window as any).__TAURI__) {
-      const unlisten = listen<{ id: string; status: string }>("sync-status", (event) => {
+      listen<{ id: string; status: string }>("sync-status", (event) => {
         const { id, status } = event.payload;
         setDocs((prevDocs) =>
           prevDocs.map((d) =>
@@ -398,7 +396,6 @@ export default function App() {
         );
         loadSyncStatus();
       });
-      return () => { unlisten.then(f => f()); };
     }
   }, []);
 
@@ -502,13 +499,11 @@ export default function App() {
     }
   };
 
-  // ✅ NEW: Update Document Function
   const updateDoc = async () => {
     if (!editingDoc || !editingDoc.text_content.trim()) {
       addToast("❌ Content cannot be empty", "error");
       return;
     }
-
     try {
       await invoke("update_document", {
         id: editingDoc.id,
@@ -524,11 +519,85 @@ export default function App() {
     }
   };
 
-  // ── Registration flow ──────────────────────────────────────────────────
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const arrayBuffer = reader.result as ArrayBuffer;
+        const base64 = btoa(
+          new Uint8Array(arrayBuffer).reduce(
+            (data, byte) => data + String.fromCharCode(byte), 
+            ''
+          )
+        );
+
+        await invoke("upload_file", {
+            filename: file.name,
+            contentType: file.type || "application/octet-stream",
+            fileDataB64: base64,
+        });
+        
+        addToast(`✅ ${file.name} uploaded!`, "success");
+        loadDocs();
+        setTab("docs");
+      } catch (err) {
+        addToast(`❌ Upload failed: ${err}`, "error");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const handleBinaryEdit = async () => {
+    if (!editingDoc) return;
+    try {
+      const path = await invoke<string>("open_file_for_edit", {
+        id: editingDoc.id,
+        filename: editingDoc.filename
+      });
+      setLocalPath(path);
+      addToast(`📂 File opened! Edit and SAVE it in the external app, then come back and click "Upload Update".`, "info");
+    } catch (err) {
+      addToast(`Error: ${err}`, "error");
+    }
+  };
+
+  const handleBinarySave = async () => {
+    if (!editingDoc || !localPath) return;
+    try {
+      const result = await invoke<string>("save_edited_file", {
+        id: editingDoc.id,
+        localPath: localPath,
+        currentVersion: editingDoc.version
+      });
+
+      if (result === "NO_CHANGES") {
+        addToast("⚠️ No changes detected. Please SAVE the file in your editor first.", "error");
+      } else {
+        addToast("✅ File saved and syncing!", "success");
+        setEditingDoc(null);
+        setLocalPath(null);
+        loadDocs();
+      }
+    } catch (err) {
+      if (err.toString().includes("CONFLICT")) {
+        addToast("⚠️ Conflict detected! A copy has been created.", "error");
+        setEditingDoc(null);
+        setLocalPath(null);
+        loadDocs();
+      } else {
+        addToast(`Error: ${err}`, "error");
+      }
+    }
+  };
+
+  // ── Auth Logic ──
 
   const loadCaptcha = async () => {
-    setRegLoading(true);
-    setRegMsg(null);
+    setRegLoading(true); setRegMsg(null);
     try {
       const res = await invoke<CaptchaResponse>("get_captcha");
       setCaptcha({ token: res.token, answer: res.answer_data });
@@ -550,8 +619,8 @@ export default function App() {
     if (!captcha || !regForm.code) {
       setRegMsg({ text: "Please enter the verification code", type: "error" }); return;
     }
-    setRegLoading(true);
-    setRegMsg(null);
+    
+    setRegLoading(true); setRegMsg(null);
     try {
       const result = await invoke<RegisterResponse>("register_account", {
         nickname: regForm.username,
@@ -560,39 +629,51 @@ export default function App() {
         captchaToken: captcha.token,
         captchaSolution: regForm.code,
       });
-      if (result.success) {
-        setRegStep(3);
-        setRegMsg({ text: result.message || "Account created! Please sign in.", type: "success" });
-        const savedUsername = regForm.username;
-        const savedPassword = regForm.password;
-        setTimeout(() => {
-          setAuthMode("login");
-          setLoginForm({ identifier: savedUsername, password: savedPassword });
-          setRegStep(1);
-          setRegForm({ username: "", email: "", password: "", confirm: "", code: "" });
-          setCaptcha(null);
-          setRegMsg(null);
-        }, 2000);
+      
+      if (result.success && result.user_id) {
+        setRegUserId(result.user_id);
+        setRegMsg({ text: result.message, type: "success" });
+        setRegStep(3); // Move to OTP Verification Step
       } else {
-        setRegMsg({ text: "Registration failed. Please try again.", type: "error" });
-        setRegStep(1);
+        setRegMsg({ text: "Registration failed.", type: "error" });
       }
     } catch (err) {
-      setRegMsg({ text: `Registration failed: ${err}`, type: "error" });
-      setRegStep(1);
+      setRegMsg({ text: `${err}`, type: "error" });
     } finally {
       setRegLoading(false);
     }
   };
 
-  // ── Login flow ─────────────────────────────────────────────────────────
+  const handleVerifyEmail = async () => {
+    if (!regUserId || !regForm.code) return;
+    setRegLoading(true);
+    try {
+      const res = await invoke<GenericResponse>("verify_email", { userId: regUserId, code: regForm.code });
+      addToast(res.message, "success");
+      // Move to Login
+      setAuthMode("login");
+      setRegStep(1);
+      setRegForm({ username: "", email: "", password: "", confirm: "", code: "" });
+    } catch (err) {
+      addToast(`${err}`, "error");
+    } finally {
+      setRegLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (!regUserId) return;
+    try {
+      const res = await invoke<GenericResponse>("resend_otp", { userId: regUserId });
+      addToast(res.message, "info");
+    } catch (err) {
+      addToast(`${err}`, "error");
+    }
+  };
 
   const handleLogin = async () => {
-    if (!loginForm.identifier || !loginForm.password) {
-      setLoginMsg({ text: "Email/username and password are required", type: "error" }); return;
-    }
-    setLoginLoading(true);
-    setLoginMsg(null);
+    if (!loginForm.identifier || !loginForm.password) return;
+    setLoginLoading(true); setLoginMsg(null);
     try {
       const result = await invoke<LoginResponse>("login", {
         identifier: loginForm.identifier,
@@ -605,19 +686,54 @@ export default function App() {
         loadSyncStatus();
         addToast("✅ Welcome back!", "success");
       } else {
-        setLoginMsg({ text: "Invalid credentials. Please try again.", type: "error" });
+        setLoginMsg({ text: "Invalid credentials.", type: "error" });
       }
     } catch (err) {
-      setLoginMsg({ text: `Login failed: ${err}`, type: "error" });
+      setLoginMsg({ text: `${err}`, type: "error" });
     } finally {
       setLoginLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if(!resetEmail) return;
+    setRegLoading(true); setResetMsg(null);
+    try {
+      const res = await invoke<GenericResponse>("forgot_password", { email: resetEmail });
+      setResetMsg({ text: res.message, type: "success" });
+      setResetStep(2); // Move to step 2 (enter code)
+    } catch (err) {
+      setResetMsg({ text: `${err}`, type: "error" });
+    } finally {
+      setRegLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if(!resetForm.token || !resetForm.password) return;
+    setRegLoading(true); setResetMsg(null);
+    try {
+      const res = await invoke<GenericResponse>("reset_password", {
+        userId: resetForm.userId,
+        token: resetForm.token,
+        password: resetForm.password,
+        confirm: resetForm.confirm
+      });
+      addToast(res.message, "success");
+      setResetStep(1);
+      setAuthMode("login");
+    } catch (err) {
+      setResetMsg({ text: `${err}`, type: "error" });
+    } finally {
+      setRegLoading(false);
     }
   };
 
   const pending = docs.filter(d => d.is_synced === 0 && d.status !== "failed");
   const failed  = docs.filter(d => d.status === "failed");
 
-  // ── Boot ──────────────────────────────────────────────────────────────
+  // ── Render ───────────────────────────────────────────────────────────────
+
   if (view === "boot") return (
     <>
       <style>{css}</style>
@@ -634,7 +750,6 @@ export default function App() {
     </>
   );
 
-  // ── Error ─────────────────────────────────────────────────────────────
   if (view === "error") return (
     <>
       <style>{css}</style>
@@ -649,7 +764,6 @@ export default function App() {
     </>
   );
 
-  // ── Auth (Register / Login) ────────────────────────────────────────────
   if (view === "auth") return (
     <>
       <style>{css}</style>
@@ -657,72 +771,131 @@ export default function App() {
         <div className="auth-container">
           <div className="auth-title">ALEM</div>
 
-          <div className="auth-tabs">
-            <button
-              className={`auth-tab ${authMode === "register" ? "active" : ""}`}
-              onClick={() => { setAuthMode("register"); setRegMsg(null); setLoginMsg(null); }}
-            >
-              ✦ Create Account
-            </button>
-            <button
-              className={`auth-tab ${authMode === "login" ? "active" : ""}`}
-              onClick={() => { setAuthMode("login"); setRegMsg(null); setLoginMsg(null); }}
-            >
-              ⊙ Sign In
-            </button>
-          </div>
-
-          {authMode === "register" && (
+          {/* Reset Password Flow (Step 2) */}
+          {resetStep === 2 ? (
             <div>
-              {regMsg && <div className={`alert alert-${regMsg.type}`}>{regMsg.text}</div>}
-              {regStep === 1 && (
+              <h3 style={{marginBottom: 20, color: "#F0F4F8"}}>Reset Password</h3>
+              {resetMsg && <div className={`alert alert-${resetMsg.type}`}>{resetMsg.text}</div>}
+              
+              <p style={{marginBottom: 20, color: "#94A9C9"}}>
+                Enter the code from your email and your new password.
+              </p>
+              
+              <input className="input" placeholder="User ID (from email link)" value={resetForm.userId} onChange={e => setResetForm({...resetForm, userId: e.target.value})} />
+              <input className="input" placeholder="Reset Token" value={resetForm.token} onChange={e => setResetForm({...resetForm, token: e.target.value})} />
+              <input className="input" type="password" placeholder="New Password" value={resetForm.password} onChange={e => setResetForm({...resetForm, password: e.target.value})} />
+              <input className="input" type="password" placeholder="Confirm Password" value={resetForm.confirm} onChange={e => setResetForm({...resetForm, confirm: e.target.value})} />
+              
+              <button className="btn" onClick={handleResetPassword} disabled={regLoading} style={{width: "100%"}}>
+                {regLoading ? "⊙ Resetting..." : "✦ Reset Password"}
+              </button>
+              <button className="btn btn-secondary" onClick={() => { setResetStep(1); setAuthMode("login"); }} style={{width: "100%", marginTop: 10}}>
+                ← Back to Login
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Auth Tabs */}
+              <div className="auth-tabs">
+                <button className={`auth-tab ${authMode === "register" ? "active" : ""}`} onClick={() => { setAuthMode("register"); setRegMsg(null); setLoginMsg(null); setRegStep(1); }}>✦ Create Account</button>
+                <button className={`auth-tab ${authMode === "login" ? "active" : ""}`} onClick={() => { setAuthMode("login"); setRegMsg(null); setLoginMsg(null); }}>⊙ Sign In</button>
+              </div>
+
+              {/* REGISTER FLOW */}
+              {authMode === "register" && (
                 <div>
-                  <p style={{ marginBottom: 32, color: "#94A9C9", fontSize: 14, lineHeight: 1.7 }}>
-                    Create your account to receive a decentralized identifier and start syncing documents securely.
-                  </p>
-                  <button className="btn" onClick={loadCaptcha} disabled={regLoading} style={{ width: "100%" }}>
-                    {regLoading ? "⊙ Loading..." : "✦ Begin Registration"}
-                  </button>
-                </div>
-              )}
-              {regStep === 2 && (
-                <div>
-                  {captcha && (
-                    <div className="captcha-box">
-                      <div className="captcha-label">Verification Code</div>
-                      <div className="captcha-code">{captcha.answer}</div>
+                  {regMsg && <div className={`alert alert-${regMsg.type}`}>{regMsg.text}</div>}
+                  
+                  {/* Step 1: Start */}
+                  {regStep === 1 && (
+                    <div>
+                      <p style={{ marginBottom: 32, color: "#94A9C9", fontSize: 14, lineHeight: 1.7 }}>
+                        Create a secure decentralized identity.
+                      </p>
+                      <button className="btn" onClick={loadCaptcha} disabled={regLoading} style={{ width: "100%" }}>
+                        {regLoading ? "⊙ Loading..." : "✦ Begin Registration"}
+                      </button>
                     </div>
                   )}
-                  <input className="input" placeholder="Username" value={regForm.username} onChange={e => setRegForm({ ...regForm, username: e.target.value })} disabled={regLoading} />
-                  <input className="input" placeholder="Email" type="email" value={regForm.email} onChange={e => setRegForm({ ...regForm, email: e.target.value })} disabled={regLoading} />
-                  <input className="input" placeholder="Password" type="password" value={regForm.password} onChange={e => setRegForm({ ...regForm, password: e.target.value })} disabled={regLoading} />
-                  <input className="input" placeholder="Confirm Password" type="password" value={regForm.confirm} onChange={e => setRegForm({ ...regForm, confirm: e.target.value })} disabled={regLoading} />
-                  <input className="input" placeholder="Enter Verification Code" value={regForm.code} onChange={e => setRegForm({ ...regForm, code: e.target.value })} disabled={regLoading} />
-                  <div className="btn-group">
-                    <button className="btn" onClick={handleRegister} disabled={regLoading}>{regLoading ? "⊙ Creating..." : "✦ Create Account"}</button>
-                    <button className="btn btn-secondary" onClick={loadCaptcha} disabled={regLoading}>↺ New Code</button>
+                  
+                  {/* Step 2: Form & Captcha */}
+                  {regStep === 2 && (
+                    <div>
+                      {captcha && (
+                        <div className="captcha-box">
+                          <div className="captcha-label">Verification Code</div>
+                          <div className="captcha-code">{captcha.answer}</div>
+                        </div>
+                      )}
+                      <input className="input" placeholder="Username" value={regForm.username} onChange={e => setRegForm({ ...regForm, username: e.target.value })} />
+                      <input className="input" placeholder="Email" type="email" value={regForm.email} onChange={e => setRegForm({ ...regForm, email: e.target.value })} />
+                      <input className="input" placeholder="Password" type="password" value={regForm.password} onChange={e => setRegForm({ ...regForm, password: e.target.value })} />
+                      <input className="input" placeholder="Confirm Password" type="password" value={regForm.confirm} onChange={e => setRegForm({ ...regForm, confirm: e.target.value })} />
+                      <input className="input" placeholder="Enter Verification Code" value={regForm.code} onChange={e => setRegForm({ ...regForm, code: e.target.value })} />
+                      <div className="btn-group">
+                        <button className="btn" onClick={handleRegister} disabled={regLoading}>{regLoading ? "⊙ Creating..." : "✦ Create Account"}</button>
+                        <button className="btn btn-secondary" onClick={loadCaptcha} disabled={regLoading}>↺ New Code</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 3: Verify OTP */}
+                  {regStep === 3 && (
+                    <div>
+                      <h3 style={{marginBottom: 20, color: "#F0F4F8"}}>Verify Email</h3>
+                      <p style={{color: "#94A9C9", marginBottom: 20}}>
+                        Enter the 6-digit code sent to your email.
+                      </p>
+                      
+                      <input className="input" placeholder="6-Digit Code" value={regForm.code} onChange={e => setRegForm({ ...regForm, code: e.target.value })} />
+                      
+                      <button className="btn" onClick={handleVerifyEmail} disabled={regLoading} style={{width: "100%"}}>
+                        {regLoading ? "⊙ Verifying..." : "✦ Verify Email"}
+                      </button>
+                      <button className="btn btn-secondary" onClick={handleResendOtp} style={{width: "100%", marginTop: 10}}>
+                        Resend Code
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* LOGIN FLOW */}
+              {authMode === "login" && (
+                <div>
+                  {loginMsg && <div className={`alert alert-${loginMsg.type}`}>{loginMsg.text}</div>}
+                  <input className="input" placeholder="Username" value={loginForm.identifier} onChange={e => setLoginForm({ ...loginForm, identifier: e.target.value })} />
+                  <input className="input" placeholder="Password" type="password" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} />
+                  <button className="btn" onClick={handleLogin} disabled={loginLoading} style={{ width: "100%" }}>
+                    {loginLoading ? "⊙ Signing in..." : "⊙ Sign In"}
+                  </button>
+                  
+                  <div style={{textAlign: "center", marginTop: 20}}>
+                    <a href="#" onClick={(e) => { e.preventDefault(); setAuthMode("forgot"); setResetMsg(null); }} style={{color: "#4A9EFF", fontSize: 13}}>
+                      Forgot Password?
+                    </a>
                   </div>
                 </div>
               )}
-              {regStep === 3 && (
-                <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 28, marginBottom: 16, fontWeight: 600, color: "#00E0C6" }}>✓ Registration Complete</div>
-                  <div style={{ color: "#94A9C9" }}>Redirecting to sign in...</div>
+
+              {/* FORGOT PASSWORD FLOW */}
+              {authMode === "forgot" && (
+                <div>
+                  <h3 style={{marginBottom: 20, color: "#F0F4F8"}}>Forgot Password</h3>
+                  {resetMsg && <div className={`alert alert-${resetMsg.type}`}>{resetMsg.text}</div>}
+                  <p style={{color: "#94A9C9", marginBottom: 20}}>
+                    Enter your email to receive a reset link.
+                  </p>
+                  <input className="input" placeholder="Email" value={resetEmail} onChange={e => setResetEmail(e.target.value)} />
+                  <button className="btn" onClick={handleForgotPassword} disabled={regLoading} style={{width: "100%"}}>
+                    {regLoading ? "⊙ Sending..." : "Send Reset Link"}
+                  </button>
+                  <button className="btn btn-secondary" onClick={() => setAuthMode("login")} style={{width: "100%", marginTop: 10}}>
+                    ← Back to Login
+                  </button>
                 </div>
               )}
-            </div>
-          )}
-
-          {authMode === "login" && (
-            <div>
-              {loginMsg && <div className={`alert alert-${loginMsg.type}`}>{loginMsg.text}</div>}
-              <input className="input" placeholder="Username (nickname)" value={loginForm.identifier} onChange={e => setLoginForm({ ...loginForm, identifier: e.target.value })} disabled={loginLoading} />
-              <input className="input" placeholder="Password" type="password" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} disabled={loginLoading} onKeyDown={e => e.key === "Enter" && handleLogin()} />
-              <div style={{ fontSize: 11, color: "#94A9C9", marginBottom: 16, marginTop: -8, fontFamily: "'JetBrains Mono', monospace" }}>
-                ⓘ Use your <strong style={{ color: "#4A9EFF" }}>username</strong>, not your email address
-              </div>
-              <button className="btn" onClick={handleLogin} disabled={loginLoading} style={{ width: "100%" }}>{loginLoading ? "⊙ Signing in..." : "⊙ Sign In"}</button>
-            </div>
+            </>
           )}
         </div>
       </div>
@@ -751,7 +924,7 @@ export default function App() {
             { id: "sync" as const, label: "⟲ Sync", badge: pending.length || null },
             { id: "identity" as const, label: "⬢ Identity", badge: null },
           ].map(n => (
-            <div key={n.id} className={`nav-item ${tab === n.id ? "active" : ""}`} onClick={() => { setTab(n.id); setEditingDoc(null); }}>
+            <div key={n.id} className={`nav-item ${tab === n.id ? "active" : ""}`} onClick={() => { setTab(n.id); setEditingDoc(null); setLocalPath(null); }}>
               <span>{n.label}</span>
               {n.badge != null && <span className="badge">{n.badge}</span>}
             </div>
@@ -767,36 +940,82 @@ export default function App() {
           </div>
 
           <div className="panel">
-            {/* ── Documents tab ── */}
+            {/* Documents Tab */}
             {tab === "docs" && (
               <>
-                {/* ✅ Edit Mode */}
                 {editingDoc ? (
                   <>
                     <div className="panel-title">Editing: {editingDoc.filename}</div>
-                    <div className="panel-sub">Modify content below. Changes will sync automatically.</div>
-                    
-                    <div className="card">
-                      <div style={{ marginBottom: 16, color: "#94A9C9", fontSize: 12 }}>
-                        Last Modified: {new Date(editingDoc.updated_at || editingDoc.created_at).toLocaleString()}
-                      </div>
-                      
-                      <textarea 
-                        className="input" 
-                        rows={12}
-                        value={editingDoc.text_content}
-                        onChange={(e) => setEditingDoc({ ...editingDoc, text_content: e.target.value })}
-                        placeholder="Document content..."
-                      />
-
-                      <div style={{ display: "flex", gap: "12px", marginTop: "16px" }}>
-                        <button className="btn" onClick={updateDoc} style={{ flex: 1 }}>💾 Save Changes</button>
-                        <button className="btn btn-secondary" onClick={() => setEditingDoc(null)} style={{ flex: 1 }}>✖ Cancel</button>
-                      </div>
+                    <div className="panel-sub">
+                        Type: <strong>{editingDoc.content_type || 'text/plain'}</strong>
+                        <span className="version-tag">v{editingDoc.version}</span>
+                        {editingDoc.conflict_copy_of && <span className="doc-conflict">(CONFLICT COPY)</span>}
                     </div>
+                    
+                    {(!editingDoc.content_type || editingDoc.content_type === "text/plain") ? (
+                        <div className="card">
+                            <textarea 
+                            className="input" 
+                            rows={12}
+                            value={editingDoc.text_content}
+                            onChange={(e) => setEditingDoc({ ...editingDoc, text_content: e.target.value })}
+                            placeholder="Document content..."
+                            />
+                            <div style={{ display: "flex", gap: "12px", marginTop: "16px" }}>
+                            <button className="btn" onClick={updateDoc} style={{ flex: 1 }}>💾 Save Changes</button>
+                            <button className="btn btn-secondary" onClick={() => setEditingDoc(null)} style={{ flex: 1 }}>✖ Cancel</button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="card">
+                            <div style={{ textAlign: "center", padding: "20px 0" }}>
+                                <div style={{ fontSize: "32px", marginBottom: "10px" }}>📁</div>
+                                <h3 style={{ marginBottom: "10px" }}>{editingDoc.filename}</h3>
+                                <p style={{color: "#94A9C9", marginBottom: "20px", fontSize: "13px"}}>
+                                    External editing mode (Version {editingDoc.version})
+                                </p>
+                                
+                                {!localPath && (
+                                  <div style={{ background: "rgba(255, 184, 0, 0.1)", border: "1px solid #FFB800", padding: "15px", borderRadius: "8px", marginBottom: "20px", color: "#FFB800" }}>
+                                    Click <strong>"Open File"</strong> to start editing.
+                                  </div>
+                                )}
+
+                                {localPath && (
+                                  <div style={{ background: "rgba(0, 224, 198, 0.1)", border: "1px solid #00E0C6", padding: "15px", borderRadius: "8px", marginBottom: "20px", color: "#00E0C6" }}>
+                                    ✅ File opened externally.<br/>
+                                    <strong>1.</strong> Edit the file in your other app.<br/>
+                                    <strong>2.</strong> <strong>SAVE</strong> the file in that app.<br/>
+                                    <strong>3.</strong> Click <strong>"Upload Update"</strong> below.
+                                  </div>
+                                )}
+
+                                <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+                                    <button className="btn" onClick={handleBinaryEdit}>
+                                        📂 Open File
+                                    </button>
+                                    
+                                    <button 
+                                        className="btn btn-success" 
+                                        onClick={handleBinarySave}
+                                        disabled={!localPath} 
+                                    >
+                                        ⬆️ Upload Update
+                                    </button>
+                                    
+                                    <button 
+                                        className="btn btn-secondary" 
+                                        onClick={() => setEditingDoc(null)}
+                                    >
+                                        ✖ Cancel
+                                    </button>
+                                </div>
+                                {localPath && <p style={{fontSize: "11px", color: "#666", marginTop: "15px"}}>Local cache: {localPath}</p>}
+                            </div>
+                        </div>
+                    )}
                   </>
                 ) : (
-                  // List Mode
                   <>
                     <div className="panel-title">Documents</div>
                     <div className="panel-sub">{docs.length} total · {syncStatus.synced} synced to cloud</div>
@@ -811,15 +1030,20 @@ export default function App() {
                         {docs.map(d => (
                           <div key={d.id} className="doc-item">
                             <div className="doc-info">
-                              <div className="doc-name">{d.filename}</div>
-                              <div className="doc-meta">{new Date(d.created_at).toLocaleString()}</div>
+                              <div className="doc-name">
+                                {d.filename}
+                                {d.conflict_copy_of && <span className="doc-conflict">(Conflict Copy)</span>}
+                              </div>
+                              <div className="doc-meta">
+                                {new Date(d.created_at).toLocaleString()} · {d.content_type || 'text/plain'}
+                              </div>
                             </div>
                             <div className="doc-status">
                               <span className={`tag ${d.is_synced === 1 ? "tag-synced" : d.status === "failed" ? "tag-failed" : "tag-pending"}`}>
                                 {d.is_synced === 1 ? "synced" : d.status}
                               </span>
+                              <span className="version-tag">v{d.version}</span>
                               
-                              {/* ✅ Edit Button */}
                               <button className="btn" onClick={() => setEditingDoc(d)} style={{ padding: "6px 14px", fontSize: 12 }}>Edit</button>
                               
                               <button className="btn btn-danger" onClick={() => delDoc(d.id)} style={{ padding: "6px 14px", fontSize: 12 }}>Delete</button>
@@ -833,21 +1057,50 @@ export default function App() {
               </>
             )}
 
-            {/* ── Create tab ── */}
+            {/* Create Tab */}
             {tab === "create" && (
               <>
                 <div className="panel-title">New Document</div>
                 <div className="panel-sub">Create a local document · Automatically syncs when online</div>
+                
+                {/* Binary Upload */}
+                <div className="card" style={{ marginBottom: "20px", borderStyle: "dashed" }}>
+                  <div style={{ textAlign: "center", padding: "20px 0" }}>
+                    <div style={{ fontSize: "32px", marginBottom: "10px" }}>📁</div>
+                    <div style={{ fontWeight: 600, marginBottom: "10px" }}>Upload Any File</div>
+                    <div style={{ fontSize: "12px", color: "#94A9C9", marginBottom: "20px" }}>
+                      Supports: PDF, Images, Videos, MP3, ZIP, etc.
+                    </div>
+                    
+                    <input 
+                      type="file" 
+                      id="file-upload" 
+                      style={{ display: 'none' }} 
+                      onChange={handleFileUpload}
+                    />
+                    <button 
+                      className="btn btn-success" 
+                      onClick={() => document.getElementById('file-upload')?.click()}
+                    >
+                      ⬆️ Select File to Upload
+                    </button>
+                  </div>
+                </div>
+
+                {/* Text Create */}
                 <div className="card">
+                  <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "16px", color: "#94A9C9" }}>
+                    OR CREATE TEXT DOCUMENT
+                  </div>
                   <input className="input" placeholder="Filename (e.g., project-notes.txt)" value={newDoc.filename} onChange={e => setNewDoc({ ...newDoc, filename: e.target.value })} />
-                  <textarea className="input" placeholder="Document content..." rows={12} value={newDoc.content} onChange={e => setNewDoc({ ...newDoc, content: e.target.value })} />
+                  <textarea className="input" placeholder="Document content..." rows={8} value={newDoc.content} onChange={e => setNewDoc({ ...newDoc, content: e.target.value })} />
                   <input className="input" placeholder="Tags (comma separated)" value={newDoc.tags} onChange={e => setNewDoc({ ...newDoc, tags: e.target.value })} />
-                  <button className="btn" onClick={createDoc} style={{ width: "100%" }}>⊕ Create Document</button>
+                  <button className="btn" onClick={createDoc} style={{ width: "100%" }}>⊕ Create Text Document</button>
                 </div>
               </>
             )}
 
-            {/* ── Sync tab ── */}
+            {/* Sync Tab */}
             {tab === "sync" && (
               <>
                 <div className="panel-title">Sync Engine</div>
@@ -879,7 +1132,7 @@ export default function App() {
               </>
             )}
 
-            {/* ── Identity tab ── */}
+            {/* Identity Tab */}
             {tab === "identity" && (
               <>
                 <div className="panel-title">Identity</div>

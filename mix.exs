@@ -95,7 +95,11 @@ defmodule Alem.MixProject do
       {:uuid, "~> 1.1"},
 
       {:corsica, "~> 2.0"},
-      {:pbkdf2_elixir, "~> 2.0"}
+      {:pbkdf2_elixir, "~> 2.0"},
+
+
+      {:castore, "~> 1.0"},
+       {:gen_smtp, "~> 1.2"}
     ]
   end
 
