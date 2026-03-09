@@ -34,9 +34,9 @@ jobs:
           node-version: '20'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.10.0
@@ -68,14 +68,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: alem-linux-binary
-          path: |
-            alem-desktop/src-tauri/target/release/alem-desktop
+          path: alem-desktop/src-tauri/target/release/alem-desktop
           retention-days: 7
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
           name: alem-linux-appimage
-          path: |
-            alem-desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          path: alem-desktop/src-tauri/target/release/bundle/appimage/*.AppImage
           retention-days: 7
