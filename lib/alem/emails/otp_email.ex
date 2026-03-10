@@ -237,12 +237,11 @@ defmodule Alem.Emails.OTPEmail do
                   Hi #{name},
                 </p>
                 <p style="margin:0 0 28px;color:#475569;font-size:15px;line-height:1.7;">
-                  We received a request to reset your ALEM password.
-                  Click the button below — this link expires in <strong>15 minutes</strong>.
+                  Click the button below to reset your password securely in the ALEM app.
                 </p>
 
-                <table cellpadding="0" cellspacing="0" role="presentation"
-                       style="margin:0 0 28px;">
+                <!-- BUTTON -->
+                <table cellpadding="0" cellspacing="0" role="presentation" style="margin:0 0 28px;">
                   <tr>
                     <td style="background:#0f172a;border-radius:8px;">
                       <a href="#{reset_url}"
@@ -254,20 +253,11 @@ defmodule Alem.Emails.OTPEmail do
                   </tr>
                 </table>
 
-                <p style="margin:0 0 8px;color:#94a3b8;font-size:13px;">
-                  Or copy this link into your browser:
-                </p>
-                <p style="margin:0 0 24px;color:#475569;font-size:13px;word-break:break-all;">
-                  #{reset_url}
-                </p>
-
                 <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
                   <tr>
-                    <td style="background:#fef2f2;border-left:4px solid #ef4444;
-                               border-radius:4px;padding:12px 16px;">
+                    <td style="background:#fef2f2;border-left:4px solid #ef4444;border-radius:4px;padding:12px 16px;">
                       <p style="margin:0;color:#7f1d1d;font-size:13px;line-height:1.6;">
                         If you did not request a password reset, ignore this email.
-                        Your password will not be changed.
                       </p>
                     </td>
                   </tr>
@@ -276,12 +266,9 @@ defmodule Alem.Emails.OTPEmail do
             </tr>
 
             <tr>
-              <td style="background:#f8fafc;border-top:1px solid #e2e8f0;
-                         padding:20px 40px;">
+              <td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:20px 40px;">
                 <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.6;">
-                  © #{year} PRZMA. All rights reserved. ·
-                  <a href="mailto:support@przma.com"
-                     style="color:#94a3b8;">support@przma.com</a>
+                  © #{year} PRZMA. All rights reserved.
                 </p>
               </td>
             </tr>

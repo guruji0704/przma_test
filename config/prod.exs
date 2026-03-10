@@ -11,11 +11,10 @@ config :alem, AlemWeb.Endpoint, cache_static_manifest: "priv/static/cache_manife
 # known as HSTS. If you have a health check endpoint, you may want to exclude it below.
 # Note `:force_ssl` is required to be set at compile-time.
 config :alem, AlemWeb.Endpoint,
-  force_ssl: [rewrite_on: [:x_forwarded_proto]],
-  exclude: [
-    # paths: ["/health"],
-    hosts: ["localhost", "127.0.0.1"]
-  ]
+  http: [ip: {0, 0, 0, 0}, port: 4000], # Listen on all interfaces
+  url: [host: "172.235.17.68", port: 4000], # Used for generating email links
+  server: true
+
 
 # Configure Swoosh API Client
 config :swoosh, api_client: Swoosh.ApiClient.Req
@@ -28,3 +27,5 @@ config :logger, level: :info
 
 # Runtime production configuration, including reading
 # of environment variables, is done on config/runtime.exs.
+
+

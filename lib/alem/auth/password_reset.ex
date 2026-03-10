@@ -142,8 +142,8 @@ defmodule Alem.Auth.PasswordReset do
   end
 
   defp build_reset_url(user_id, token) do
-    base = Application.get_env(:alem, :app_url, "http://localhost:4000")
-    "#{base}/reset-password?user_id=#{user_id}&token=#{URI.encode(token)}"
+    # Use the custom protocol 'alem://'
+    "alem://reset?user_id=#{user_id}&token=#{URI.encode(token)}"
   end
 
   defp apply_new_password(user, new_password) do

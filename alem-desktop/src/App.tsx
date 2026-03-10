@@ -399,6 +399,43 @@ export default function App() {
     }
   }, []);
 
+    // ✅ DEEP LINK LISTENER
+    useEffect(() => {
+      if (typeof window !== 'undefined' && (window as any).__TAURI__) {
+        const unlisten = listen<string>('deep-link-received', (event) => {
+          try {
+            console.log("Deep link received:", event.payload);
+            
+            // Parse URL: alem://reset?user_id=...&token=...
+            const urlString = event.payload;
+            
+            // Extract query params manually because new URL() might behave oddly with custom protocols
+            const match = urlString.match(/user_id=([^&]*)&token=([^&]*)/);
+            
+            if (match) {
+              const userId = match[1];
+              const token = decodeURIComponent(match[2]);
+  
+              if (userId && token) {
+                // Set state to show Reset Screen with hidden credentials
+                setResetForm({ userId, token, password: "", confirm: "" });
+                setResetStep(2); // Go directly to password entry step
+                setView("auth"); // Ensure we are on auth screen
+                setAuthMode("forgot"); // Set mode so the UI renders reset step
+                addToast("✅ Reset link verified!", "success");
+              } else {
+                addToast("❌ Invalid reset link.", "error");
+              }
+            }
+          } catch (e) {
+            console.error("Failed to parse deep link", e);
+          }
+        });
+  
+        return () => { unlisten.then(f => f()); };
+      }
+    }, []);
+
   useEffect(() => {
     const init = async () => {
       await new Promise(r => setTimeout(r, 1800));
@@ -583,13 +620,16 @@ export default function App() {
         loadDocs();
       }
     } catch (err) {
-      if (err.toString().includes("CONFLICT")) {
+      // ✅ FIX: Convert err to string safely
+      const errorMsg = String(err);
+      
+      if (errorMsg.includes("CONFLICT")) {
         addToast("⚠️ Conflict detected! A copy has been created.", "error");
         setEditingDoc(null);
         setLocalPath(null);
         loadDocs();
       } else {
-        addToast(`Error: ${err}`, "error");
+        addToast(`Error: ${errorMsg}`, "error");
       }
     }
   };
@@ -781,8 +821,8 @@ export default function App() {
                 Enter the code from your email and your new password.
               </p>
               
-              <input className="input" placeholder="User ID (from email link)" value={resetForm.userId} onChange={e => setResetForm({...resetForm, userId: e.target.value})} />
-              <input className="input" placeholder="Reset Token" value={resetForm.token} onChange={e => setResetForm({...resetForm, token: e.target.value})} />
+              {/* <input className="input" placeholder="User ID (from email link)" value={resetForm.userId} onChange={e => setResetForm({...resetForm, userId: e.target.value})} />
+              <input className="input" placeholder="Reset Token" value={resetForm.token} onChange={e => setResetForm({...resetForm, token: e.target.value})} /> */}
               <input className="input" type="password" placeholder="New Password" value={resetForm.password} onChange={e => setResetForm({...resetForm, password: e.target.value})} />
               <input className="input" type="password" placeholder="Confirm Password" value={resetForm.confirm} onChange={e => setResetForm({...resetForm, confirm: e.target.value})} />
               
