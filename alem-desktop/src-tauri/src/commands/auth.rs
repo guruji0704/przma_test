@@ -48,7 +48,7 @@ pub struct GenericResponse {
 // ══════════════════════════════════════════════════════════════════════════
 
 async fn get_server_url(conn: &libsql::Connection) -> String {
-    let real_url = "http://172.235.17.68:4000"; 
+    let real_url = "http://172.235.17.68:4201"; 
 
     if let Ok(mut rows) = conn
         .query("SELECT server_url FROM local_identity WHERE id = 'singleton'", ())

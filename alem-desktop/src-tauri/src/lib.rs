@@ -27,7 +27,7 @@ pub fn run() {
                 .expect("Failed to resolve app data dir");
             
             std::fs::create_dir_all(&data_dir)?;
-            let db_path = data_dir.join("alem.db");
+            let db_path = data_dir.join("przma.db");
             
             log::info!("📂 Database: {:?}", db_path);
 

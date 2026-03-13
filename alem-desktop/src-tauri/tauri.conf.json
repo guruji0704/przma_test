@@ -1,9 +1,8 @@
 {
-  
   "$schema": "../node_modules/@tauri-apps/cli/schema.json",
-  "productName": "Alem",
-    "version": "0.1.0",
-  "identifier": "com.alem.desktop",
+  "productName": "Przma",
+  "version": "0.1.0",
+  "identifier": "com.przma.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -13,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "alem-desktop",
-        "width": 800,
-        "height": 600,
+        "title": "PRZMA",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600,
         "devtools": true
       }
     ],
@@ -23,7 +24,6 @@
       "csp": null
     },
     "withGlobalTauri": true
-
   },
   "bundle": {
     "active": true,
@@ -38,7 +38,9 @@
   },
   "plugins": {
     "deep-link": {
-      "schemes": ["alem"]
+      "desktop": {
+        "schemes": ["alem"]
+      }
     }
-}
+  }
 }
