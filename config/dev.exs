@@ -2,15 +2,19 @@ import Config
 
 config :alem, Alem.Repo,
   username: "postgres",
-  password: "1245",
-  hostname: "localhost",
-  database: "alem_dev_1",
+  password: "postgres",
+  hostname: "172.235.17.68",
+  database: "przma_dev_graphql",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
 config :alem, AlemWeb.Endpoint,
-  http: [ip: {0, 0, 0, 0}, port: 4000],
+  http: [
+    ip: {127, 0, 0, 1},
+    port: 4000,
+    thousand_island_options: [read_timeout: 300_000]
+  ],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

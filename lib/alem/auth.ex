@@ -60,7 +60,7 @@
     def verify_captcha("", _answer),  do: {:ok, :skipped}
 
     def verify_captcha(token, answer) do
-      now = NaiveDateTime.utc_now()
+      now = DateTime.utc_now()
 
       case Repo.one(
         from c in Captcha,

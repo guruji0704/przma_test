@@ -5,7 +5,7 @@ defmodule Alem.Emails.OTPEmail do
   import Swoosh.Email
 
   @app_name     "PRZMA / ALEM"
-  @from_email   "noreply@przma.com"
+  @from_email   "postmaster@sandbox67c1eb1f812e4282a06bd2f5e45dc720.mailgun.org"
   @support_email "support@przma.com"
 
   # ---------------------------------------------------------------------------

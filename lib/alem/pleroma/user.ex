@@ -32,14 +32,22 @@ defmodule Alem.Pleroma.User do
   def registration_changeset(user, attrs) do
     user
     |> cast(attrs, [:nickname, :email, :password, :name, :bio])
-    |> validate_required([:nickname, :password])
+    |> validate_required([:nickname, :email, :password])
     |> validate_length(:nickname, min: 1, max: 30)
-    |> validate_length(:password, min: 6)
     |> validate_format(:email, ~r/@/)
     |> unique_constraint(:nickname)
     |> unique_constraint(:email)
+    |> validate_password_strength()   # ← server-side strength check
     |> put_password_hash()
     |> put_id()
+  end
+
+  def password_reset_changeset(user, new_password) do
+    user
+    |> cast(%{password: new_password}, [:password])
+    |> validate_required([:password])
+    |> validate_password_strength()   # ← also enforced on reset
+    |> put_password_hash()
   end
 
   def did_changeset(user, did_id) do
@@ -56,24 +64,63 @@ defmodule Alem.Pleroma.User do
   end
 
   def otp_changeset(user, otp_code) do
-    expires_at = NaiveDateTime.add(NaiveDateTime.utc_now(), 600, :second)
-    |> NaiveDateTime.truncate(:second)
+    expires_at =
+      NaiveDateTime.add(NaiveDateTime.utc_now(), 600, :second)
+      |> NaiveDateTime.truncate(:second)
 
     user
     |> Ecto.Changeset.change(%{
-      otp_code: otp_code,
+      otp_code:       otp_code,
       otp_expires_at: expires_at,
-      otp_attempts: 0
+      otp_attempts:   0
     })
   end
 
   def verify_otp_changeset(user) do
     user
     |> Ecto.Changeset.change(%{
-      is_verified: true,
-      otp_code: nil,
+      is_verified:    true,
+      otp_code:       nil,
       otp_expires_at: nil
     })
+  end
+
+  def verify_password(user, password) do
+    Pbkdf2.verify_pass(password, user.password_hash)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Password strength validation
+  #
+  # This mirrors the rules in App.tsx `checkPasswordRules()` so the server
+  # always enforces what the client previews. No external library needed —
+  # just Elixir regex applied to the virtual :password field.
+  # ---------------------------------------------------------------------------
+  defp validate_password_strength(changeset) do
+    case get_change(changeset, :password) do
+      nil ->
+        changeset
+
+      password ->
+        changeset
+        |> validate_length(:password, min: 12, message: "must be at least 12 characters")
+        |> then(fn cs ->
+          if Regex.match?(~r/[A-Z]/, password), do: cs,
+          else: add_error(cs, :password, "must contain at least one uppercase letter (A–Z)")
+        end)
+        |> then(fn cs ->
+          if Regex.match?(~r/[a-z]/, password), do: cs,
+          else: add_error(cs, :password, "must contain at least one lowercase letter (a–z)")
+        end)
+        |> then(fn cs ->
+          if Regex.match?(~r/[0-9]/, password), do: cs,
+          else: add_error(cs, :password, "must contain at least one digit (0–9)")
+        end)
+        |> then(fn cs ->
+          if Regex.match?(~r/[!@#$%^&*()\-_=+\[\]{};:'",.<>?\/\\|`~]/, password), do: cs,
+          else: add_error(cs, :password, "must contain at least one special character (!@#$% etc.)")
+        end)
+    end
   end
 
   defp put_password_hash(%Ecto.Changeset{valid?: true, changes: %{password: password}} = changeset) do
@@ -85,7 +132,7 @@ defmodule Alem.Pleroma.User do
   defp put_id(changeset) do
     case get_field(changeset, :id) do
       nil -> put_change(changeset, :id, generate_id())
-      _ -> changeset
+      _   -> changeset
     end
   end
 
@@ -95,13 +142,7 @@ defmodule Alem.Pleroma.User do
     |> binary_part(0, 16)
   end
 
-  # Use Pbkdf2 for password hashing
   defp hash_password(password) do
     Pbkdf2.hash_pwd_salt(password)
-  end
-
-  # Verify password
-  def verify_password(user, password) do
-    Pbkdf2.verify_pass(password, user.password_hash)
   end
 end

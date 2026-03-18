@@ -63,35 +63,39 @@ defmodule Alem.Auth.PasswordReset do
     {:error, :max_attempts}  — too many attempts
     {:error, :not_found}     — no pending reset
   """
-  def reset_password(user_id, token, new_password) do
-    case Repo.get(User, user_id) do
+  @doc """
+  Read-only token check used by the web redirect page before launching the app.
+  Does NOT consume or mutate the token — that happens in reset_password/3.
+  Returns :ok or {:error, reason}.
+  """
+  @doc """
+  Read-only token check — used by the web redirect page before launching the app.
+  Does NOT consume or mutate the token.
+  """
+  def verify_token(token) do
+    case find_user_by_token(token) do
+      nil            -> {:error, :not_found}
+      {:error, r}    -> {:error, r}
+      _user          -> :ok
+    end
+  end
+
+    @session_expiry_seconds 300  # 5 minutes
+
+  @doc """
+  Reset password using token only — no user_id needed or accepted.
+  Finds the user by scanning for a matching hashed token.
+  """
+  def reset_password(token, new_password) do
+    case find_user_by_token(token) do
       nil ->
         {:error, :not_found}
 
-      %{reset_token: nil} ->
-        {:error, :not_found}
+      {:error, reason} ->
+        {:error, reason}
 
       user ->
-        cond do
-          user.reset_token_attempts >= @max_attempts ->
-            # Invalidate token on lockout
-            invalidate_token(user)
-            Logger.warning("[PasswordReset] Locked out user #{user.id}")
-            {:error, :max_attempts}
-
-          token_expired?(user) ->
-            invalidate_token(user)
-            Logger.info("[PasswordReset] Expired token for user #{user.id}")
-            {:error, :expired}
-
-          not Pbkdf2.verify_pass(token, user.reset_token) ->
-            increment_attempts(user)
-            Logger.warning("[PasswordReset] Wrong token for user #{user.id}")
-            {:error, :invalid}
-
-          true ->
-            apply_new_password(user, new_password)
-        end
+        apply_new_password(user, new_password)
     end
   end
 
@@ -118,7 +122,7 @@ defmodule Alem.Auth.PasswordReset do
 
     user
     |> Ecto.Changeset.change(%{
-      reset_token:          hashed_token,
+      reset_token:            hashed_token,
       reset_token_expires_at: expires_at,
       reset_token_attempts:   0,
       reset_sent_at:          sent_at
@@ -141,9 +145,50 @@ defmodule Alem.Auth.PasswordReset do
     end
   end
 
-  defp build_reset_url(user_id, token) do
-    # Use the custom protocol 'alem://'
-    "alem://reset?user_id=#{user_id}&token=#{URI.encode(token)}"
+  # ═══════════════════════════════════════════════════════════════════════
+  # KEY FIX: Use an https:// URL instead of the alem:// custom protocol.
+  #
+  # Why: Email clients (Gmail, Outlook, Apple Mail) block or visually
+  # disable links that use unknown/custom URI schemes like alem://.
+  # The button appeared greyed-out or unclickable because of this.
+  #
+  # Solution: Link to the HTTP reset-password page on the server, which
+  # shows the user their user_id + token to paste into the ALEM app.
+  # The ALEM_BASE_URL env var should be set to the public server address.
+  # ═══════════════════════════════════════════════════════════════════════
+  defp build_reset_url(_user_id, token) do
+    base_url =
+      System.get_env("ALEM_BASE_URL", "http://172.235.17.68:4201")
+      |> String.trim_trailing("/")
+
+    # Token only — user_id is never exposed in the URL or email
+    "#{base_url}/reset-password?token=#{URI.encode_www_form(token)}"
+  end
+
+  # Find user whose hashed reset_token matches the given plaintext token.
+  # We must check all users with a pending token — Pbkdf2 is intentionally
+  # not reversible, so we filter by expiry window first to keep it fast.
+  defp find_user_by_token(token) do
+    import Ecto.Query
+
+    cutoff =
+      NaiveDateTime.utc_now()
+      |> NaiveDateTime.truncate(:second)
+
+    candidates =
+      Repo.all(
+        from u in User,
+          where: not is_nil(u.reset_token)
+            and not is_nil(u.reset_token_expires_at)
+            and u.reset_token_expires_at > ^cutoff
+            and u.reset_token_attempts < @max_attempts
+      )
+
+    Enum.find_value(candidates, nil, fn user ->
+      if Pbkdf2.verify_pass(token, user.reset_token) do
+        user
+      end
+    end)
   end
 
   defp apply_new_password(user, new_password) do

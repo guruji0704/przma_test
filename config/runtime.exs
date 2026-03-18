@@ -68,9 +68,15 @@ if config_env() == :prod do
 
   # 1. Bind to 0.0.0.0 so it accepts connections from the network
 config :alem, AlemWeb.Endpoint,
-http: [ip: {0, 0, 0, 0}, port: 4000], # Listen on all interfaces
-url: [host: "172.235.17.68", port: 4000], # Used for generating email links
-server: true
+  http: [
+    ip: {0, 0, 0, 0},
+    port: 4000,
+    # Bandit transport timeout — must be long enough for large file uploads.
+    # Default is 15_000ms which times out on multi-MB base64 JSON bodies.
+    thousand_island_options: [read_timeout: 300_000]
+  ],
+  url: [host: "172.235.17.68", port: 4000],
+  server: true
 
 
 
