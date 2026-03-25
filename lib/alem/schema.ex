@@ -2,7 +2,9 @@
 defmodule AlemWeb.Schema do
   use Absinthe.Schema
 
+  import_types Absinthe.Plug.Types
   import_types AlemWeb.Schema.Types.Document
+  import_types AlemWeb.Schema.Types.Custom
   import_types AlemWeb.Schema.Types.Cas
   import_types Absinthe.Type.Custom
 

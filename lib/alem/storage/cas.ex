@@ -6,7 +6,7 @@ defmodule Alem.Storage.CAS do
   """
 
   require Logger
-  import Ecto.Query
+  # import Ecto.Query
   alias Alem.{Repo, Storage.ObjectStore}
   alias Alem.Schemas.CasObject
 
