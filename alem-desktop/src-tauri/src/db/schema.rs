@@ -13,6 +13,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
             binary_content    BLOB,
             content_type      TEXT NOT NULL DEFAULT 'text/plain',
             tags              TEXT DEFAULT '[]',
+            vault_path        TEXT,
             device_id         TEXT NOT NULL DEFAULT 'unknown',
             version           INTEGER NOT NULL DEFAULT 1,
             conflict_copy_of  TEXT,
@@ -41,6 +42,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
         "ALTER TABLE documents ADD COLUMN status TEXT DEFAULT 'pending'",
         "ALTER TABLE documents ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
         "ALTER TABLE documents ADD COLUMN tags TEXT DEFAULT '[]'",
+        "ALTER TABLE documents ADD COLUMN vault_path TEXT",
     ];
 
     for sql in schema_migrations {
@@ -85,6 +87,27 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
 
     log::info!("  ✅ documents table ready");
 
+    // ── file_chunks (chunked upload assembly) ────────────────────────────
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS file_chunks (
+            id           TEXT PRIMARY KEY NOT NULL,
+            doc_id       TEXT NOT NULL,
+            chunk_index  INTEGER NOT NULL,
+            total_chunks INTEGER NOT NULL,
+            data         BLOB NOT NULL,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(doc_id, chunk_index)
+        )",
+        (),
+    ).await?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_file_chunks_doc_id ON file_chunks(doc_id)",
+        (),
+    ).await?;
+
+    log::info!("  ✅ file_chunks table ready");
+
     // ── device_identity ──────────────────────────────────────────────────
     conn.execute(
         "CREATE TABLE IF NOT EXISTS device_identity (
@@ -112,11 +135,33 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
             s3_bucket    TEXT,
             s3_prefix    TEXT,
             last_sync_at TEXT,
+            vault_key    TEXT,
             created_at   TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
         )",
         (),
     ).await?;
+
+    // Add vault_key column if it doesn't exist (existing installs)
+    match conn.execute(
+        "ALTER TABLE local_identity ADD COLUMN vault_key TEXT",
+        (),
+    ).await {
+        Ok(_) => log::info!("  ✅ Schema migration: vault_key column added to local_identity"),
+        Err(e) if e.to_string().contains("duplicate column") => {}
+        Err(e) => log::warn!("  ⚠️  vault_key migration skipped: {}", e),
+    }
+
+    // Add key_salt column for future Argon2 password-based key derivation
+    // Stores the 32-byte salt (base64-encoded) alongside the derived key
+    match conn.execute(
+        "ALTER TABLE local_identity ADD COLUMN key_salt TEXT",
+        (),
+    ).await {
+        Ok(_) => log::info!("  ✅ Schema migration: key_salt column added to local_identity"),
+        Err(e) if e.to_string().contains("duplicate column") => {}
+        Err(e) => log::warn!("  ⚠️  key_salt migration skipped: {}", e),
+    }
 
     log::info!("  ✅ local_identity table ready");
 

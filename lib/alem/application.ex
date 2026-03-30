@@ -22,6 +22,11 @@ defmodule Alem.Application do
 
       Alem.Sync.Manager,
 
+      # Epoch key manager — generates + rotates x25519 keypairs for vault CAS decryption.
+      # Must start before AlemWeb.Endpoint so the epoch endpoint is ready on first request.
+      # Requires EPOCH_MASTER_KEY env var (32 random bytes, base64-encoded).
+      Alem.Vault.EpochKeyManager,
+
       # Distributed namespace management
       #Alem.Namespace.HordeSupervisor,
 
@@ -33,8 +38,15 @@ defmodule Alem.Application do
     # Authentication now uses real database via Alem.Auth module.
     # No more fake server on port 4001.
     Task.start(fn ->
-      Process.sleep(2_000)  # wait for app to settle
-      Alem.Sqld.ensure_schema()
+      Process.sleep(2_000)
+      sqld_url = Application.get_env(:alem, :sqld_url, "http://localhost:8080")
+      case Req.get("#{sqld_url}/health", receive_timeout: 3_000) do
+        {:ok, %{status: 200}} ->
+          Alem.Sqld.ensure_schema()
+        _ ->
+          require Logger
+          Logger.info("[sqld] Not reachable at #{sqld_url} — skipping schema bootstrap (sync disabled locally)")
+      end
     end)
 
     opts = [strategy: :one_for_one, name: Alem.Supervisor]

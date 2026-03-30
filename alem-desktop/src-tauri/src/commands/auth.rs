@@ -48,7 +48,10 @@ pub struct GenericResponse {
 // ══════════════════════════════════════════════════════════════════════════
 
 async fn get_server_url(conn: &libsql::Connection) -> String {
-    let real_url = "http://172.235.17.68:4201"; 
+    // Default: localhost for local dev, remote server for prod.
+    // Override by storing server_url in local_identity via the login flow.
+    let default_url = std::env::var("PRZMA_SERVER_URL")
+        .unwrap_or_else(|_| "http://localhost:4000".to_string());
 
     if let Ok(mut rows) = conn
         .query("SELECT server_url FROM local_identity WHERE id = 'singleton'", ())
@@ -56,14 +59,14 @@ async fn get_server_url(conn: &libsql::Connection) -> String {
     {
         if let Ok(Some(row)) = rows.next().await {
             if let Ok(libsql::Value::Text(s)) = row.get_value(0) {
-                if !s.is_empty() && !s.contains("localhost") {
+                if !s.is_empty() {
                     return s;
                 }
             }
         }
     }
-    
-    real_url.to_string()
+
+    default_url
 }
 
 fn get_text(row: &libsql::Row, idx: i32) -> String {
@@ -79,7 +82,7 @@ fn get_text(row: &libsql::Row, idx: i32) -> String {
 
 #[tauri::command]
 pub async fn get_captcha(state: State<'_, AppState>) -> Result<CaptchaResponse, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let server_url = get_server_url(&conn).await;
 
     let resp = reqwest::Client::new()
@@ -111,7 +114,7 @@ pub async fn register_account(
     captcha_token: String,
     state: State<'_, AppState>,
 ) -> Result<RegisterResponse, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let server_url = get_server_url(&conn).await;
 
     log::info!("Registering: {} @ {}", nickname, server_url);
@@ -161,7 +164,7 @@ pub async fn verify_email(
     code: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let server_url = get_server_url(&conn).await;
 
     let resp = reqwest::Client::new()
@@ -192,7 +195,7 @@ pub async fn resend_otp(
     user_id: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let server_url = get_server_url(&conn).await;
 
     let resp = reqwest::Client::new()
@@ -220,7 +223,7 @@ pub async fn forgot_password(
     email: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let server_url = get_server_url(&conn).await;
 
     let resp = reqwest::Client::new()
@@ -248,7 +251,7 @@ pub async fn reset_password(
     confirm: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let server_url = get_server_url(&conn).await;
 
     let resp = reqwest::Client::new()
@@ -278,7 +281,7 @@ pub async fn reset_password(
 
 #[tauri::command]
 pub async fn get_stored_did(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
 
     let mut rows = conn
         .query("SELECT did FROM local_identity WHERE id = 'singleton'", ())
@@ -300,7 +303,7 @@ pub async fn login(
     password: String,
     state: State<'_, AppState>,
 ) -> Result<LoginResponse, String> {
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let server_url = get_server_url(&conn).await;
 
     log::info!("Login: {} @ {}", identifier, server_url);
@@ -402,7 +405,7 @@ pub async fn login(
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     log::info!("Logout");
 
-    let conn = state.db.connect().map_err(|e| e.to_string())?;
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
 
     conn.execute(
         "UPDATE local_identity SET
@@ -427,5 +430,42 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| format!("Failed to clear documents: {}", e))?;
 
     log::info!("Logout successful and local data cleared");
+    Ok(())
+}
+
+/// Returns the stored access_token from local_identity so the frontend
+/// can use it for direct fetch() calls (e.g. analytics test in DevTools).
+#[tauri::command]
+pub async fn get_local_token(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+    let mut rows = conn
+        .query("SELECT access_token FROM local_identity WHERE id = 'singleton'", ())
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+        if let Ok(libsql::Value::Text(t)) = row.get_value(0) {
+            return Ok(Some(t));
+        }
+    }
+    Ok(None)
+}
+
+/// Overwrite the stored server_url in local_identity.
+/// Use this to switch between remote server and localhost for local dev.
+#[tauri::command]
+pub async fn update_server_url(
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO local_identity (id, server_url)
+         VALUES ('singleton', ?)
+         ON CONFLICT(id) DO UPDATE SET server_url = excluded.server_url",
+        libsql::params![url.clone()],
+    ).await.map_err(|e| e.to_string())?;
+    log::info!("[Auth] Server URL updated to: {}", url);
     Ok(())
 }

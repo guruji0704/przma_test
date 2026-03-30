@@ -1,7 +1,7 @@
 defmodule Alem.Sqld do
   require Logger
 
-  @sqld_url "http://172.235.17.68:8080"
+  @sqld_url Application.compile_env(:alem, :sqld_url, "http://localhost:8080")
 
   # ══════════════════════════════════════════════════════════════════════════
   # Schema Setup
@@ -22,6 +22,9 @@ defmodule Alem.Sqld do
       -- Pointer to the actual file in S3
       s3_content_key   TEXT,
 
+      -- Epoch key used to encrypt this file (for server-side CAS decryption)
+      epoch_id         INTEGER,
+
       device_id        TEXT,
       last_modified_at TEXT,
       file_size        INTEGER DEFAULT 0,
@@ -29,8 +32,20 @@ defmodule Alem.Sqld do
       inserted_at      TEXT NOT NULL,
       updated_at       TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_docs_user   ON documents(user_id);
+    CREATE INDEX IF NOT EXISTS idx_docs_user    ON documents(user_id);
     CREATE INDEX IF NOT EXISTS idx_docs_updated ON documents(updated_at);
+
+    -- ── Epoch keypairs (rotating server x25519 keys for vault CAS decryption) ──
+    CREATE TABLE IF NOT EXISTS epoch_keys (
+      epoch_id            INTEGER PRIMARY KEY,
+      public_key_b64      TEXT    NOT NULL,
+      enc_private_key_b64 TEXT,            -- NULL after grace period (forward secrecy)
+      started_at          TEXT    NOT NULL,
+      expires_at          TEXT    NOT NULL,
+      grace_until         TEXT,
+      is_current          INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_epoch_current ON epoch_keys(is_current);
     """
 
     case execute(sql) do

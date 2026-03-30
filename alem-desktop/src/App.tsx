@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, open as dialogOpen, save as dialogSave } from "@tauri-apps/plugin-dialog";
+import { readFile, writeFile, BaseDirectory } from "@tauri-apps/plugin-fs";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface Doc {
@@ -53,6 +54,15 @@ interface LoginResponse {
 interface GenericResponse {
   success: boolean;
   message: string;
+}
+
+interface FileUploadItem {
+  id: string;
+  name: string;
+  size: number;
+  progress: number;
+  status: "queued" | "uploading" | "done" | "error";
+  error?: string;
 }
 
 // ── Password strength checker ──────────────────────────────────────────────
@@ -566,7 +576,7 @@ function PasswordRules({ password }: { password: string }) {
 export default function App() {
   const [view, setView] = useState<"boot" | "auth" | "dashboard" | "error">("boot");
   const [did, setDid] = useState<string | null>(null);
-  const [tab, setTab] = useState<"docs" | "create" | "sync" | "identity">("docs");
+  const [tab, setTab] = useState<"docs" | "create" | "sync" | "identity" | "media" | "record" | "preview">("docs");
   const [docs, setDocs] = useState<Doc[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({ pending: 0, synced: 0, failed: 0, total: 0 });
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -603,6 +613,44 @@ export default function App() {
   const [newDoc, setNewDoc] = useState({ filename: "", content: "", tags: "" });
   const [editingDoc, setEditingDoc] = useState<Doc | null>(null);
   const [localPath, setLocalPath] = useState<string | null>(null);
+  const [uploadQueue, setUploadQueue] = useState<FileUploadItem[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [mediaFrames, setMediaFrames]     = useState<any[]>([]);
+  const [mediaLoading, setMediaLoading]   = useState(false);
+  const [mediaVideoUrl, setMediaVideoUrl] = useState<string | null>(null);
+  const [mediaBlob, setMediaBlob]         = useState<Blob | null>(null);
+  const [mediaFps, setMediaFps]           = useState(2);
+  const [mediaMsg, setMediaMsg]           = useState<string | null>(null);
+
+  // Phase 1 — Pull sync state
+  const [pullLoading, setPullLoading]   = useState(false);
+  const [pullMsg, setPullMsg]           = useState<string | null>(null);
+  const [syncStats, setSyncStats]       = useState<any | null>(null);
+
+  // Phase 2 — Audio/Video recording state
+  const [recMode, setRecMode]           = useState<"audio" | "video">("audio");
+  const [recState, setRecState]         = useState<"idle" | "recording" | "done">("idle");
+  const [recBlob, setRecBlob]           = useState<Blob | null>(null);
+  const [recUrl, setRecUrl]             = useState<string | null>(null);
+  const [recMsg, setRecMsg]             = useState<string | null>(null);
+  const [recDuration, setRecDuration]   = useState(0);
+  const [transcript, setTranscript]     = useState<any[]>([]);
+  const [transcribing, setTranscribing] = useState(false);
+  const recorderRef                     = useRef<MediaRecorder | null>(null);
+  const recTimerRef                     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recChunksRef                    = useRef<Blob[]>([]);
+  const recStreamRef                    = useRef<MediaStream | null>(null);
+
+  // Phase 3 — File preview state
+  const [previewDoc, setPreviewDoc]     = useState<any | null>(null);
+  const [previewUrl, setPreviewUrl]     = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Phase 3 — SSE stream state
+  const [sseConnected, setSseConnected] = useState(false);
+  const [sseEvents, setSseEvents]       = useState<string[]>([]);
+  const esRef                           = useRef<EventSource | null>(null);
 
   const addToast = (msg: string, type: Toast["type"] = "info") => {
     const id = toastId++;
@@ -781,24 +829,111 @@ export default function App() {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const arrayBuffer = reader.result as ArrayBuffer;
-        const base64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
-        await invoke("upload_file", { filename: file.name, contentType: file.type || "application/octet-stream", fileDataB64: base64 });
-        addToast(`✅ ${file.name} uploaded!`, "success");
-        loadDocs(); setTab("docs");
-      } catch (err) {
-        addToast(`❌ Upload failed: ${err}`, "error");
-      }
+  // ── Filesystem upload (Rayon parallel read+encrypt, no base64) ──────────
+  //
+  // HOW IT WORKS:
+  //   1. dialogOpen() opens the native OS file picker → returns raw file paths
+  //   2. Paths (tiny strings) are sent over IPC — NOT the file bytes
+  //   3. Rust reads each file directly from disk with std::fs::read()
+  //   4. Rust emits "fs-upload-progress" events per file as it processes them
+  //   5. Frontend listens and updates progress bars in real time
+  //
+  // vs base64 approach: no 33% size inflation, no JS memory used, much faster
+  // for large files because the OS page cache is used directly by Rust.
+
+  const handleFsUpload = async () => {
+    // Step 1 — open native file picker, get OS paths
+    const selected = await dialogOpen({
+      multiple: true,
+      title: "Select Files to Upload",
+    });
+    if (!selected) return;
+
+    const paths: string[] = Array.isArray(selected) ? selected : [selected];
+
+    // Step 2 — build UI state from path strings (no file reading yet)
+    const items: FileUploadItem[] = paths.map((p, i) => ({
+      id: `fs_${Date.now()}_${i}`,
+      name: p.replace(/\\/g, "/").split("/").pop() ?? p,
+      size: 0,
+      progress: 0,
+      status: "queued",
+    }));
+    setUploadQueue(items);
+    setIsUploading(true);
+
+    const updateByPath = (path: string, patch: Partial<FileUploadItem>) => {
+      const idx = paths.indexOf(path);
+      if (idx < 0) return;
+      const id = items[idx].id;
+      setUploadQueue(q => q.map(item => item.id === id ? { ...item, ...patch } : item));
     };
-    reader.readAsArrayBuffer(file);
-    e.target.value = '';
+
+    // Step 3 — listen for per-file progress events emitted by Rust
+    const unlisten = await listen<{
+      path: string; filename: string; status: string; bytes?: number; error?: string;
+    }>("fs-upload-progress", (event) => {
+      const { path, status, error } = event.payload;
+      if (status === "reading") {
+        updateByPath(path, { status: "uploading", progress: 50 });
+      } else if (status === "done") {
+        updateByPath(path, { status: "done", progress: 100 });
+      } else if (status === "error") {
+        updateByPath(path, { status: "error", error: error ?? "failed" });
+      }
+    });
+
+    try {
+      // Step 4 — send ONLY the path strings over IPC (not the file bytes)
+      await invoke<{ filename: string; status: string; error?: string }[]>(
+        "upload_files_from_paths",
+        { paths }
+      );
+    } finally {
+      unlisten();
+      setIsUploading(false);
+      loadDocs();
+      addToast(`✅ ${paths.length} file(s) uploaded via filesystem!`, "success");
+      setTab("docs");
+    }
   };
+
+  // ── tauri-plugin-fs: direct frontend read & write ─────────────────────────
+  //
+  // READ  — load bytes from a path inside AppData into a Uint8Array
+  // WRITE — save a Uint8Array to a named file inside AppData
+  //
+  // BaseDirectory.AppData resolves to:
+  //   Windows: C:\Users\<user>\AppData\Roaming\com.przma.desktop\
+  //   macOS:   ~/Library/Application Support/com.przma.desktop/
+  //   Linux:   ~/.local/share/com.przma.desktop/
+
+  const fsReadFile = async (filename: string): Promise<Uint8Array> => {
+    // readFile returns Uint8Array — raw bytes, no encoding
+    const bytes = await readFile(filename, { baseDir: BaseDirectory.AppData });
+    return bytes;
+  };
+
+  const fsWriteFile = async (filename: string, data: Uint8Array): Promise<void> => {
+    // writeFile takes Uint8Array — writes raw bytes to disk
+    await writeFile(filename, data, { baseDir: BaseDirectory.AppData });
+  };
+
+  // Example: export a document's binary content back to AppData folder
+  const handleFsExport = async (docId: string, filename: string) => {
+    try {
+      // open_file_for_edit returns the local cache path where Rust wrote the file
+      const localPath = await invoke<string>("open_file_for_edit", { id: docId, filename });
+      // Read it back via plugin-fs as raw bytes
+      const bytes = await fsReadFile(localPath.replace(/\\/g, "/").split("/AppData/Roaming/com.przma.desktop/")[1] ?? filename);
+      // Write a copy with a different name
+      await fsWriteFile(`export_${filename}`, bytes);
+      addToast(`✅ Exported to AppData/export_${filename}`, "success");
+    } catch (err) {
+      addToast(`❌ Export failed: ${err}`, "error");
+    }
+  };
+  void handleFsExport; // exported for use in UI
 
   const handleBinaryEdit = async () => {
     if (!editingDoc) return;
@@ -961,13 +1096,20 @@ export default function App() {
     } finally { setRegLoading(false); }
   };
 
-  // Docs sorted newest first, show last 10
+  // Docs sorted newest first, filtered by search query
   const sortedDocs = [...docs].sort((a, b) =>
     new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
   );
-  const displayDocs = sortedDocs.slice(0, 10);
-  const pending = docs.filter(d => d.is_synced === 0 && d.status !== "failed");
-  const failed  = docs.filter(d => d.status === "failed");
+  const q = searchQuery.toLowerCase().trim();
+  const filteredDocs = q
+    ? sortedDocs.filter(d =>
+        d.filename.toLowerCase().includes(q) ||
+        (d.content_type || "").toLowerCase().includes(q) ||
+        d.status.toLowerCase().includes(q)
+      )
+    : sortedDocs;
+  const displayDocs = q ? filteredDocs : filteredDocs.slice(0, 10);
+  const pending = docs.filter(d => d.is_synced === 0);
 
   // ── Render ───────────────────────────────────────────────────────────────
 
@@ -1307,6 +1449,9 @@ export default function App() {
             { id: "docs"     as const, label: "◉ Documents",    badge: null },
             { id: "create"   as const, label: "⊕ New Document", badge: null },
             { id: "sync"     as const, label: "⟲ Sync",         badge: pending.length || null },
+            { id: "media"    as const, label: "▶ Image→Video",  badge: null },
+            { id: "record"   as const, label: "⏺ Record",       badge: null },
+            { id: "preview"  as const, label: "⊡ Preview",      badge: null },
             { id: "identity" as const, label: "⬢ Identity",     badge: null },
           ].map(n => (
             <div
@@ -1327,7 +1472,7 @@ export default function App() {
             <div className="status-item">Pending<strong style={{ color: "#FFB800" }}>{syncStatus.pending}</strong></div>
             <div className="status-item">Failed<strong style={{ color: "#FF6B6B" }}>{syncStatus.failed}</strong></div>
             <div className="status-item" style={{ marginLeft: "auto", fontSize: 11, color: "#8b949e" }}>
-              Showing last 10 files
+              {searchQuery ? `Searching ${docs.length} files` : "Showing last 10 · search to see all"}
             </div>
           </div>
 
@@ -1402,6 +1547,29 @@ export default function App() {
                         <div style={{ fontSize: 13 }}>Create your first document to get started</div>
                       </div>
                     ) : (
+                      <>
+                        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                          <input
+                            className="input"
+                            style={{ flex: 1, padding: "8px 12px", fontSize: 13 }}
+                            placeholder="Search by filename, type (image, pdf, video) or status…"
+                            value={searchQuery}
+                            onChange={e => setSearchQuery(e.target.value)}
+                          />
+                          {searchQuery && (
+                            <button className="btn" onClick={() => setSearchQuery("")}
+                              style={{ padding: "8px 12px", fontSize: 12 }}>
+                              ✕ Clear
+                            </button>
+                          )}
+                        </div>
+                        {searchQuery && (
+                          <div style={{ fontSize: 12, color: "#8b949e", marginBottom: 8 }}>
+                            {filteredDocs.length === 0
+                              ? `No files matching "${searchQuery}"`
+                              : `${filteredDocs.length} file${filteredDocs.length !== 1 ? "s" : ""} matching "${searchQuery}"`}
+                          </div>
+                        )}
                       <div className="doc-list">
                         {displayDocs.map((d, idx) => (
                           <div key={d.id} className={`doc-item ${idx === 0 ? "latest-item" : ""}`}>
@@ -1416,8 +1584,8 @@ export default function App() {
                             </div>
                             <div className="doc-status">
                               {idx === 0 && <span className="tag tag-latest">#1 Latest</span>}
-                              <span className={`tag ${d.is_synced === 1 ? "tag-synced" : d.status === "failed" ? "tag-failed" : "tag-pending"}`}>
-                                {d.is_synced === 1 ? "synced" : d.status}
+                              <span className={`tag ${d.is_synced === 1 ? "tag-synced" : "tag-pending"}`}>
+                                {d.is_synced === 1 ? "synced" : "queued"}
                               </span>
                               <span className="version-tag">v{d.version}</span>
                               <button className="btn" onClick={() => setEditingDoc(d)} style={{ padding: "6px 14px", fontSize: 12 }}>Edit</button>
@@ -1425,12 +1593,13 @@ export default function App() {
                             </div>
                           </div>
                         ))}
-                        {docs.length > 10 && (
+                        {!searchQuery && docs.length > 10 && (
                           <div style={{ textAlign: "center", color: "#8b949e", fontSize: 13, padding: "12px" }}>
-                            +{docs.length - 10} older files hidden · use search to find them
+                            +{docs.length - 10} older files — type above to search all {docs.length} files
                           </div>
                         )}
                       </div>
+                      </>
                     )}
                   </>
                 )}
@@ -1447,15 +1616,64 @@ export default function App() {
                 <div className="card" style={{ marginBottom: "20px", borderStyle: "dashed" }}>
                   <div style={{ textAlign: "center", padding: "20px 0" }}>
                     <div style={{ fontSize: "32px", marginBottom: "10px" }}>📁</div>
-                    <div style={{ fontWeight: 600, marginBottom: "10px" }}>Upload Any File</div>
+                    <div style={{ fontWeight: 600, marginBottom: "6px" }}>Upload Files</div>
                     <div style={{ fontSize: "12px", color: "#8b949e", marginBottom: "20px" }}>
-                      Supports: PDF, Images, Videos, MP3, ZIP, etc.
+                      PDF, Images, Videos, MP3, ZIP · Multiple files · Chunked for speed
                     </div>
-                    <input type="file" id="file-upload" style={{ display: 'none' }} onChange={handleFileUpload} />
-                    <button className="btn btn-success" onClick={() => document.getElementById('file-upload')?.click()}>
-                      ⬆️ Select File to Upload
+                    <button
+                      className="btn btn-success"
+                      disabled={isUploading}
+                      onClick={handleFsUpload}
+                    >
+                      {isUploading ? "⏳ Uploading…" : "⬆️ Select Files"}
                     </button>
                   </div>
+
+                  {/* Per-file progress list */}
+                  {uploadQueue.length > 0 && (
+                    <div style={{ borderTop: "1px solid #21262d", marginTop: "16px", paddingTop: "16px" }}>
+                      {uploadQueue.map(item => (
+                        <div key={item.id} style={{ marginBottom: "10px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", marginBottom: "4px" }}>
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "70%" }}>
+                              {item.name}
+                            </span>
+                            <span style={{
+                              color: item.status === "error" ? "#FF6B6B"
+                                   : item.status === "done"  ? "#3fb950"
+                                   : "#8b949e",
+                              flexShrink: 0,
+                            }}>
+                              {item.status === "done"    ? "✓ Done"
+                             : item.status === "error"   ? `✗ ${item.error ?? "failed"}`
+                             : item.status === "queued"  ? "queued"
+                             : `${item.progress}%`}
+                            </span>
+                          </div>
+                          {(item.status === "uploading" || item.status === "queued") && (
+                            <div style={{ height: 4, background: "#21262d", borderRadius: 2 }}>
+                              <div style={{
+                                height: "100%",
+                                width: `${item.progress}%`,
+                                background: "#238636",
+                                borderRadius: 2,
+                                transition: "width 0.15s ease",
+                              }} />
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      {!isUploading && (
+                        <button
+                          className="btn"
+                          style={{ fontSize: "12px", padding: "4px 12px", marginTop: "4px" }}
+                          onClick={() => setUploadQueue([])}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="card">
@@ -1502,11 +1720,556 @@ export default function App() {
                   </div>
                 )}
 
-                {failed.length > 0 && (
-                  <div style={{ border: "1px solid rgba(255,107,107,0.3)", padding: 20, background: "rgba(255,107,107,0.05)", borderRadius: 12 }}>
-                    <div style={{ fontWeight: 600, marginBottom: 12, color: "#FF6B6B" }}>✗ Failed Uploads</div>
-                    {failed.map(d => <div key={d.id} style={{ fontSize: 13, marginBottom: 4, color: "#FF6B6B", fontFamily: "'JetBrains Mono',monospace" }}>• {d.filename}</div>)}
-                    <button className="btn btn-danger" onClick={syncNow} style={{ marginTop: 16 }}>↺ Retry Failed</button>
+                {/* Phase 1 — Pull Sync */}
+                <div className="card">
+                  <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13 }}>Pull from Server</div>
+                  <div style={{ fontSize: 12, color: "#8b949e", marginBottom: 12 }}>
+                    Download files from the server that are missing on this device.
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                    <button className="btn" style={{ flex: 1 }} disabled={pullLoading || !isOnline}
+                      onClick={async () => {
+                        setPullLoading(true); setPullMsg(null);
+                        try {
+                          const stats = await (window as any).__TAURI__.core.invoke("get_sync_stats");
+                          setSyncStats(stats);
+                        } catch (e: any) { setPullMsg(`Stats error: ${e}`); }
+                        finally { setPullLoading(false); }
+                      }}>
+                      {pullLoading ? "Loading..." : "⟳ Check Server"}
+                    </button>
+                    <button className="btn btn-success" style={{ flex: 1 }} disabled={pullLoading || !isOnline}
+                      onClick={async () => {
+                        setPullLoading(true); setPullMsg(null);
+                        try {
+                          const result = await (window as any).__TAURI__.core.invoke("pull_sync", { since: null });
+                          setPullMsg(`✅ Downloaded ${result.downloaded}, skipped ${result.skipped}${result.errors.length > 0 ? `, ${result.errors.length} errors` : ""}`);
+                          await loadDocs();
+                        } catch (e: any) { setPullMsg(`Pull error: ${e}`); }
+                        finally { setPullLoading(false); }
+                      }}>
+                      {pullLoading ? "Pulling..." : "⬇ Pull All Missing"}
+                    </button>
+                  </div>
+                  {syncStats && (
+                    <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
+                      <span>Server files: <strong>{syncStats.total_files}</strong></span>
+                      <span>Synced: <strong style={{ color: "#00E0C6" }}>{syncStats.synced}</strong></span>
+                      <span>Indexed: <strong style={{ color: "#58a6ff" }}>{syncStats.indexed}</strong></span>
+                      <span>Size: <strong>{(syncStats.total_size_bytes / 1024 / 1024).toFixed(1)} MB</strong></span>
+                    </div>
+                  )}
+                  {pullMsg && <div style={{ marginTop: 8, fontSize: 12, color: pullMsg.startsWith("✅") ? "#00E0C6" : "#FF6B6B" }}>{pullMsg}</div>}
+                </div>
+
+                {/* Phase 3 — SSE Live Stream */}
+                <div className="card">
+                  <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13 }}>Live Event Stream (SSE)</div>
+                  <div style={{ fontSize: 12, color: "#8b949e", marginBottom: 12 }}>
+                    Real-time push notifications from the server when files change.
+                  </div>
+                  <button className={`btn ${sseConnected ? "btn-danger" : "btn-success"}`} style={{ width: "100%", marginBottom: 8 }}
+                    onClick={async () => {
+                      if (sseConnected) {
+                        esRef.current?.close(); esRef.current = null; setSseConnected(false);
+                      } else {
+                        const token = await (window as any).__TAURI__.core.invoke("get_local_token").catch(() => "");
+                        const streamUrl = `http://localhost:4000/api/v1/sync/stream?token=${token}`;
+                        const es = new EventSource(streamUrl);
+                        es.onopen = () => setSseConnected(true);
+                        es.onerror = () => { setSseConnected(false); };
+                        es.addEventListener("ping", () => {
+                          setSseEvents(prev => [`ping ${new Date().toLocaleTimeString()}`, ...prev.slice(0, 19)]);
+                        });
+                        es.addEventListener("file_uploaded", (ev: MessageEvent) => {
+                          setSseEvents(prev => [`file_uploaded: ${ev.data}`, ...prev.slice(0, 19)]);
+                        });
+                        esRef.current = es;
+                      }
+                    }}>
+                    {sseConnected ? "⏹ Disconnect Stream" : "▶ Connect to Live Stream"}
+                  </button>
+                  {sseEvents.length > 0 && (
+                    <div style={{ fontFamily: "monospace", fontSize: 11, maxHeight: 120, overflowY: "auto" }}>
+                      {sseEvents.map((e, i) => <div key={i} style={{ color: "#8b949e", marginBottom: 2 }}>{e}</div>)}
+                    </div>
+                  )}
+                </div>
+
+              </>
+            )}
+
+            {/* ── Media Tab ── */}
+            {tab === "media" && (
+              <>
+                <div className="panel-title">Image → Video Pipeline</div>
+                <div className="panel-sub">
+                  Select images · Arrow IPC processes frames · Canvas encodes video
+                </div>
+
+                {mediaMsg && (
+                  <div className="alert alert-error" style={{ marginBottom: 12 }}>
+                    {mediaMsg}
+                  </div>
+                )}
+
+                {/* Step 1 — Pick images */}
+                <div className="card" style={{ marginBottom: 16 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13 }}>
+                    Step 1 — Select Images
+                  </div>
+                  <div style={{ fontSize: 12, color: "#8b949e", marginBottom: 12 }}>
+                    Pick up to 60 JPEG / PNG / WebP images. Order = filename alphabetical.
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button
+                      className="btn btn-success"
+                      disabled={mediaLoading}
+                      onClick={async () => {
+                        setMediaMsg(null);
+                        setMediaVideoUrl(null);
+                        setMediaFrames([]);
+                        try {
+                          const { open } = await import("@tauri-apps/plugin-dialog");
+                          const selected = await open({
+                            multiple: true,
+                            filters: [{ name: "Images", extensions: ["jpg","jpeg","png","webp","gif"] }],
+                          });
+                          if (!selected || (Array.isArray(selected) && selected.length === 0)) return;
+                          const paths: string[] = Array.isArray(selected) ? selected : [selected];
+                          paths.sort();
+
+                          setMediaLoading(true);
+                          setMediaMsg(`Loading ${paths.length} images via Arrow...`);
+                          const result: any = await invoke("prepare_image_frames", {
+                            paths,
+                            frameDurationMs: Math.round(1000 / mediaFps),
+                          });
+                          setMediaFrames(result.frames);
+                          setMediaMsg(`✅ Arrow IPC built — ${result.frame_count} frames ${result.out_width}×${result.out_height} · IPC: ${Math.round(atob(result.ipc_base64).length / 1024)} KB`);
+                        } catch (e: any) {
+                          setMediaMsg(`Error: ${e}`);
+                        } finally {
+                          setMediaLoading(false);
+                        }
+                      }}
+                    >
+                      {mediaLoading ? "⏳ Processing..." : "📁 Select Images"}
+                    </button>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                      <span style={{ color: "#8b949e" }}>FPS:</span>
+                      <input
+                        type="number" min={1} max={30}
+                        value={mediaFps}
+                        onChange={e => setMediaFps(Number(e.target.value))}
+                        style={{ width: 50, padding: "4px 8px", background: "#161b22",
+                                 border: "1px solid #30363d", color: "#e6edf3",
+                                 borderRadius: 6, fontSize: 12 }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Step 2 — Frame preview */}
+                {mediaFrames.length > 0 && (
+                  <div className="card" style={{ marginBottom: 16 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13 }}>
+                      Step 2 — Arrow Frame Preview ({mediaFrames.length} frames)
+                    </div>
+                    <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8 }}>
+                      {mediaFrames.map((f: any) => (
+                        <div key={f.frame_index} style={{ flexShrink: 0, textAlign: "center" }}>
+                          <img
+                            src={`data:image/png;base64,${f.pixel_b64}`}
+                            style={{ width: 80, height: 60, objectFit: "cover",
+                                     borderRadius: 4, border: "1px solid #30363d" }}
+                            alt={f.filename}
+                          />
+                          <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>
+                            #{f.frame_index + 1}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Step 3 — Create video */}
+                    <div style={{ marginTop: 12 }}>
+                      <button
+                        className="btn btn-success"
+                        onClick={async () => {
+                          setMediaMsg("Creating video from Arrow frames...");
+                          setMediaVideoUrl(null);
+                          try {
+                            // Use minimum common dimensions (same logic as Rust out_width/out_height)
+                            const outW = Math.min(...mediaFrames.map((f: any) => f.width));
+                            const outH = Math.min(...mediaFrames.map((f: any) => f.height));
+                            const canvas = document.createElement("canvas");
+                            canvas.width  = outW;
+                            canvas.height = outH;
+                            const ctx = canvas.getContext("2d")!;
+
+                            // captureStream(fps) — auto-captures canvas at the given rate.
+                            // More reliable on WebView2 (Windows) than captureStream(0)+requestFrame().
+                            const stream = canvas.captureStream(mediaFps);
+                            const chunks: Blob[] = [];
+                            const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8")
+                              ? "video/webm;codecs=vp8" : "video/webm";
+                            const recorder = new MediaRecorder(stream, { mimeType: mime });
+                            recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+                            const videoUrl = await new Promise<string>((resolve, reject) => {
+                              recorder.onstop = () => {
+                                const blob = new Blob(chunks, { type: "video/webm" });
+                                if (blob.size === 0) {
+                                  reject(new Error("Recorded video is empty — MediaRecorder captured no frames"));
+                                  return;
+                                }
+                                setMediaBlob(blob);
+                                resolve(URL.createObjectURL(blob));
+                              };
+                              recorder.onerror = (e) => reject(e);
+                              // timeslice=200ms — flush encoded chunks regularly
+                              recorder.start(200);
+
+                              let idx = 0;
+                              const drawNext = () => {
+                                const fr = mediaFrames[idx];
+                                const raw = atob(fr.pixel_b64);
+                                const buf = new Uint8ClampedArray(raw.length);
+                                for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+                                const tmp = document.createElement("canvas");
+                                tmp.width  = fr.width;
+                                tmp.height = fr.height;
+                                tmp.getContext("2d")!.putImageData(
+                                  new ImageData(buf, fr.width, fr.height), 0, 0
+                                );
+                                ctx.drawImage(tmp, 0, 0, outW, outH);
+                                idx++;
+                                if (idx >= mediaFrames.length) {
+                                  // Hold last frame for its full duration, then stop
+                                  setTimeout(() => recorder.stop(), fr.duration_ms);
+                                } else {
+                                  setTimeout(drawNext, fr.duration_ms);
+                                }
+                              };
+                              drawNext();
+                            });
+
+                            setMediaVideoUrl(videoUrl);
+                            setMediaMsg(`✅ Video created from ${mediaFrames.length} Arrow frames`);
+                          } catch (e: any) {
+                            setMediaMsg(`Video error: ${e}`);
+                          }
+                        }}
+                      >
+                        ▶ Create Video from Frames
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Step 4 — Play video */}
+                {mediaVideoUrl && (
+                  <div className="card">
+                    <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13 }}>
+                      Step 3 — Output Video
+                    </div>
+                    <video
+                      src={mediaVideoUrl}
+                      controls
+                      autoPlay
+                      loop
+                      style={{ width: "100%", borderRadius: 8,
+                               border: "1px solid #30363d", background: "#000" }}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
+                      <div style={{ fontSize: 11, color: "#8b949e" }}>
+                        {mediaFrames.length} frames · {mediaFps} fps ·{" "}
+                        {Math.round(mediaFrames.length / mediaFps)}s duration
+                      </div>
+                      <button
+                        className="btn btn-primary"
+                        style={{ fontSize: 12, padding: "4px 12px" }}
+                        onClick={async () => {
+                          if (!mediaBlob) return;
+                          try {
+                            const savePath = await dialogSave({
+                              defaultPath: `video_${Date.now()}.webm`,
+                              filters: [{ name: "WebM Video", extensions: ["webm"] }],
+                            });
+                            if (!savePath) return;
+                            const buf = await mediaBlob.arrayBuffer();
+                            await writeFile(savePath, new Uint8Array(buf));
+                            setMediaMsg(`✅ Video saved to ${savePath}`);
+                          } catch (e: any) {
+                            setMediaMsg(`Save error: ${e}`);
+                          }
+                        }}
+                      >
+                        💾 Save Video
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ═══════════════════════════════════════════════════════════════
+                Phase 2 — Record Tab (Audio + Video recording)
+                ═══════════════════════════════════════════════════════════════ */}
+            {tab === "record" && (
+              <>
+                <div className="panel-title">Record Audio / Video</div>
+                <div className="panel-sub">Capture locally · Process with Arrow · Transcribe with Whisper</div>
+
+                {/* Mode selector */}
+                <div className="card">
+                  <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                    {(["audio", "video"] as const).map(m => (
+                      <button key={m} className={`btn ${recMode === m ? "btn-success" : ""}`}
+                        style={{ flex: 1, textTransform: "capitalize" }}
+                        onClick={() => { setRecMode(m); setRecState("idle"); setRecUrl(null); setRecBlob(null); setRecMsg(null); setTranscript([]); }}>
+                        {m === "audio" ? "🎵 Audio" : "🎥 Video"}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Recording controls */}
+                  {recState === "idle" && (
+                    <button className="btn btn-success" style={{ width: "100%" }}
+                      onClick={async () => {
+                        recChunksRef.current = [];
+                        try {
+                          const constraints = recMode === "audio"
+                            ? { audio: true }
+                            : { audio: true, video: { width: 1280, height: 720 } };
+                          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                          recStreamRef.current = stream;
+                          const mime = recMode === "video"
+                            ? (MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus") ? "video/webm;codecs=vp8,opus" : "video/webm")
+                            : (MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm");
+                          const mr = new MediaRecorder(stream, { mimeType: mime });
+                          mr.ondataavailable = e => { if (e.data.size > 0) recChunksRef.current.push(e.data); };
+                          mr.onstop = () => {
+                            const blob = new Blob(recChunksRef.current, { type: mime });
+                            setRecBlob(blob);
+                            setRecUrl(URL.createObjectURL(blob));
+                            setRecState("done");
+                            stream.getTracks().forEach(t => t.stop());
+                          };
+                          recorderRef.current = mr;
+                          mr.start(500);
+                          setRecState("recording");
+                          setRecDuration(0);
+                          recTimerRef.current = setInterval(() => setRecDuration(d => d + 1), 1000);
+                        } catch (e: any) { setRecMsg(`Mic error: ${e.message}`); }
+                      }}>
+                      {recMode === "audio" ? "⏺ Start Recording Audio" : "⏺ Start Recording Video"}
+                    </button>
+                  )}
+
+                  {recState === "recording" && (
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                        <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#FF6B6B", animation: "pulse 1s infinite" }} />
+                        <span style={{ fontWeight: 600, color: "#FF6B6B" }}>Recording...</span>
+                        <span style={{ fontFamily: "monospace", fontSize: 14 }}>
+                          {Math.floor(recDuration / 60).toString().padStart(2, "0")}:{(recDuration % 60).toString().padStart(2, "0")}
+                        </span>
+                        {recDuration >= 600 && <span style={{ color: "#FFB800", fontSize: 12 }}>⚠ Max 10 min</span>}
+                      </div>
+                      <button className="btn btn-danger" style={{ width: "100%" }}
+                        onClick={() => {
+                          recorderRef.current?.stop();
+                          if (recTimerRef.current) clearInterval(recTimerRef.current);
+                        }}>
+                        ⏹ Stop Recording
+                      </button>
+                    </div>
+                  )}
+
+                  {recState === "done" && recUrl && (
+                    <div>
+                      {recMode === "audio"
+                        ? <audio src={recUrl} controls style={{ width: "100%", marginBottom: 12 }} />
+                        : <video src={recUrl} controls style={{ width: "100%", borderRadius: 8, marginBottom: 12 }} />}
+                      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                        <button className="btn" style={{ flex: 1 }}
+                          onClick={() => { setRecState("idle"); setRecUrl(null); setRecBlob(null); setTranscript([]); setRecMsg(null); }}>
+                          ↩ Record Again
+                        </button>
+                        <button className="btn btn-primary" style={{ flex: 1 }}
+                          onClick={async () => {
+                            if (!recBlob) return;
+                            const { save: dialogSave } = await import("@tauri-apps/plugin-dialog");
+                            const { writeFile } = await import("@tauri-apps/plugin-fs");
+                            const ext  = recMode === "audio" ? "webm" : "webm";
+                            const path = await dialogSave({ defaultPath: `recording_${Date.now()}.${ext}`, filters: [{ name: "WebM", extensions: [ext] }] });
+                            if (!path) return;
+                            const buf = await recBlob.arrayBuffer();
+                            await writeFile(path, new Uint8Array(buf));
+                            setRecMsg(`✅ Saved to ${path}`);
+                          }}>
+                          💾 Save File
+                        </button>
+                      </div>
+
+                      {/* Transcribe (audio only) */}
+                      {recMode === "audio" && (
+                        <button className="btn btn-success" style={{ width: "100%" }}
+                          disabled={transcribing}
+                          onClick={async () => {
+                            if (!recBlob) return;
+                            setTranscribing(true); setRecMsg("Sending to Whisper...");
+                            try {
+                              const token = await (window as any).__TAURI__.core.invoke("get_local_token").catch(() => "");
+                              const form  = new FormData();
+                              form.append("audio_file", recBlob, "recording.webm");
+                              const resp  = await fetch("http://localhost:4000/api/v1/media/transcribe", {
+                                method: "POST", headers: { "Authorization": `Bearer ${token}` }, body: form,
+                              });
+                              const data  = await resp.json();
+                              if (data.success) {
+                                setTranscript(data.segments || []);
+                                setRecMsg(`✅ Transcribed ${data.count} segments`);
+                              } else {
+                                setRecMsg(`Transcribe error: ${data.error}`);
+                              }
+                            } catch (e: any) { setRecMsg(`Error: ${e}`); }
+                            finally { setTranscribing(false); }
+                          }}>
+                          {transcribing ? "Transcribing..." : "🧠 Transcribe with Whisper (NLP)"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {recMsg && (
+                    <div style={{ marginTop: 10, fontSize: 12, color: recMsg.startsWith("✅") ? "#00E0C6" : "#FF6B6B" }}>
+                      {recMsg}
+                    </div>
+                  )}
+                </div>
+
+                {/* Transcript output */}
+                {transcript.length > 0 && (
+                  <div className="card">
+                    <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13 }}>Transcript (Arrow NLP columns)</div>
+                    <div style={{ fontSize: 11, color: "#8b949e", marginBottom: 12 }}>
+                      chunk_index · timestamp_ms · text · language · confidence
+                    </div>
+                    {transcript.map((seg: any) => (
+                      <div key={seg.chunk_index} style={{ marginBottom: 10, padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 6, borderLeft: "2px solid #00E0C6" }}>
+                        <div style={{ fontSize: 11, color: "#8b949e", marginBottom: 4 }}>
+                          [{Math.floor(seg.timestamp_ms / 1000)}s – {Math.floor((seg.end_ms || seg.timestamp_ms) / 1000)}s] · lang: {seg.language} · conf: {(seg.confidence * 100).toFixed(0)}%
+                        </div>
+                        <div style={{ fontSize: 13 }}>{seg.text}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ═══════════════════════════════════════════════════════════════
+                Phase 3 — Preview Tab (in-app file preview + folders)
+                ═══════════════════════════════════════════════════════════════ */}
+            {tab === "preview" && (
+              <>
+                <div className="panel-title">File Preview</div>
+                <div className="panel-sub">Preview images, video, audio, and PDF files inline</div>
+
+                {/* File list for preview */}
+                <div className="card">
+                  <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 13 }}>Select a file to preview</div>
+                  {docs.length === 0 && (
+                    <div style={{ fontSize: 13, color: "#8b949e" }}>No files yet — upload some in New Document tab.</div>
+                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {docs.slice(0, 30).map(doc => (
+                      <div key={doc.id}
+                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                                 padding: "8px 12px", background: previewDoc?.id === doc.id ? "rgba(0,224,198,0.1)" : "rgba(255,255,255,0.03)",
+                                 borderRadius: 6, cursor: "pointer", border: previewDoc?.id === doc.id ? "1px solid #00E0C6" : "1px solid transparent" }}
+                        onClick={() => {
+                          setPreviewDoc(doc);
+                          setPreviewUrl(null);
+                          setPreviewLoading(false);
+                        }}>
+                        <span style={{ fontSize: 13 }}>
+                          {doc.content_type?.startsWith("image/") ? "🖼 " :
+                           doc.content_type?.startsWith("video/") ? "🎥 " :
+                           doc.content_type?.startsWith("audio/") ? "🎵 " :
+                           doc.content_type === "application/pdf" ? "📄 " : "📁 "}
+                          {doc.filename}
+                        </span>
+                        <span style={{ fontSize: 11, color: "#8b949e" }}>{doc.content_type}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Preview pane */}
+                {previewDoc && (
+                  <div className="card">
+                    <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 13 }}>
+                      {previewDoc.filename}
+                    </div>
+
+                    {/* Load preview button */}
+                    {!previewUrl && !previewLoading && (
+                      <button className="btn btn-primary" style={{ width: "100%", marginBottom: 12 }}
+                        onClick={async () => {
+                          setPreviewLoading(true);
+                          try {
+                            const token = await (window as any).__TAURI__.core.invoke("get_local_token").catch(() => "");
+                            const resp  = await fetch(`http://localhost:4000/api/v1/sync/download/${previewDoc.id}`, {
+                              headers: { "Authorization": `Bearer ${token}` },
+                            });
+                            const data  = await resp.json();
+                            if (data.download_url) {
+                              // For local vault files, read directly; for S3 use presigned URL
+                              setPreviewUrl(data.download_url);
+                            } else {
+                              // Fall back to local binary content blob URL
+                              const bytes = await (window as any).__TAURI__.core.invoke("get_file_bytes", { docId: previewDoc.id }).catch(() => null);
+                              if (bytes) {
+                                const blob = new Blob([new Uint8Array(bytes)], { type: previewDoc.content_type });
+                                setPreviewUrl(URL.createObjectURL(blob));
+                              }
+                            }
+                          } catch (e: any) { console.error("Preview load error", e); }
+                          finally { setPreviewLoading(false); }
+                        }}>
+                        Load Preview
+                      </button>
+                    )}
+
+                    {previewLoading && <div style={{ fontSize: 13, color: "#8b949e" }}>Loading...</div>}
+
+                    {previewUrl && (
+                      <>
+                        {previewDoc.content_type?.startsWith("image/") && (
+                          <img src={previewUrl} alt={previewDoc.filename}
+                            style={{ width: "100%", borderRadius: 8, border: "1px solid #30363d" }} />
+                        )}
+                        {previewDoc.content_type?.startsWith("video/") && (
+                          <video src={previewUrl} controls style={{ width: "100%", borderRadius: 8 }} />
+                        )}
+                        {previewDoc.content_type?.startsWith("audio/") && (
+                          <audio src={previewUrl} controls style={{ width: "100%" }} />
+                        )}
+                        {previewDoc.content_type === "application/pdf" && (
+                          <iframe src={previewUrl} style={{ width: "100%", height: 500, border: "none", borderRadius: 8 }} title={previewDoc.filename} />
+                        )}
+                        {!previewDoc.content_type?.match(/^(image|video|audio)\//) && previewDoc.content_type !== "application/pdf" && (
+                          <div style={{ fontSize: 13, color: "#8b949e" }}>
+                            Preview not available for {previewDoc.content_type}. <a href={previewUrl} download={previewDoc.filename} style={{ color: "#58a6ff" }}>Download</a>
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
               </>

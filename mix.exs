@@ -99,13 +99,21 @@ defmodule Alem.MixProject do
 
 
       {:castore, "~> 1.0"},
-       {:gen_smtp, "~> 1.2"}
+      {:gen_smtp, "~> 1.2"},
+
+      # Analytics: Apache Arrow IPC + Parquet (via Polars NIF)
+      # Receives Arrow IPC batches from Tauri client → converts to Parquet → S3
+      {:explorer, "~> 0.10"},
+
+      # Analytics: MessagePack serialization (benchmark comparison + XRPC wire)
+      {:msgpax, "~> 2.4"}
     ]
   end
 
   defp aliases do
     [
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
+      benchmark: ["run benchmark/run_benchmark.exs"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],

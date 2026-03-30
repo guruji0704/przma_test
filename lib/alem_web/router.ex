@@ -76,6 +76,32 @@ defmodule AlemWeb.Router do
 
 
 
+  # ── Vault epoch key + DID document (public, no auth) ───────────────────
+  scope "/api/v1/vault", AlemWeb do
+    pipe_through :api
+    get "/epoch/current", EpochController, :current
+  end
+
+  # DID document at well-known path (did:web resolution)
+  scope "/", AlemWeb do
+    pipe_through :api
+    get "/.well-known/did.json", EpochController, :did_document
+  end
+
+  # ── Analytics: Arrow IPC ingest from Tauri client → Parquet → S3 ────────
+  scope "/api/v1/analytics", AlemWeb do
+    pipe_through :api
+    post "/ingest",  AnalyticsController, :ingest   # receive Arrow IPC batch
+    get  "/schema",  AnalyticsController, :schema   # Arrow schema reference
+  end
+
+  # ── Media NLP: audio/video transcription + Arrow metadata ────────────────
+  scope "/api/v1/media", AlemWeb do
+    pipe_through :api
+    post "/transcribe",  MediaController, :transcribe  # audio → Whisper → Arrow
+    post "/analyze",     MediaController, :analyze     # video frames → metadata Arrow
+  end
+
   scope "/api/v1/sync", AlemWeb do
     pipe_through :api
 
@@ -83,8 +109,14 @@ defmodule AlemWeb.Router do
     post "/apply",        SyncController, :apply_changes
     get  "/changes",      SyncController, :get_changes
     get  "/stats",        SyncController, :get_stats
+    get  "/download/:doc_id", SyncController, :download_file
     post "/upload",       SyncController, :upload_document
-    post "/crdt/upload",  SyncController, :crdt_upload
+    post "/crdt/upload",          SyncController, :crdt_upload
+    post "/crdt/upload_chunk",    SyncController, :chunk_upload
+    post "/crdt/finalize_upload", SyncController, :finalize_upload
+
+    # SSE stream for real-time push events (Phase 3)
+    get  "/stream",       SyncController, :event_stream
   end
 
   scope "/api/swagger" do

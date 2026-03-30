@@ -1,16 +1,57 @@
 import Config
 
+# ── PostgreSQL (local install) ─────────────────────────────────────────────
+# Default credentials for a standard local PostgreSQL install.
+# Change username/password to match your local postgres setup.
 config :alem, Alem.Repo,
   username: "postgres",
-  password: "postgres",
-  hostname: "172.235.17.68",
+  password: "1245",
+  hostname: "localhost",
   database: "dev_alem",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
+# ── sqld (libsql server) ───────────────────────────────────────────────────
+# Points to localhost. sqld is only needed for sync features.
+# For benchmark testing (mix benchmark), sqld is NOT required.
+# Download sqld binary: https://github.com/tursodatabase/libsql/releases
+config :alem, :sqld_url, "http://localhost:8080"
+
+# ── S3 / MinIO ─────────────────────────────────────────────────────────────
+# File uploads are skipped gracefully if S3 is unreachable locally.
+# For full upload testing, install MinIO: https://min.io/download#windows
+config :ex_aws,
+  access_key_id: "minioadmin",
+  secret_access_key: "minioadmin"
+
+config :ex_aws, :s3,
+  scheme: "http://",
+  host: "localhost",
+  port: 9000,
+  region: "local"
+
+# ── CouchDB ────────────────────────────────────────────────────────────────
+# Only needed if CouchDB features are used. Safe to leave if unused.
+config :alem, :couchdb,
+  enabled: false,
+  url: "http://localhost:5984",
+  user: "admin",
+  password: "admin",
+  timeout: 10_000
+
+# ── Vault epoch key (dev placeholder) ─────────────────────────────────────
+# Fine for local dev. In prod this must be a real 32-byte secret.
+config :alem, :epoch_master_key,
+  System.get_env("EPOCH_MASTER_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+
+# ── Phoenix Endpoint ───────────────────────────────────────────────────────
 config :alem, AlemWeb.Endpoint,
-  http: [ip: {0, 0, 0, 0}, port: 4000],
+  http: [
+    ip: {127, 0, 0, 1},
+    port: 4000,
+    thousand_island_options: [read_timeout: 300_000]
+  ],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
@@ -40,8 +81,10 @@ config :phoenix_live_view,
   debug_heex_annotations: true,
   enable_expensive_runtime_checks: true
 
-# Pleroma API Configuration - Use local mock server on port 4001
 config :alem, :pleroma, base_url: "http://localhost:4001"
+
+# Allow unauthenticated analytics POST from localhost for local testing
+config :alem, :analytics_dev_bypass, true
 
 config :alem, Alem.LocalFirst.LibSQLRepo,
   database: Path.expand("../priv/local_data/alem_local_dev.db", __DIR__),
@@ -50,5 +93,3 @@ config :alem, Alem.LocalFirst.LibSQLRepo,
   busy_timeout: 5_000,
   stacktrace: true,
   show_sensitive_data_on_connection_error: true
-  # Foreign keys are enabled via the repo's after_connect callback
-  # defined in lib/alem/local_first/lib_sql_repo.ex — do NOT set it here
