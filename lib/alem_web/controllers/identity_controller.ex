@@ -1,92 +1,85 @@
 defmodule AlemWeb.IdentityController do
   @moduledoc """
-  Controller for identity resolution operations
+  Identity resolution — find a namespace by any of its identifiers.
+  Accepts: namespace_key, DID (did:przma:...), or Pleroma account ID.
   """
 
   use AlemWeb, :controller
+  alias Alem.Namespace.Manager
+  alias Alem.DID
 
-  alias Alem.Identity.Resolver
-
-  @doc """
-  Resolve an identifier to a namespace
-  GET /api/v1/identity/resolve/:identifier
-  """
+  @doc "GET /api/v1/identity/resolve/:identifier"
   def resolve(conn, %{"identifier" => identifier}) do
-    case Resolver.resolve_to_namespace(identifier) do
-      {:ok, namespace} ->
-        conn
-        |> json(%{
-          identifier: identifier,
-          namespace: format_namespace(namespace),
-          all_identifiers: Resolver.all_identifiers(namespace),
-          primary_identifier: Resolver.primary_identifier(namespace)
+    case Manager.find_namespace(identifier) do
+      nil ->
+        conn |> put_status(404) |> json(%{error: "Namespace not found for: #{identifier}"})
+
+      namespace ->
+        conn |> json(%{
+          identifier:       identifier,
+          namespace:        format(namespace),
+          all_identifiers:  all_ids(namespace),
+          primary_identifier: primary_id(namespace)
         })
-
-      {:error, :namespace_not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Namespace not found for identifier: #{identifier}"})
     end
   end
 
-  @doc """
-  Check if two identifiers refer to the same identity
-  POST /api/v1/identity/compare
-  """
-  def compare(conn, params) do
-    identifier1 = params["identifier1"]
-    identifier2 = params["identifier2"]
+  @doc "POST /api/v1/identity/compare — are two identifiers the same person?"
+  def compare(conn, %{"identifier1" => id1, "identifier2" => id2}) do
+    ns1 = Manager.find_namespace(id1)
+    ns2 = Manager.find_namespace(id2)
 
-    if is_nil(identifier1) or is_nil(identifier2) do
-      conn
-      |> put_status(:bad_request)
-      |> json(%{error: "Both identifier1 and identifier2 are required"})
-    else
-      same = Resolver.same_identity?(identifier1, identifier2)
+    same =
+      ns1 != nil && ns2 != nil &&
+      (ns1.id == ns2.id ||
+       (ns1.did && ns1.did == ns2.did) ||
+       (ns1.pleroma_account_id && ns1.pleroma_account_id == ns2.pleroma_account_id))
 
-      conn
-      |> json(%{
-        identifier1: identifier1,
-        identifier2: identifier2,
-        same_identity: same
-      })
-    end
+    conn |> json(%{identifier1: id1, identifier2: id2, same_identity: same})
   end
+  def compare(conn, _),
+    do: conn |> put_status(400) |> json(%{error: "identifier1 and identifier2 required"})
 
-  @doc """
-  Get all identifiers for a namespace
-  GET /api/v1/identity/:identifier/identifiers
-  """
+  @doc "GET /api/v1/identity/:identifier/identifiers"
   def identifiers(conn, %{"identifier" => identifier}) do
-    case Resolver.resolve_to_namespace(identifier) do
-      {:ok, namespace} ->
-        conn
-        |> json(%{
-          namespace_id: namespace.id,
-          identifiers: Resolver.all_identifiers(namespace),
-          primary_identifier: Resolver.primary_identifier(namespace)
-        })
+    case Manager.find_namespace(identifier) do
+      nil ->
+        conn |> put_status(404) |> json(%{error: "Namespace not found"})
 
-      {:error, :namespace_not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Namespace not found"})
+      namespace ->
+        conn |> json(%{
+          namespace_id:      namespace.id,
+          identifiers:       all_ids(namespace),
+          primary_identifier: primary_id(namespace)
+        })
     end
   end
 
-  # Private helpers
-
-  defp format_namespace(namespace) do
+  defp format(ns) do
     %{
-      id: namespace.id,
-      tenant_id: namespace.tenant_id,
-      did: namespace.did,
-      identity_type: namespace.identity_type,
-      pleroma_account_id: namespace.pleroma_account_id,
-      status: namespace.status,
-      document_count: namespace.document_count || 0,
-      storage_bytes: namespace.storage_bytes || 0,
-      last_activity_at: namespace.last_activity_at
+      id:                 ns.id,
+      tenant_id:          ns.tenant_id,
+      did:                ns.did,
+      identity_type:      ns.identity_type,
+      pleroma_account_id: ns.pleroma_account_id,
+      status:             ns.status,
+      document_count:     ns.document_count     || 0,
+      storage_bytes:      ns.storage_bytes || 0,
+      last_activity_at:   ns.last_activity_at
     }
+  end
+
+  defp all_ids(ns) do
+    [ns.id, ns.did, ns.pleroma_account_id]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp primary_id(ns) do
+    cond do
+      ns.did                -> ns.did
+      ns.pleroma_account_id -> ns.pleroma_account_id
+      true                  -> ns.id
+    end
   end
 end

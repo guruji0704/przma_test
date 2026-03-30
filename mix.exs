@@ -71,12 +71,6 @@ defmodule Alem.MixProject do
       {:hackney, "~> 1.20"},
       {:sweet_xml, "~> 0.7"},
 
-      # Storage - CouchDB
-      {:couchdb_connector, "~> 0.5.0"},
-      {:httpoison, "~> 0.10"},
-      {:plug, "~> 1.15"},
-      {:multipart, "~> 0.4"},
-
       # LibSQL Support
       {:exqlite, "~> 0.24"},
       {:ecto_sqlite3, "~> 0.17"},
@@ -106,7 +100,12 @@ defmodule Alem.MixProject do
       {:explorer, "~> 0.10"},
 
       # Analytics: MessagePack serialization (benchmark comparison + XRPC wire)
-      {:msgpax, "~> 2.4"}
+      {:msgpax, "~> 2.4"},
+
+      # GraphQL — Absinthe
+      {:absinthe,         "~> 1.7"},
+      {:absinthe_plug,    "~> 1.5"},
+      {:absinthe_phoenix, "~> 2.0"}
     ]
   end
 

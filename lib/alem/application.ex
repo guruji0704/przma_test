@@ -5,38 +5,22 @@ defmodule Alem.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Database
       Alem.Repo,
-
-      # Telemetry
       AlemWeb.Telemetry,
-
-      # DNS
       {DNSCluster, query: Application.get_env(:alem, :dns_cluster_query) || :ignore},
-
-      # PubSub
       {Phoenix.PubSub, name: Alem.PubSub},
-
-      # Email
       {Finch, name: Alem.Finch},
-
       Alem.Sync.Manager,
-
-      # Epoch key manager — generates + rotates x25519 keypairs for vault CAS decryption.
-      # Must start before AlemWeb.Endpoint so the epoch endpoint is ready on first request.
-      # Requires EPOCH_MASTER_KEY env var (32 random bytes, base64-encoded).
+      # Epoch key manager for vault encryption
       Alem.Vault.EpochKeyManager,
-
-      # Distributed namespace management
-      #Alem.Namespace.HordeSupervisor,
-
-      # Web endpoint (Phoenix on port 4201)
-      AlemWeb.Endpoint
+      # Web endpoint — must start before Absinthe.Subscription
+      AlemWeb.Endpoint,
+      # GraphQL subscriptions (real-time uploads notification)
+      {Absinthe.Subscription, AlemWeb.Endpoint}
+      # Horde namespace supervisor — uncomment when deploying multi-node:
+      # Alem.Namespace.Supervisor,
     ]
 
-    # NOTE: PleromaMockServer is REMOVED.
-    # Authentication now uses real database via Alem.Auth module.
-    # No more fake server on port 4001.
     Task.start(fn ->
       Process.sleep(2_000)
       sqld_url = Application.get_env(:alem, :sqld_url, "http://localhost:8080")
@@ -45,15 +29,12 @@ defmodule Alem.Application do
           Alem.Sqld.ensure_schema()
         _ ->
           require Logger
-          Logger.info("[sqld] Not reachable at #{sqld_url} — skipping schema bootstrap (sync disabled locally)")
+          Logger.info("[sqld] Not reachable — skipping schema bootstrap")
       end
     end)
 
     opts = [strategy: :one_for_one, name: Alem.Supervisor]
     Supervisor.start_link(children, opts)
-     # Bootstrap sqld schema after startup
-
-
   end
 
   @impl true

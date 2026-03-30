@@ -1,9 +1,7 @@
 defmodule AlemWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :alem
+  use Absinthe.Phoenix.Endpoint  # enables GraphQL subscriptions over WebSocket
 
-  # The session will be stored in the cookie and signed,
-  # this means its contents can be read but not tampered with.
-  # Set :encryption_salt if you would also like to encrypt it.
   @session_options [
     store: :cookie,
     key: "_alem_key",
@@ -14,6 +12,11 @@ defmodule AlemWeb.Endpoint do
   socket "/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
+
+  # GraphQL subscriptions WebSocket
+  socket "/socket", AlemWeb.UserSocket,
+    websocket: true,
+    longpoll: false
 
   # Serve at "/" the static files from "priv/static" directory.
   #

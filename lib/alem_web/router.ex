@@ -138,4 +138,23 @@ defmodule AlemWeb.Router do
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end
+
+  # ── GraphQL endpoint ────────────────────────────────────────────────────────
+  scope "/graphql" do
+    pipe_through :api
+    forward "/", Absinthe.Plug,
+      schema: AlemWeb.Schema,
+      json_codec: Jason
+  end
+
+  # ── GraphiQL browser UI (dev only) ─────────────────────────────────────────
+  if Mix.env() == :dev do
+    scope "/graphiql" do
+      pipe_through :browser
+      forward "/", Absinthe.Plug.GraphiQL,
+        schema: AlemWeb.Schema,
+        interface: :simple
+    end
+  end
+
 end
