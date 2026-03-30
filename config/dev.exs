@@ -1,8 +1,6 @@
 import Config
 
 # ── PostgreSQL (local install) ─────────────────────────────────────────────
-# Default credentials for a standard local PostgreSQL install.
-# Change username/password to match your local postgres setup.
 config :alem, Alem.Repo,
   username: "postgres",
   password: "new.P@ssw0rd",
@@ -13,26 +11,26 @@ config :alem, Alem.Repo,
   pool_size: 10
 
 # ── sqld (libsql server) ───────────────────────────────────────────────────
-# Points to localhost. sqld is only needed for sync features.
-# For benchmark testing (mix benchmark), sqld is NOT required.
-# Download sqld binary: https://github.com/tursodatabase/libsql/releases
 config :alem, :sqld_url, "http://localhost:8080"
 
-# ── S3 / MinIO ─────────────────────────────────────────────────────────────
-# File uploads are skipped gracefully if S3 is unreachable locally.
-# For full upload testing, install MinIO: https://min.io/download#windows
+# ── S3 / Linode Object Storage ─────────────────────────────────────────────
+# Changed from MinIO (localhost:9000) → Linode (in-maa-1.linodeobjects.com)
+# Bucket: perkeep
 config :ex_aws,
-  access_key_id: "minioadmin",
-  secret_access_key: "minioadmin"
+  access_key_id: "QBQ24J1P1BV957AUYYXV",
+  secret_access_key: "LqqbMn1gBggICrvrqQMOKQ57T9rnqeXXOx6x8H7B"
 
 config :ex_aws, :s3,
-  scheme: "http://",
-  host: "localhost",
-  port: 9000,
-  region: "local"
+  scheme: "https://",
+  host: "in-maa-1.linodeobjects.com",
+  region: "in-maa-1"
+
+# ── CAS dev bypass ─────────────────────────────────────────────────────────
+# false = use real Linode S3 (now that we have real credentials above)
+# true  = skip S3, only write DB row (for offline dev without internet)
+config :alem, :cas_dev_bypass, false
 
 # ── CouchDB ────────────────────────────────────────────────────────────────
-# Only needed if CouchDB features are used. Safe to leave if unused.
 config :alem, :couchdb,
   enabled: false,
   url: "http://localhost:5984",
@@ -41,7 +39,6 @@ config :alem, :couchdb,
   timeout: 10_000
 
 # ── Vault epoch key (dev placeholder) ─────────────────────────────────────
-# Fine for local dev. In prod this must be a real 32-byte secret.
 config :alem, :epoch_master_key,
   System.get_env("EPOCH_MASTER_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 
@@ -83,7 +80,6 @@ config :phoenix_live_view,
 
 config :alem, :pleroma, base_url: "http://localhost:4001"
 
-# Allow unauthenticated analytics POST from localhost for local testing
 config :alem, :analytics_dev_bypass, true
 
 config :alem, Alem.LocalFirst.LibSQLRepo,
