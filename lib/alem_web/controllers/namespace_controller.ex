@@ -64,7 +64,7 @@ defmodule AlemWeb.NamespaceController do
     }
 
     case Alem.Namespace.ingest_document(ns_key, attrs) do
-      {:ok, doc, cas_obj} ->
+      {:ok, doc, cas_obj, is_duplicate} ->
         r
         |> Map.put(:last_doc_id, doc.id)
         |> Map.put(:last_hash, cas_obj.content_hash)

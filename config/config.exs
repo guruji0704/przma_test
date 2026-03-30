@@ -4,13 +4,12 @@ config :alem,
   ecto_repos: [Alem.Repo],
   generators: [timestamp_type: :utc_datetime]
 
-# Database — overridden per environment in config/dev.exs and config/prod.exs
+# Database
 config :alem, Alem.Repo,
-  username: "postgres",
-  password: "1245",
-  hostname: "localhost",
   database: "dev_alem",
-  stacktrace: true,
+  username: "postgres",
+  password: "postgres",
+  hostname: "172.235.17.68",
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
@@ -34,20 +33,21 @@ config :alem, AlemWeb.Endpoint,
     ]
   ]
 
-config :alem, Alem.Mailer,
-  adapter: Swoosh.Adapters.SMTP,
-  relay: "przma.com",
-  port: 465,
-  username: "noreply@przma.com",
-  password: "dev.mail@12345",
-  ssl: true,
-  auth: :always,
-  retries: 2,
-  no_mx_lookups: true,
-  sockopts: [
-    {:verify, :verify_none},
-    {:versions, [:"tlsv1.2"]}
-  ]
+#config :alem, Alem.Mailer,
+ # adapter: Swoosh.Adapters.SMTP,
+  #relay: "mail.przma.com",
+  #port: 465,
+  #username: "noreply@przma.com",
+  #password: "dev.mail@12345",
+  #ssl: true,
+  #tls: :always,
+  #auth: :always,
+  #retries: 2,
+  #no_mx_lookups: false,
+  #sockopts: [
+   # {:verify, :verify_none},
+    #{:versions, [:"tlsv1.2"]}
+  #]
 
 
 # config :swoosh, :api_client, Swoosh.ApiClient.Finch
@@ -72,12 +72,12 @@ config :ex_aws, :hackney,
   timeout: 600_000,
   recv_timeout: 600_000
 
-# CouchDB Configuration — overridden per environment in config/dev.exs
+# CouchDB Configuration
 config :alem, :couchdb,
   enabled: true,
-  url: System.get_env("COUCHDB_URL", "http://localhost:5984"),
-  user: System.get_env("COUCHDB_USER", "admin"),
-  password: System.get_env("COUCHDB_PASSWORD", "admin"),
+  url: "http://172.235.17.68:5984",
+  user: "admin",
+  password: "new.P@ssw0rd",
   timeout: 10_000
 
 # File Storage
@@ -120,8 +120,6 @@ config :logger, :console,
   metadata: [:request_id]
 
 config :phoenix, :json_library, Jason
-
-
 
 config :alem, Alem.LocalFirst.LibSQLRepo,
   database: Path.expand("../priv/local_data/alem_local.db", __DIR__),

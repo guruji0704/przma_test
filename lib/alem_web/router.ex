@@ -157,4 +157,9 @@ defmodule AlemWeb.Router do
     end
   end
 
+   scope "/api", AlemWeb do
+    pipe_through :api
+    get "/health", HealthController, :check
+  end
+
 end
