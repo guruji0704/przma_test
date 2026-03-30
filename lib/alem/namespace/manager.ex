@@ -35,7 +35,7 @@ defmodule Alem.Namespace.Manager do
     case ensure_namespace_in_db(user_id, tenant_id, config) do
       {:ok, _namespace} ->
         child_spec = %{
-          id:      {:namespace_manager, user_id},
+          # id:      {:namespace_manager, user_id},
           start:   {__MODULE__, :start_link, [user_id, tenant_id, config]},
           restart: :transient
         }
@@ -57,7 +57,13 @@ defmodule Alem.Namespace.Manager do
   def stop(user_id) do
     case whereis(user_id) do
       nil -> {:error, :not_found}
-      pid -> GenServer.stop(pid, :normal)
+      pid ->
+        try do
+          GenServer.stop(pid, :normal)
+          :ok
+        catch
+          :exit, _ -> :ok
+        end
     end
   end
 
@@ -140,7 +146,9 @@ defmodule Alem.Namespace.Manager do
 
     db_config = case Repo.get(Namespace, user_id) do
       nil -> config
-      ns  -> Map.merge(ns.config || %{}, config)
+      ns  ->
+        db_cfg = atomize_keys(ns.config || %{})
+        Map.merge(db_cfg, config)
     end
 
     state = %__MODULE__{
@@ -384,4 +392,18 @@ defmodule Alem.Namespace.Manager do
       if is_map(v1) and is_map(v2), do: deep_merge(v1, v2), else: v2
     end)
   end
+
+    defp atomize_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_binary(k) ->
+        try do
+          {String.to_existing_atom(k), atomize_keys(v)}
+        rescue
+          ArgumentError -> {k, atomize_keys(v)}
+        end
+      {k, v} -> {k, atomize_keys(v)}
+    end)
+  end
+  defp atomize_keys(v), do: v
+
 end

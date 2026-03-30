@@ -128,7 +128,10 @@ defmodule Alem.Namespace do
     filename:     filename,
     file_data:    data,
     content_type: content_type,
-    metadata:     metadata
+    metadata:     metadata,
+    namespace_key: namespace_key,
+    actor_did:     namespace_key,
+    user_id:       namespace_key
   }) do
     # Check dedup BEFORE the transaction — so we can return it to the caller.
     # The resolver must NOT call CAS directly. Namespace decides everything.

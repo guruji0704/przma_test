@@ -37,7 +37,10 @@ defmodule Alem.Storage.CAS do
               storage_key:     s3_key,
               media_type:      media_type,
               file_size:       byte_size(data),
-              ref_count:       1
+              ref_count:       1,
+              namespace_key:   Map.get(ctx, :namespace_key, "system"),
+              actor_did:       Map.get(ctx, :actor_did, "system"),
+              user_id:         Map.get(ctx, :user_id, "system")
             }
 
             case Repo.insert(CasObject.ingest_changeset(%CasObject{}, attrs)) do

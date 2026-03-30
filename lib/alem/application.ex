@@ -13,11 +13,21 @@ defmodule Alem.Application do
       Alem.Sync.Manager,
       # Epoch key manager for vault encryption
       Alem.Vault.EpochKeyManager,
+
+      # ← Horde registry first
+      {Horde.Registry,
+        name: Alem.Namespace.HordeRegistry,
+        keys: :unique,
+        members: :auto},
+
+      # ← then Horde supervisor
+      {Horde.DynamicSupervisor,
+        name: Alem.Namespace.DynamicSupervisor,
+        strategy: :one_for_one,
+        members: :auto},
+
       # Web endpoint — must start before Absinthe.Subscription
       AlemWeb.Endpoint,
-
-      {DynamicSupervisor, strategy: :one_for_one, name: Alem.Namespace.DynamicSupervisor},
-
       # GraphQL subscriptions (real-time uploads notification)
       {Absinthe.Subscription, AlemWeb.Endpoint}
       # Horde namespace supervisor — uncomment when deploying multi-node:
