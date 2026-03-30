@@ -1,11 +1,34 @@
 defmodule AlemWeb.Schema do
   use Absinthe.Schema
 
+  # Built-in Absinthe scalars: datetime, naive_datetime, date, time, decimal
   import_types Absinthe.Type.Custom
+  # Provides the :upload type for file upload mutations
+  import_types Absinthe.Plug.Types
+
   import_types AlemWeb.Schema.Types.Cas
   import_types AlemWeb.Schema.Types.Document
 
-  # ── Queries (read) ──────────────────────────────────────────────────────────
+  # ── Custom scalars ────────────────────────────────────────────────────────
+
+  @desc "Arbitrary JSON value — map, list, string, number, boolean, or null"
+  scalar :json do
+    parse fn
+      %Absinthe.Blueprint.Input.String{value: value} ->
+        case Jason.decode(value) do
+          {:ok, decoded} -> {:ok, decoded}
+          _              -> :error
+        end
+      %Absinthe.Blueprint.Input.Null{} ->
+        {:ok, nil}
+      input ->
+        # Accept already-decoded maps/lists from HTTP JSON body
+        {:ok, input.value}
+    end
+    serialize &Function.identity/1
+  end
+
+  # ── Queries ───────────────────────────────────────────────────────────────
 
   query do
     @desc "List documents in the caller's namespace"
@@ -24,8 +47,8 @@ defmodule AlemWeb.Schema do
 
     @desc "Full-text search within the caller's namespace"
     field :search_documents, list_of(:document) do
-      arg :query,  non_null(:string)
-      arg :limit,  :integer, default_value: 20
+      arg :query, non_null(:string)
+      arg :limit, :integer, default_value: 20
       resolve &AlemWeb.Resolvers.Document.search/3
     end
 
@@ -36,7 +59,7 @@ defmodule AlemWeb.Schema do
     end
   end
 
-  # ── Mutations (write) ───────────────────────────────────────────────────────
+  # ── Mutations ─────────────────────────────────────────────────────────────
 
   mutation do
     @desc "Upload a file — CAS dedup applied automatically"
@@ -55,10 +78,10 @@ defmodule AlemWeb.Schema do
     end
   end
 
-  # ── Subscriptions (real-time) ───────────────────────────────────────────────
+  # ── Subscriptions ─────────────────────────────────────────────────────────
 
   subscription do
-    @desc "Fires when a new document is successfully uploaded in the caller's namespace"
+    @desc "Fires when a new document is uploaded in the caller's namespace"
     field :document_uploaded, :document do
       arg :namespace_key, non_null(:string)
 

@@ -1,30 +1,32 @@
-defmodule AlemWeb.Schema.Types.Document do
-  use Absinthe.Schema.Notation
+defmodule AlemWeb.Resolvers.Document do
+  @moduledoc "Resolvers for document queries and mutations."
 
-  @desc "A document stored in the user's namespace"
-  object :document do
-    field :id,            non_null(:id)
-    field :filename,      :string
-    field :user_id,       :string
-    field :tenant_id,     :string
-    field :content_hash,  :string
-    field :content_type,  :string
-    field :file_size,     :integer
-    field :status,        :string
-    field :activity_verb, :string
-    field :metadata,      :json
-    field :text_content,  :string
-    field :inserted_at,   :datetime
-    field :updated_at,    :datetime
+  alias Alem.{DID, Namespace}
 
-    @desc "The CAS object for this document (includes signed download URL)"
-    field :cas_object, :cas_object do
-      resolve fn doc, _, _ ->
-        case doc.content_hash && Alem.Repo.get(Alem.Cas.CasObject, doc.content_hash) do
-          nil    -> {:ok, nil}
-          cas_obj -> {:ok, cas_obj}
-        end
-      end
+  def list(_parent, args, %{context: ctx}) do
+    ns_key = DID.namespace_key(ctx.current_user.did_id)
+    Namespace.list_documents(ns_key, %{
+      limit:  args[:limit]  || 20,
+      offset: args[:offset] || 0,
+      status: args[:status]
+    })
+  end
+
+  def get(_parent, %{id: id}, %{context: ctx}) do
+    ns_key = DID.namespace_key(ctx.current_user.did_id)
+    Namespace.get_document(ns_key, id)
+  end
+
+  def search(_parent, %{query: query} = args, %{context: ctx}) do
+    ns_key = DID.namespace_key(ctx.current_user.did_id)
+    Namespace.search_documents(ns_key, query, %{limit: args[:limit] || 20})
+  end
+
+  def delete(_parent, %{id: id}, %{context: ctx}) do
+    ns_key = DID.namespace_key(ctx.current_user.did_id)
+    case Namespace.delete_document(ns_key, id) do
+      :ok          -> {:ok, %{success: true, id: id}}
+      {:error, _r} -> {:ok, %{success: false, id: id}}
     end
   end
 end
