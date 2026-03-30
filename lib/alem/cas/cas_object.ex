@@ -12,7 +12,7 @@ defmodule Alem.Cas.CasObject do
   @foreign_key_type :string
 
   schema "cas_objects" do
-    # Tenant context
+    # Tenant context — nullable so CAS works without a user context (smoke tests, system ops)
     field :tenant_id,         :string
     field :namespace_key,     :string
     field :actor_did,         :string
@@ -55,9 +55,11 @@ defmodule Alem.Cas.CasObject do
     timestamps(type: :utc_datetime)
   end
 
-  @required [:content_hash, :namespace_key, :actor_did, :user_id,
-             :storage_key, :effective_from]
-  @optional [:tenant_id, :storage_backend, :media_type, :file_size,
+  # Only content_hash and storage_key are truly required
+  # namespace_key, actor_did, user_id are nullable to support system/test operations
+  @required [:content_hash, :storage_key, :effective_from]
+  @optional [:tenant_id, :namespace_key, :actor_did, :user_id,
+             :storage_backend, :media_type, :file_size,
              :ref_count, :is_corrupt, :is_verified, :verified_at,
              :extracted_text, :duration_seconds, :width_px, :height_px,
              :page_count, :effective_to, :is_current,

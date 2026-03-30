@@ -1,12 +1,12 @@
 defmodule Alem.Storage.CAS do
   @moduledoc """
   Content Addressable Storage — the S3 side.
+
   Computes SHA-256 hash, checks for existing content, uploads if new.
+  Accepts an optional context map (namespace_key, actor_did) for audit fields.
 
   Two users uploading the same file:
     → same hash → CAS detects existing → S3 NOT written again → ref_count + 1
-
-  This module only handles S3. All DB operations go through Alem.Cas context.
   """
 
   require Logger
@@ -19,8 +19,10 @@ defmodule Alem.Storage.CAS do
   Store file bytes in CAS (S3 + DB).
   If same bytes exist → skip S3, increment ref_count.
   Returns {:ok, cas_object}.
+
+  ctx is optional: %{namespace_key: "...", actor_did: "..."}
   """
-  def put(data, media_type \\ "application/octet-stream") do
+  def put(data, media_type \\ "application/octet-stream", ctx \\ %{}) do
     hash = compute_hash(data)
 
     case Repo.get(CasObject, hash) do
@@ -38,9 +40,8 @@ defmodule Alem.Storage.CAS do
               media_type:      media_type,
               file_size:       byte_size(data),
               ref_count:       1,
-              namespace_key:   Map.get(ctx, :namespace_key, "system"),
-              actor_did:       Map.get(ctx, :actor_did, "system"),
-              user_id:         Map.get(ctx, :user_id, "system")
+              namespace_key:   Map.get(ctx, :namespace_key),
+              actor_did:       Map.get(ctx, :actor_did)
             }
 
             case Repo.insert(CasObject.ingest_changeset(%CasObject{}, attrs)) do
@@ -81,8 +82,6 @@ defmodule Alem.Storage.CAS do
     :crypto.hash(:sha256, data) |> Base.encode16(case: :lower)
   end
 
-  # S3 key uses 2-level prefix to avoid hot-spotting (max 10k objects per prefix)
-  # e.g. hash = "a7f8e9d2..." → key = "cas/a7/f8/a7f8e9d2..."
   defp s3_key_for(hash) do
     "cas/#{String.slice(hash, 0, 2)}/#{String.slice(hash, 2, 2)}/#{hash}"
   end

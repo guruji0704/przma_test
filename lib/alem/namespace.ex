@@ -140,7 +140,8 @@ defmodule Alem.Namespace do
 
     Repo.transaction(fn ->
       # Step 1: CAS — dedup S3
-      case CAS.put(data, content_type) do
+      cas_ctx = %{namespace_key: namespace_key, actor_did: namespace_key}
+      case CAS.put(data, content_type, cas_ctx) do
         {:ok, cas_obj} ->
           # Step 2: Document row
           doc_attrs = %{

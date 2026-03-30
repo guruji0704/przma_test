@@ -22,7 +22,7 @@ defmodule Alem.Namespace.DataRouter do
 
   def start(user_id, tenant_id, config) do
     name = Registry.via(user_id, :data_router)
-    GenServer.start_link(__MODULE__, {user_id, tenant_id, config}, name: name)
+    GenServer.start(__MODULE__, {user_id, tenant_id, config}, name: name)
   end
 
   def list_documents(user_id, opts \\ []) do

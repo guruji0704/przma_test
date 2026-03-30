@@ -246,8 +246,16 @@ defmodule Alem.Namespace.Manager do
     Logger.info("[Manager:#{state.user_id}] Shutting down: #{inspect(reason)}")
     sync_to_db(state)
 
+    # Unlink first — DataRouter was started with start_link which creates a
+    # bidirectional link. Without unlinking, DataRouter exiting with :shutdown
+    # sends the exit signal back to this process, causing it to exit with
+    # :shutdown instead of the expected :normal, which makes GenServer.stop/3
+    # raise an exit that escapes the try/catch in Manager.stop/1.
     Enum.each(state.services, fn {_name, {pid, _ref}} ->
-      if Process.alive?(pid), do: GenServer.stop(pid, :shutdown)
+      if Process.alive?(pid) do
+        Process.unlink(pid)
+        Process.exit(pid, :shutdown)
+      end
     end)
 
     :ok

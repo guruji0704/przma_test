@@ -34,6 +34,7 @@ config :alem, AlemWeb.Endpoint,
   ]
 
 
+
 #config :alem, Alem.Mailer,
  # adapter: Swoosh.Adapters.SMTP,
   #relay: "mail.przma.com",
