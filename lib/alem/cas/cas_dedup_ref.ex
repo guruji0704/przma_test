@@ -2,13 +2,9 @@ defmodule Alem.Cas.CasDedupRef do
   @moduledoc """
   Each user's PERSONAL pointer to a shared CAS object.
   Same S3 bytes → same cas_objects row → multiple dedup_refs (one per user).
-  Each user can have their own filename, tags, vault_path for the same file.
-  Soft-delete only — rows kept for audit trail.
 
-  When user "deletes" a file:
-    1. SET is_active = false
-    2. DECREMENT cas_objects.ref_count
-    3. IF ref_count == 0 THEN delete cas_objects row + S3 bytes
+  user_id is an optional audit hint — no FK to users table.
+  Identity is tracked by namespace_key.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -20,24 +16,21 @@ defmodule Alem.Cas.CasDedupRef do
     field :tenant_id,          :string
     field :namespace_key,      :string
     field :actor_did,          :string
-    belongs_to :user,          Alem.Pleroma.User,
-      type: :string, foreign_key: :user_id
+    field :user_id,            :string    # audit hint — no FK constraint
 
     field :content_hash,       :string
     belongs_to :document,      Alem.Schemas.Document,
-      type: :string, foreign_key: :document_id
+      type: :binary_id, foreign_key: :document_id
 
     belongs_to :cas_object,    Alem.Cas.CasObject,
       foreign_key: :content_hash, references: :content_hash,
       define_field: false
 
-    # Per-user private metadata
     field :vault_path,         :string
     field :user_filename,      :string
     field :user_tags,          {:array, :string}, default: []
     field :version_label,      :string
 
-    # Soft-delete
     field :is_active,          :boolean, default: true
     field :deactivated_at,     :utc_datetime
     field :deactivated_by_did, :string
@@ -45,9 +38,10 @@ defmodule Alem.Cas.CasDedupRef do
     timestamps(type: :utc_datetime)
   end
 
-  @required [:tenant_id, :namespace_key, :actor_did, :user_id,
-             :content_hash, :document_id]
-  @optional [:vault_path, :user_filename, :user_tags, :version_label,
+  # Only truly required: tenant isolation + which file + which document
+  @required [:tenant_id, :namespace_key, :content_hash, :document_id]
+  @optional [:actor_did, :user_id,
+             :vault_path, :user_filename, :user_tags, :version_label,
              :is_active, :deactivated_at, :deactivated_by_did]
 
   def changeset(ref, attrs) do

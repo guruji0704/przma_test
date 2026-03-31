@@ -2,7 +2,9 @@ defmodule Alem.Cas.CasActivity do
   @moduledoc """
   Activity log — WHAT happened to a file.
   One row per user action: Upload, Delete, View, Share, etc.
-  Used for audit trail, PRZMA perception dimensions, and sync conflict resolution.
+
+  user_id is an optional audit hint — it is NOT a FK to users table.
+  Identity is tracked by namespace_key and actor_did (DID string).
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -14,15 +16,11 @@ defmodule Alem.Cas.CasActivity do
     field :tenant_id,         :string
     field :namespace_key,     :string
     field :actor_did,         :string
-    belongs_to :user,         Alem.Pleroma.User,
-      type: :string, foreign_key: :user_id
+    field :user_id,           :string    # audit hint — no FK constraint
     field :auth_id,           :string
 
-    # The action
     field :verb,              :string
-    # Upload|Create|Delete|View|Share|Search|Login|Logout|Sync
     field :object_hash,       :string
-    # NULL for non-file verbs (Login, Search)
     field :object_type,       :string
     field :object_id,         :string
     field :object_path,       :string
@@ -32,7 +30,6 @@ defmodule Alem.Cas.CasActivity do
     field :platform,          :string
     field :client_version,    :string
 
-    # PRZMA perception dimensions
     field :seven_p_dimension, :string
     field :light_signal,      :string
     field :context,           :map, default: %{}
@@ -40,7 +37,6 @@ defmodule Alem.Cas.CasActivity do
     field :published_at,      :utc_datetime
     field :duration_ms,       :integer
 
-    # Sync conflict resolution
     field :effective_from,    :utc_datetime
     field :effective_to,      :utc_datetime
     field :is_active,         :boolean, default: true
@@ -60,13 +56,14 @@ defmodule Alem.Cas.CasActivity do
 
   @verbs ~w(Upload Create Delete View Share Search Login Logout Sync Comment React)
 
-  @required [:tenant_id, :namespace_key, :actor_did, :user_id,
-             :auth_id, :verb, :published_at, :effective_from]
-  @optional [:object_hash, :object_type, :object_id, :object_path,
+  # Only truly required: tenant isolation key + what happened + when
+  @required [:tenant_id, :namespace_key, :verb]
+  @optional [:actor_did, :user_id, :auth_id,
+             :object_hash, :object_type, :object_id, :object_path,
              :target_did, :device_id, :session_id, :platform,
              :client_version, :seven_p_dimension, :light_signal, :context,
-             :duration_ms, :effective_to, :is_active, :is_voided,
-             :voided_at, :voided_by_did, :void_reason]
+             :published_at, :duration_ms, :effective_from, :effective_to,
+             :is_active, :is_voided, :voided_at, :voided_by_did, :void_reason]
 
   def changeset(activity, attrs) do
     activity
@@ -89,12 +86,12 @@ defmodule Alem.Cas.CasActivity do
   def void_changeset(activity, voided_by_did, reason) do
     activity
     |> change(%{
-      is_active:    false,
-      is_voided:    true,
-      voided_at:    DateTime.utc_now(),
+      is_active:     false,
+      is_voided:     true,
+      voided_at:     DateTime.utc_now(),
       voided_by_did: voided_by_did,
-      void_reason:  reason,
-      effective_to: DateTime.utc_now()
+      void_reason:   reason,
+      effective_to:  DateTime.utc_now()
     })
   end
 end

@@ -52,7 +52,7 @@ defmodule AlemWeb.NamespaceController do
   end
 
   defp test_ingest(r, ns_key) do
-    doc_id   = "smoke_doc_#{:rand.uniform(9999)}"
+    doc_id   = UUID.uuid4()  # Must be a valid UUID — documents.id is uuid type in PostgreSQL
     content  = "PRZMA smoke test document. Uploaded via CAS. SHA-256 dedup active."
 
     attrs = %{

@@ -4,7 +4,7 @@ defmodule Alem.Schemas.Document do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :string, autogenerate: false}
+  @primary_key {:id, :binary_id, autogenerate: false}
 
   schema "documents" do
     field :tenant_id,     :string
