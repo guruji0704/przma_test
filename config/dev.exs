@@ -3,7 +3,7 @@ import Config
 # Configure your database
 config :chat_app, ChatApp.Repo,
   username: "postgres",
-  password: "Devi$28$",
+  password: "new.P@ssw0rd",
   hostname: "localhost",
   database: "chat_app_dev",
   stacktrace: true,

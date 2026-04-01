@@ -25,6 +25,10 @@ defmodule ChatAppWeb.Router do
 
     live "/", JoinLive
     live "/chat", ChatLive
+
+     # Session routes (regular controller)
+  post "/join",   SessionController, :create
+  delete "/logout", SessionController, :delete
   end
 
   # Other scopes may use custom stacks.

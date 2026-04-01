@@ -26,11 +26,25 @@ import {hooks as colocatedHooks} from "phoenix-colocated/chat_app"
 import topbar from "../vendor/topbar"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
+
+let Hooks = {
+  ScrollBottom: {
+    mounted()  { this.el.scrollTop = this.el.scrollHeight },
+    updated()  { this.el.scrollTop = this.el.scrollHeight }
+  }
+}
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, ...Hooks},
 })
+
+// const liveSocket = new LiveSocket("/live", Socket, {
+//   longPollFallbackMs: 2500,
+//   params: {_csrf_token: csrfToken},
+//   hooks: {...colocatedHooks},
+// })
 
 // Show progress bar on live navigation and form submits
 topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
