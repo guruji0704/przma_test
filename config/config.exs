@@ -54,8 +54,8 @@ config :alem, Alem.Mailer,
 
 # ExAws S3 Configuration
 config :ex_aws,
-  access_key_id: [{:system, "AWS_ACCESS_KEY_ID"}],
-  secret_access_key: [{:system, "AWS_SECRET_ACCESS_KEY"}],
+  access_key_id: {:system, "AWS_ACCESS_KEY_ID"},
+  secret_access_key: {:system, "AWS_SECRET_ACCESS_KEY"},
   region: "in-maa-1",
   retries: [
     max_attempts: 1,

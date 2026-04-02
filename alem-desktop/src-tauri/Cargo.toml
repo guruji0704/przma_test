@@ -18,7 +18,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 libsql = "0.9"
 uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+chrono = "=0.4.38"   # Pinned to fix arrow-arith conflict (quarter() ambiguity)
 anyhow = "1"
 log = "0.4"
 
@@ -53,7 +53,9 @@ sha2 = "0.10"
 # Apache Arrow IPC — columnar in-memory format for client-side analytics
 # Captures document metadata with timestamps, partitioned by day/week/month/year.
 # Arrow IPC bytes are sent to the server which converts them to Parquet for S3 storage.
-arrow = { version = "53", default-features = false, features = ["ipc"] }
+arrow = { version = "54", default-features = false, features = ["ipc"] }
+parquet = { version = "54", features = ["arrow"] }
+datafusion = "45"
 
 # MessagePack — binary XRPC wire format (device ↔ server), ~50% smaller than JSON
 rmp-serde = "1.3"

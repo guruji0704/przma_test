@@ -23,7 +23,8 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
             last_synced_at    TEXT,
             is_synced         INTEGER DEFAULT 0,
             needs_upload      INTEGER DEFAULT 1,
-            status            TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'synced', 'failed'))
+            status            TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'synced', 'failed')),
+            last_error        TEXT
         )",
         (),
     ).await?;
@@ -43,6 +44,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
         "ALTER TABLE documents ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))",
         "ALTER TABLE documents ADD COLUMN tags TEXT DEFAULT '[]'",
         "ALTER TABLE documents ADD COLUMN vault_path TEXT",
+        "ALTER TABLE documents ADD COLUMN last_error TEXT",
     ];
 
     for sql in schema_migrations {
@@ -129,7 +131,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
             user_id      TEXT,
             username     TEXT,
             email        TEXT,
-            server_url   TEXT NOT NULL DEFAULT 'http://localhost:4000',
+            server_url   TEXT NOT NULL DEFAULT 'http://172.235.17.68:4000',
             access_token TEXT,
             sqld_url     TEXT,
             s3_bucket    TEXT,
@@ -164,6 +166,17 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
     }
 
     log::info!("  ✅ local_identity table ready");
+    
+    // ── Force migrate localhost -> Remote IP (Sync Stabilization) ────────
+    // If the user was already logged in, their server_url is stuck on localhost.
+    // We override it here to ensure the sync works with the new server.
+    let _ = conn.execute(
+        "UPDATE local_identity 
+         SET server_url = 'http://172.235.17.68:4000',
+             sqld_url   = 'http://172.235.17.68:8080'
+         WHERE server_url LIKE 'http://localhost%' OR server_url IS NULL OR sqld_url LIKE '%8081'",
+        ()
+    ).await;
 
     Ok(())
 }

@@ -22,6 +22,27 @@ end
 
 config :alem, AlemWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# S3 / Object Storage Configuration
+config :ex_aws,
+  access_key_id: System.get_env("AWS_ACCESS_KEY_ID"),
+  secret_access_key: System.get_env("AWS_SECRET_ACCESS_KEY"),
+  timeout: 600_000,
+  recv_timeout: 600_000
+
+s3_host = System.get_env("AWS_S3_ENDPOINT", "in-maa-1.linodeobjects.com")
+config :ex_aws, :s3,
+  scheme: "https",
+  host: s3_host,
+  region: s3_host |> String.split(".") |> List.first() || "us-east-1",
+  virtual_host: true,
+  debug_requests: true
+
+config :ex_aws, :hackney,
+  timeout: 600_000,
+  recv_timeout: 600_000,
+  expect: false,
+  debug_requests: true
+
 # Pleroma API Configuration (can be overridden via PLEROMA_BASE_URL environment variable)
 # In development, default to local mock server unless explicitly set
 pleroma_base_url =
@@ -90,9 +111,6 @@ config :alem, AlemWeb.Endpoint,
 
 
 
-  # ## SSL Support
-  #
-  # To get SSL working, you will need to add the `https` key
   # to your endpoint configuration:
   #
   #     config :alem, AlemWeb.Endpoint,

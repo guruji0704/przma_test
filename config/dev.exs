@@ -12,24 +12,31 @@ config :alem, Alem.Repo,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
-# ── sqld (libsql server) ───────────────────────────────────────────────────
 # Points to localhost. sqld is only needed for sync features.
 # For benchmark testing (mix benchmark), sqld is NOT required.
 # Download sqld binary: https://github.com/tursodatabase/libsql/releases
-config :alem, :sqld_url, "http://localhost:8080"
+config :alem, :sqld_url, "http://172.235.17.68:8080"
 
-# ── S3 / MinIO ─────────────────────────────────────────────────────────────
-# File uploads are skipped gracefully if S3 is unreachable locally.
-# For full upload testing, install MinIO: https://min.io/download#windows
+# ── S3 / Linode Object Storage ─────────────────────────────────────────────
+# File uploads are now pointed to Linode Object Storage.
+# Authentication is handled via AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
 config :ex_aws,
-  access_key_id: "minioadmin",
-  secret_access_key: "minioadmin"
+  access_key_id: {:system, "AWS_ACCESS_KEY_ID"},
+  secret_access_key: {:system, "AWS_SECRET_ACCESS_KEY"},
+  timeout: 600_000,
+  recv_timeout: 600_000,
+  debug_requests: true
 
 config :ex_aws, :s3,
-  scheme: "http://",
-  host: "localhost",
-  port: 9000,
-  region: "local"
+  scheme: "https",
+  host: System.get_env("AWS_S3_ENDPOINT", "in-maa-1.linodeobjects.com") |> String.replace(~r/^https?:\/\//, ""),
+  region: System.get_env("AWS_DEFAULT_REGION", "in-maa-1"),
+  virtual_host: true
+
+config :ex_aws, :hackney,
+  timeout: 600_000,
+  recv_timeout: 600_000,
+  expect: false
 
 # ── CouchDB ────────────────────────────────────────────────────────────────
 # Only needed if CouchDB features are used. Safe to leave if unused.
@@ -48,10 +55,11 @@ config :alem, :epoch_master_key,
 # ── Phoenix Endpoint ───────────────────────────────────────────────────────
 config :alem, AlemWeb.Endpoint,
   http: [
-    ip: {127, 0, 0, 1},
+    ip: {0, 0, 0, 0},
     port: 4000,
     thousand_island_options: [read_timeout: 300_000]
   ],
+  url: [host: "172.235.17.68", port: 4000],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

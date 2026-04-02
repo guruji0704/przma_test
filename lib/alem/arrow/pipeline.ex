@@ -110,9 +110,9 @@ defmodule Alem.Arrow.Pipeline do
       Logger.info("[Arrow.Pipeline] Dev bypass — skipping S3 write for #{s3_key}")
       :ok
     else
-      case ExAws.S3.put_object(bucket, s3_key, bytes,
+      case ExAws.S3.upload(bucket, s3_key, bytes,
              content_type: "application/x-parquet"
-           ) |> ExAws.request() do
+           ) |> ExAws.request(timeout: 600_000, recv_timeout: 600_000) do
         {:ok, _}         -> :ok
         {:error, reason} ->
           Logger.error("[Arrow.Pipeline] S3 write failed #{s3_key}: #{inspect(reason)}")

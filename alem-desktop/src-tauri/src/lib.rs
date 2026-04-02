@@ -7,9 +7,7 @@ mod vault;
 mod arrow;
 
 use std::sync::Arc;
-use tauri::Manager;
-use tauri::Emitter;
-use tauri_plugin_deep_link::DeepLinkExt;
+use tauri::{Manager, Emitter};
 
 pub struct AppState {
     pub db:        Arc<libsql::Database>,

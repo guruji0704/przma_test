@@ -25,6 +25,7 @@
 // ══════════════════════════════════════════════════════════════════════════
 
 pub mod epoch;
+pub mod przma_vault;
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit},

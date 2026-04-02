@@ -19,6 +19,7 @@ defmodule Alem.Plug.MsgpackParser do
     }
   """
 
+  require Logger
   @behaviour Plug.Parsers
 
   def init(opts), do: opts
@@ -27,8 +28,9 @@ defmodule Alem.Plug.MsgpackParser do
   def parse(conn, "application", "x-msgpack", _headers, opts) do
     case Plug.Conn.read_body(conn, opts) do
       {:ok, body, conn} ->
-        case Msgpax.unpack(body, binary: true) do
+        case Msgpax.unpack(body) do
           {:ok, params} when is_map(params) ->
+            IO.inspect(Map.keys(params), label: "[MsgpackParser] Decoded keys")
             {:ok, params, conn}
 
           {:ok, _other} ->

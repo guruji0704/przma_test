@@ -3,7 +3,6 @@ use crate::arrow::{upload_meta_to_ipc, UploadMeta};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, Emitter};
-use base64::Engine;
 
 // Either stream from a vault file (no RAM for file bytes) or use in-memory bytes (legacy blobs).
 enum FileSource {
@@ -41,7 +40,7 @@ struct XrpcUpload<'a> {
 }
 
 fn sqld_url() -> String {
-    std::env::var("SQLD_URL").unwrap_or_else(|_| "http://localhost:8080".to_string())
+    std::env::var("SQLD_URL").unwrap_or_else(|_| "http://172.235.17.68:8080".to_string())
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -71,17 +70,18 @@ pub async fn start(app: AppHandle) {
 
 pub async fn run_sync_cycle(app: &AppHandle) -> Result<(usize, usize), String> {
     let state = app.state::<AppState>();
-    let conn  = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
+    
     log::info!("═══════════════════════════════════════════");
     log::info!("[Sync] Starting sync cycle...");
 
-    let mut rows = conn.query(
-        "SELECT server_url, access_token, user_id FROM local_identity WHERE id = 'singleton'",
-        (),
-    ).await.map_err(|e| e.to_string())?;
+    // 1. Fetch Identity (Short-lived connection)
+    let (server_url, access_token, user_id) = {
+        let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+        let mut rows = conn.query(
+            "SELECT server_url, access_token, user_id FROM local_identity WHERE id = 'singleton'",
+            (),
+        ).await.map_err(|e| e.to_string())?;
 
-    let (server_url, access_token, user_id) =
         if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
             let url = match row.get_value(0).ok() {
                 Some(libsql::Value::Text(s)) if !s.is_empty() => s,
@@ -99,21 +99,31 @@ pub async fn run_sync_cycle(app: &AppHandle) -> Result<(usize, usize), String> {
         } else {
             log::warn!("[Sync] ❌ No identity found");
             return Ok((0, 0));
-        };
+        }
+    };
 
-    let device_id = device::get_or_create_device_id(&conn).await?;
+    // 2. Fetch/Create Device ID (Short-lived connection)
+    let device_id = {
+        let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+        device::get_or_create_device_id(&conn).await?
+    };
 
     let db = Arc::clone(&state.db);
-    let pushed = push_documents(&conn, &db, &server_url, &access_token, &device_id, app).await?;
-    let pulled = pull_documents(&conn, &user_id, &device_id).await?;
+    
+    // 3. PUSH/PULL (These now manage their own internal short-lived connections)
+    let pushed = push_documents(&db, &server_url, &access_token, &device_id, app).await?;
+    let pulled = pull_documents(&db, &user_id, &device_id).await?;
 
-    conn.execute(
-        "UPDATE local_identity SET last_sync_at = datetime('now') WHERE id = 'singleton'",
-        (),
-    ).await.map_err(|e| e.to_string())?;
-
-    // Emit final sync status to frontend
-    emit_sync_status(&conn, app).await;
+    // 4. Final Updates (Short-lived connection)
+    {
+        let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE local_identity SET last_sync_at = datetime('now') WHERE id = 'singleton'",
+            (),
+        ).await.map_err(|e| e.to_string())?;
+        
+        emit_sync_status(&conn, app).await;
+    }
 
     log::info!("[Sync] Cycle complete: pushed={}, pulled={}", pushed, pulled);
     log::info!("═══════════════════════════════════════════");
@@ -125,8 +135,19 @@ pub async fn run_sync_cycle(app: &AppHandle) -> Result<(usize, usize), String> {
 // PUSH: Upload local documents to Phoenix (S3 + sqld)
 // ══════════════════════════════════════════════════════════════════════════
 
+struct PendingDoc {
+    doc_id:           String,
+    filename:         String,
+    automerge_state:  Vec<u8>,
+    text_content:     String,
+    binary_content:   Option<Vec<u8>>,
+    content_type:     String,
+    last_modified_at: String,
+    status:           String,
+    vault_path:       Option<String>,
+}
+
 async fn push_documents(
-    conn: &libsql::Connection,
     db: &Arc<libsql::Database>,
     server_url: &str,
     access_token: &str,
@@ -135,72 +156,36 @@ async fn push_documents(
 ) -> Result<usize, String> {
     log::info!("[Push] Checking for pending documents...");
 
-    let mut docs = conn.query(
-        "SELECT id, filename, automerge_state, text_content,
-                binary_content, content_type, last_modified_at, status, vault_path
-         FROM documents
-         WHERE needs_upload = 1
-         ORDER BY created_at ASC",
-        (),
-    ).await.map_err(|e| e.to_string())?;
+    let mut pending: Vec<PendingDoc> = Vec::new();
 
-    struct PendingDoc {
-        doc_id:           String,
-        filename:         String,
-        automerge_state:  Vec<u8>,
-        text_content:     String,
-        binary_content:   Option<Vec<u8>>,
-        content_type:     String,
-        last_modified_at: String,
-        status:           String,
-        vault_path:       Option<String>,
-    }
+    {
+        let conn = crate::db::connect(db).await.map_err(|e| e.to_string())?;
+        let mut docs = conn.query(
+            "SELECT id, filename, automerge_state, text_content,
+                    binary_content, content_type, last_modified_at, status, vault_path
+             FROM documents
+             WHERE needs_upload = 1
+             ORDER BY created_at ASC",
+            (),
+        ).await.map_err(|e| e.to_string())?;
 
-    let mut pending = Vec::new();
+        while let Some(row) = docs.next().await.map_err(|e| e.to_string())? {
+            let doc_id = row.get_value(0).ok().and_then(|v| match v { libsql::Value::Text(s) => Some(s), _ => None }).unwrap_or_default();
+            let filename = row.get_value(1).ok().and_then(|v| match v { libsql::Value::Text(s) => Some(s), _ => None }).unwrap_or_default();
+            let automerge_state = row.get_value(2).ok().and_then(|v| match v { libsql::Value::Blob(b) => Some(b), _ => None }).unwrap_or_default();
+            let text_content = row.get_value(3).ok().and_then(|v| match v { libsql::Value::Text(s) => Some(s), _ => None }).unwrap_or_default();
+            let binary_content = row.get_value(4).ok().and_then(|v| match v { libsql::Value::Blob(b) if !b.is_empty() => Some(b), _ => None });
+            let content_type = row.get_value(5).ok().and_then(|v| match v { libsql::Value::Text(s) => Some(s), _ => None }).unwrap_or_else(|| "application/octet-stream".to_string());
+            let last_modified_at = row.get_value(6).ok().and_then(|v| match v { libsql::Value::Text(s) => Some(s), _ => None }).unwrap_or_default();
+            let status = row.get_value(7).ok().and_then(|v| match v { libsql::Value::Text(s) => Some(s), _ => None }).unwrap_or_else(|| "pending".to_string());
+            let vault_path = row.get_value(8).ok().and_then(|v| match v { libsql::Value::Text(s) if !s.is_empty() => Some(s), _ => None });
 
-    while let Some(row) = docs.next().await.map_err(|e| e.to_string())? {
-        let doc_id = match row.get_value(0).ok() {
-            Some(libsql::Value::Text(s)) => s,
-            _ => continue,
-        };
-        let filename = match row.get_value(1).ok() {
-            Some(libsql::Value::Text(s)) => s,
-            _ => continue,
-        };
-        let automerge_state = match row.get_value(2).ok() {
-            Some(libsql::Value::Blob(b)) => b,
-            _ => vec![],
-        };
-        let text_content = match row.get_value(3).ok() {
-            Some(libsql::Value::Text(s)) => s,
-            _ => String::new(),
-        };
-        let binary_content = match row.get_value(4).ok() {
-            Some(libsql::Value::Blob(b)) if !b.is_empty() => Some(b),
-            _ => None,
-        };
-        let content_type = match row.get_value(5).ok() {
-            Some(libsql::Value::Text(s)) if !s.is_empty() => s,
-            _ => "text/plain".to_string(),
-        };
-        let last_modified_at = match row.get_value(6).ok() {
-            Some(libsql::Value::Text(s)) => s,
-            _ => chrono::Utc::now().to_rfc3339(),
-        };
-        let status = match row.get_value(7).ok() {
-            Some(libsql::Value::Text(s)) => s,
-            _ => "unknown".to_string(),
-        };
-        let vault_path = match row.get_value(8).ok() {
-            Some(libsql::Value::Text(s)) if !s.is_empty() => Some(s),
-            _ => None,
-        };
-
-        pending.push(PendingDoc {
-            doc_id, filename, automerge_state, text_content,
-            binary_content, content_type, last_modified_at, status, vault_path,
-        });
-    }
+            pending.push(PendingDoc {
+                doc_id, filename, automerge_state, text_content,
+                binary_content, content_type, last_modified_at, status, vault_path,
+            });
+        }
+    } // End of fetch connection scope
 
     if pending.is_empty() {
         log::info!("[Push] No documents to upload");
@@ -227,62 +212,29 @@ async fn push_documents(
             let _permit = sem.acquire_owned().await
                 .map_err(|e| format!("Semaphore error: {}", e))?;
 
-            let task_conn = crate::db::connect(&db_clone).await
-                .map_err(|e| format!("DB connect failed: {}", e))?;
-
-            // Reset failed → pending for retry
-            if doc.status == "failed" {
-                log::info!("[Push] Retrying failed: '{}'", doc.filename);
-                let _ = task_conn.execute(
-                    "UPDATE documents SET status = 'pending' WHERE id = ?",
-                    libsql::params![doc.doc_id.clone()],
-                ).await;
-            }
-
-            // Determine file source — vault file (streaming) or in-memory bytes (legacy)
+            // ─── Phase 1: Determine file source (No DB connection needed yet) ───
             let file_source = if let Some(ref vp) = doc.vault_path {
-                if !std::path::Path::new(vp).exists() {
-                    log::error!("[Push] Vault file missing: {}", vp);
-                    let _ = task_conn.execute(
-                        "UPDATE documents SET status = 'failed' WHERE id = ?",
-                        libsql::params![doc.doc_id.clone()],
-                    ).await;
-                    let _ = app_clone.emit("sync-status",
-                        serde_json::json!({"id": doc.doc_id, "status": "failed"}));
-                    return Ok((doc.doc_id, false));
+                if !std::path::Path::new(vp.as_str()).exists() {
+                     log::error!("[Push] Vault file missing: {}", vp);
+                      if let Ok(conn) = crate::db::connect(&db_clone).await {
+                          let _ = conn.execute(
+                              "UPDATE documents SET status = 'failed' WHERE id = ?",
+                              libsql::params![doc.doc_id.clone()],
+                          ).await.map_err(|e| e.to_string())?;
+                      }
+                     let _ = app_clone.emit("sync-status",
+                         serde_json::json!({"id": doc.doc_id, "status": "failed"}));
+                     return Ok((doc.doc_id, false));
                 }
-                log::info!("[Push] '{}' → vault file (streaming)", doc.filename);
                 FileSource::VaultFile(vp.clone())
-            } else if let Some(ref blob) = doc.binary_content {
-                if blob.is_empty() {
-                    log::warn!("[Push] ⚠️ '{}' empty blob — skipping", doc.filename);
-                    let _ = task_conn.execute(
-                        "UPDATE documents SET status = 'failed' WHERE id = ?",
-                        libsql::params![doc.doc_id.clone()],
-                    ).await;
-                    let _ = app_clone.emit("sync-status",
-                        serde_json::json!({"id": doc.doc_id, "status": "failed"}));
-                    return Ok((doc.doc_id, false));
-                }
-                log::info!("[Push] '{}' → legacy blob ({} bytes)", doc.filename, blob.len());
-                FileSource::Bytes(blob.clone())
+            } else if let Some(blob) = doc.binary_content.clone() {
+                FileSource::Bytes(blob)
             } else {
-                let bytes = doc.text_content.as_bytes().to_vec();
-                if bytes.is_empty() {
-                    log::warn!("[Push] ⚠️ '{}' empty — skipping", doc.filename);
-                    let _ = task_conn.execute(
-                        "UPDATE documents SET status = 'failed' WHERE id = ?",
-                        libsql::params![doc.doc_id.clone()],
-                    ).await;
-                    let _ = app_clone.emit("sync-status",
-                        serde_json::json!({"id": doc.doc_id, "status": "failed"}));
-                    return Ok((doc.doc_id, false));
-                }
-                log::info!("[Push] '{}' → text ({} bytes)", doc.filename, bytes.len());
-                FileSource::Bytes(bytes)
+                FileSource::Bytes(doc.text_content.as_bytes().to_vec())
             };
 
-            match upload_crdt_document(
+            // ─── Phase 2: Perform Upload (Long running, NO DB connection held) ───
+            let upload_result = upload_crdt_document(
                 &server,
                 &doc.doc_id,
                 &doc.filename,
@@ -293,28 +245,31 @@ async fn push_documents(
                 &dev_id,
                 &doc.last_modified_at,
                 &token,
-            ).await {
+            ).await;
+
+            // ─── Phase 3: Update DB status (Fresh short-lived connection) ───
+            let conn = crate::db::connect(&db_clone).await
+                .map_err(|e| format!("DB connect failed for update: {}", e))?;
+
+            match upload_result {
                 Ok(_) => {
-                    log::info!("[Push] ✅ Uploaded '{}'", doc.filename);
-                    let _ = task_conn.execute(
-                        "UPDATE documents SET
-                            is_synced = 1, needs_upload = 0, status = 'synced',
-                            last_synced_at = datetime('now')
-                         WHERE id = ?",
+                    log::info!("[Push] ✅ Successfully uploaded '{}'", doc.filename);
+                    let _ = conn.execute(
+                        "UPDATE documents SET is_synced = 1, needs_upload = 0, status = 'synced', last_synced_at = datetime('now') WHERE id = ?",
                         libsql::params![doc.doc_id.clone()],
-                    ).await;
+                    ).await.map_err(|e| e.to_string())?;
                     let _ = app_clone.emit("sync-status",
                         serde_json::json!({"id": doc.doc_id, "status": "synced"}));
                     Ok((doc.doc_id, true))
                 }
                 Err(e) => {
                     log::error!("[Push] ❌ Failed '{}': {}", doc.filename, e);
-                    let _ = task_conn.execute(
-                        "UPDATE documents SET status = 'failed' WHERE id = ?",
-                        libsql::params![doc.doc_id.clone()],
-                    ).await;
+                    let _ = conn.execute(
+                        "UPDATE documents SET status = 'failed', last_error = ? WHERE id = ?",
+                        libsql::params![e.clone(), doc.doc_id.clone()],
+                    ).await.map_err(|e| e.to_string())?;
                     let _ = app_clone.emit("sync-status",
-                        serde_json::json!({"id": doc.doc_id, "status": "failed"}));
+                        serde_json::json!({"id": doc.doc_id, "status": "failed", "error": e}));
                     Ok((doc.doc_id, false))
                 }
             }
@@ -339,23 +294,26 @@ async fn push_documents(
 // ══════════════════════════════════════════════════════════════════════════
 
 async fn pull_documents(
-    conn: &libsql::Connection,
+    db: &Arc<libsql::Database>,
     user_id: &str,
     device_id: &str,
 ) -> Result<usize, String> {
-    let last_sync = get_last_sync_at(conn).await?;
+    log::info!("[Pull] Pulling remote updates for user {}...", user_id);
 
+    // 1. Get last sync time (Short-lived connection)
+    let last_sync = {
+        let conn = crate::db::connect(db).await.map_err(|e| e.to_string())?;
+        get_last_sync_at(&conn).await?
+    };
+
+    // 2. Fetch remote metadata from sqld server
     let client = reqwest::Client::new();
-
     let body = serde_json::json!({
         "requests": [
             {
                 "type": "execute",
                 "stmt": {
-                    "sql": "SELECT id, filename, device_id, last_modified_at, s3_content_key, updated_at
-                            FROM documents
-                            WHERE user_id = ? AND updated_at > ?
-                            ORDER BY updated_at ASC",
+                    "sql": "SELECT id, filename, device_id, last_modified_at, s3_content_key, updated_at FROM documents WHERE user_id = ? AND updated_at > ? ORDER BY updated_at ASC",
                     "args": [
                         {"type": "text", "value": user_id},
                         {"type": "text", "value": last_sync}
@@ -366,27 +324,28 @@ async fn pull_documents(
         ]
     });
 
-    let response = client
-        .post(format!("{}/v3/pipeline", sqld_url()))
+    let sqld_url_final = sqld_url();
+    let response = match client
+        .post(format!("{}/v3/pipeline", sqld_url_final))
         .header("content-type", "application/json")
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("sqld pull failed: {}", e))?;
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            log::warn!("⚠️ [Pull] sqld server unreachable: {}", e);
+            return Ok(0);
+        }
+    };
 
-    // Read the body as text first — parsing directly as JSON can panic if
-    // sqld is down and returns an HTML error page with unexpected length bytes.
-    let status = response.status();
-    let body_text = response.text().await
-        .map_err(|e| format!("sqld read failed: {}", e))?;
-
-    if !status.is_success() {
-        return Err(format!("sqld returned {}: {}", status, &body_text[..body_text.len().min(200)]));
+    if !response.status().is_success() {
+        log::warn!("⚠️ [Pull] sqld server returned error status: {}", response.status());
+        return Ok(0);
     }
 
-    let result: serde_json::Value = serde_json::from_str(&body_text)
-        .map_err(|e| format!("sqld parse failed: {} (body prefix: {})", e, &body_text[..body_text.len().min(120)]))?;
-
+    let result: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    
     let rows = result["results"][0]["response"]["result"]["rows"]
         .as_array()
         .cloned()
@@ -394,61 +353,33 @@ async fn pull_documents(
 
     let mut pulled = 0;
 
-    for row in &rows {
+    for row in rows {
         let remote_doc_id   = row[0]["value"].as_str().unwrap_or("").to_string();
         let remote_filename = row[1]["value"].as_str().unwrap_or("").to_string();
         let remote_device   = row[2]["value"].as_str().unwrap_or("").to_string();
         let remote_modified = row[3]["value"].as_str().unwrap_or("").to_string();
         let s3_content_key  = row[4]["value"].as_str().unwrap_or("").to_string();
 
-        // Skip documents from this device — we already have them
-        if remote_device == device_id {
-            continue;
-        }
+        if remote_device == device_id { continue; }
 
-        // Use s3_content_key as a note that content lives in S3
-        // A full implementation would download from S3 here
         let text_content = if s3_content_key.is_empty() {
-            "(Content in S3 — open to download)".to_string()
+            "(In S3)".to_string()
         } else {
             format!("(S3: {})", s3_content_key)
         };
 
-        let exists = doc_exists(conn, &remote_doc_id).await?;
-
-        if exists {
-            conn.execute(
-                "UPDATE documents SET
-                    text_content     = ?,
-                    last_modified_at = ?,
-                    is_synced        = 1,
-                    needs_upload     = 0,
-                    status           = 'synced'
-                 WHERE id = ? AND last_modified_at < ?",
-                libsql::params![
-                    text_content,
-                    remote_modified.clone(),
-                    remote_doc_id,
-                    remote_modified,
-                ],
+        if doc_exists(db, &remote_doc_id).await? {
+            let conn = crate::db::connect(db).await.map_err(|e| e.to_string())?;
+            let _ = conn.execute(
+                "UPDATE documents SET text_content = ?, last_modified_at = ?, is_synced = 1, needs_upload = 0, status = 'synced' WHERE id = ? AND last_modified_at < ?",
+                libsql::params![text_content, remote_modified.clone(), remote_doc_id, remote_modified],
             ).await.map_err(|e| e.to_string())?;
         } else {
-            conn.execute(
-                "INSERT OR IGNORE INTO documents (
-                    id, filename, automerge_state, text_content,
-                    content_type, device_id, last_modified_at,
-                    is_synced, needs_upload, status
-                ) VALUES (?, ?, ?, ?, 'application/octet-stream', ?, ?, 1, 0, 'synced')",
-                libsql::params![
-                    remote_doc_id,
-                    remote_filename.clone(),
-                    Vec::<u8>::new(),
-                    text_content,
-                    remote_device,
-                    remote_modified,
-                ],
+            let conn = crate::db::connect(db).await.map_err(|e| e.to_string())?;
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO documents (id, filename, automerge_state, text_content, content_type, device_id, last_modified_at, is_synced, needs_upload, status) VALUES (?, ?, ?, ?, 'application/octet-stream', ?, ?, 1, 0, 'synced')",
+                libsql::params![remote_doc_id, remote_filename.clone(), Vec::<u8>::new(), text_content, remote_device, remote_modified],
             ).await.map_err(|e| e.to_string())?;
-
             log::info!("[Pull] ✅ New doc: '{}'", remote_filename);
             pulled += 1;
         }
@@ -882,10 +813,9 @@ async fn get_last_sync_at(conn: &libsql::Connection) -> Result<String, String> {
     Ok("2020-01-01T00:00:00Z".to_string())
 }
 
-async fn doc_exists(conn: &libsql::Connection, doc_id: &str) -> Result<bool, String> {
-    let mut rows = conn.query(
-        "SELECT 1 FROM documents WHERE id = ?",
-        libsql::params![doc_id.to_string()],
-    ).await.map_err(|e| e.to_string())?;
+async fn doc_exists(db: &Arc<libsql::Database>, id: &str) -> Result<bool, String> {
+    let conn = crate::db::connect(db).await.map_err(|e| e.to_string())?;
+    let mut rows = conn.query("SELECT 1 FROM documents WHERE id = ?", libsql::params![id]).await
+        .map_err(|e| e.to_string())?;
     Ok(rows.next().await.map_err(|e| e.to_string())?.is_some())
 }

@@ -106,7 +106,10 @@ defmodule Alem.MixProject do
       {:explorer, "~> 0.10"},
 
       # Analytics: MessagePack serialization (benchmark comparison + XRPC wire)
-      {:msgpax, "~> 2.4"}
+      {:msgpax, "~> 2.4"},
+
+      # Analytics: Broadway pipeline for scan events
+      {:broadway, "~> 1.0"}
     ]
   end
 

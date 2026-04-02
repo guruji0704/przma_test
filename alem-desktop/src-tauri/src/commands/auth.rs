@@ -51,7 +51,7 @@ async fn get_server_url(conn: &libsql::Connection) -> String {
     // Default: localhost for local dev, remote server for prod.
     // Override by storing server_url in local_identity via the login flow.
     let default_url = std::env::var("PRZMA_SERVER_URL")
-        .unwrap_or_else(|_| "http://localhost:4000".to_string());
+        .unwrap_or_else(|_| "http://172.235.17.68:4000".to_string());
 
     if let Ok(mut rows) = conn
         .query("SELECT server_url FROM local_identity WHERE id = 'singleton'", ())

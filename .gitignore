@@ -35,3 +35,10 @@ alem-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# ── PRZMA Exclusions ──────────────────────────────────
+/alem-desktop/
+*.db
+*.db-shm
+*.db-wal
+/priv/local_data/
+

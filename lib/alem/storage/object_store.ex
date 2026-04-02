@@ -5,6 +5,8 @@ defmodule Alem.Storage.ObjectStore do
 
   require Logger
 
+
+
   @doc """
   Upload a file to S3/Linode Object Storage
   """
@@ -100,15 +102,16 @@ defmodule Alem.Storage.ObjectStore do
   def presigned_upload_url(bucket, key, opts \\ []) do
     expires_in = Keyword.get(opts, :expires_in, 3600)
 
-    {:ok, url} = ExAws.S3.presigned_url(
+    case ExAws.S3.presigned_url(
       ExAws.Config.new(:s3),
       :put,
       bucket,
       key,
       expires_in: expires_in
-    )
-
-    {:ok, url}
+    ) do
+      {:ok, url} -> {:ok, url}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """
@@ -117,14 +120,15 @@ defmodule Alem.Storage.ObjectStore do
   def presigned_download_url(bucket, key, opts \\ []) do
     expires_in = Keyword.get(opts, :expires_in, 3600)
 
-    {:ok, url} = ExAws.S3.presigned_url(
+    case ExAws.S3.presigned_url(
       ExAws.Config.new(:s3),
       :get,
       bucket,
       key,
       expires_in: expires_in
-    )
-
-    {:ok, url}
+    ) do
+      {:ok, url} -> {:ok, url}
+      {:error, reason} -> {:error, reason}
+    end
   end
 end
