@@ -167,16 +167,26 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
 
     log::info!("  ✅ local_identity table ready");
     
-    // ── Force migrate localhost -> Remote IP (Sync Stabilization) ────────
-    // If the user was already logged in, their server_url is stuck on localhost.
-    // We override it here to ensure the sync works with the new server.
+    // ── Force migrate to Remote IP (172.235.17.68) ──────────────────
+    // Ensure all sync traffic goes to the new remote server.
     let _ = conn.execute(
         "UPDATE local_identity 
          SET server_url = 'http://172.235.17.68:4000',
              sqld_url   = 'http://172.235.17.68:8080'
-         WHERE server_url LIKE 'http://localhost%' OR server_url IS NULL OR sqld_url LIKE '%8081'",
+         WHERE id = 'singleton'",
         ()
     ).await;
+
+    if let Ok(mut rows) = conn.query("SELECT server_url, sqld_url FROM local_identity", ())
+        .await 
+    {
+        if let Ok(Some(row)) = rows.next().await {
+            let s_url: String = row.get(0).unwrap_or_default();
+            let q_url: String = row.get(1).unwrap_or_default();
+            log::info!("🌍 [Sync] Server URL: {}", s_url);
+            log::info!("📊 [Sync] SQLD URL:   {}", q_url);
+        }
+    }
 
     Ok(())
 }

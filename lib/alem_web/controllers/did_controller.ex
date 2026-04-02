@@ -5,7 +5,7 @@ defmodule AlemWeb.DIDController do
 
   use AlemWeb, :controller
 
-  alias Alem.Identity.DID
+  alias Alem.DID
   alias Alem.Namespace.Manager
 
   @doc """

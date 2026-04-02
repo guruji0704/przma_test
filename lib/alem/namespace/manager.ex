@@ -108,7 +108,7 @@ defmodule Alem.Namespace.Manager do
   end
 
   defp valid_did?(did) when is_binary(did) do
-    Alem.Identity.DID.valid?(did)
+    Alem.DID.valid?(did)
   end
 
   defp valid_did?(_), do: false

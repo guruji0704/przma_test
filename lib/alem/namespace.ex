@@ -95,4 +95,47 @@ defmodule Alem.Namespace do
       error -> error
     end
   end
+
+  # ── Controller Compatibility Stubs ──────────────────────────────
+  
+  def exists?(user_id) do
+    case get_for_user(user_id) do
+      {:ok, _} -> true
+      _ -> false
+    end
+  end
+
+  def start(user_id, _tenant_id) do
+    # For now, just return a fake PID as success
+    {:ok, self()}
+  end
+
+  def status(user_id) do
+    case get_for_user(user_id) do
+      {:ok, ns} -> {:ok, ns.status}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def stop(_user_id), do: :ok
+
+  def get_config(user_id) do
+    case get_for_user(user_id) do
+      {:ok, ns} -> {:ok, ns.config}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def get_document(_user_id, _doc_id) do
+    # Stub: return a fake document
+    {:ok, %{id: "fake", content: "mock"}}
+  end
+
+  def list_documents(_user_id) do
+    {:ok, []}
+  end
+
+  def ingest_document(_user_id, _tenant_id, _doc) do
+    {:ok, %{id: "new"}}
+  end
 end

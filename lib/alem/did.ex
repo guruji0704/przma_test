@@ -25,6 +25,35 @@ defmodule Alem.DID do
     "did:przma:#{fingerprint}"
   end
 
+  # Matching DIDController Expectations:
+  def generate(_method, opts) do
+    user_id = opts[:user_id] || "unknown"
+    {:ok, generate(user_id)}
+  end
+
+  def validate(did) do
+    if valid?(did), do: {:ok, did}, else: {:error, :invalid_format}
+  end
+
+  def method(did) do
+    case String.split(did, ":", parts: 3) do
+      ["did", method, _] -> {:ok, method}
+      _ -> {:error, :unknown_method}
+    end
+  end
+
+  def identifier(did) do
+    case String.split(did, ":", parts: 3) do
+      ["did", _, id] -> {:ok, id}
+      _ -> {:error, :no_identifier}
+    end
+  end
+
+  def resolve(did) do
+    # Stub for now — should return a DID Document
+    {:ok, %{"id" => did, "verificationMethod" => []}}
+  end
+
   @doc """
   Extract the fingerprint from a DID.
   Returns {:ok, fingerprint} or {:error, :invalid_did}
