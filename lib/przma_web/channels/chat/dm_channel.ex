@@ -68,7 +68,7 @@ defmodule PrzmaWeb.Channels.Chat.DMChannel do
   end
 
   def handle_in("typing", _params, socket) do
-    broadcast_except(socket, "typing", %{sender_did: socket.assigns.did})
+    broadcast_from!(socket, "typing", %{sender_did: socket.assigns.did})
     {:noreply, socket}
   end
 
@@ -78,7 +78,7 @@ defmodule PrzmaWeb.Channels.Chat.DMChannel do
 
     mark_messages_read(did, thread_id, ids)
 
-    broadcast_except(socket, "message.read", %{
+    broadcast_from!(socket, "message.read", %{
       reader_did:  did,
       message_ids: ids,
       read_at:     DateTime.utc_now() |> DateTime.to_iso8601()

@@ -20,12 +20,6 @@ config :przma, PrzmaWeb.Endpoint,
   secret_key_base: "yQEWD3V241ZCDXnCcKtA3TejeJKQbS+H+rZafBug2U3yctKnu87TjRbbzYcbR9/c",
   server: false
 
-# In test we don't send emails
-config :przma, Przma.Mailer, adapter: Swoosh.Adapters.Test
-
-# Disable swoosh api client as it is only required for production adapters
-config :swoosh, :api_client, false
-
 # Print only warnings and errors during test
 config :logger, level: :warning
 

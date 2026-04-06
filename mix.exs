@@ -45,7 +45,6 @@ defmodule Przma.MixProject do
     {:msgpax,             "~> 2.3"},
     {:uniq,               "~> 0.6"},
     {:explorer,           "~> 0.8"},
-    {:blake3,             "~> 0.2"},
     {:ex_aws,             "~> 2.5"},
     {:ex_aws_s3,          "~> 2.4"},
     {:hackney,            "~> 1.20"},

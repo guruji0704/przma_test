@@ -68,10 +68,12 @@ defmodule Przma.Vault.ContentStore do
     end
   end
 
-  def compute_cid(content) when is_binary(content) do
-    "blake3:" <> Base.url_encode64(:blake3.hash(content), padding: false)
-  end
-
+def compute_cid(content) when is_binary(content) do
+  # Using SHA-256 in dev (blake3 requires Rust/NIF — not available on Windows dev)
+  # In production Linux server, swap back to blake3
+  hash = :crypto.hash(:sha256, content)
+  "sha256:" <> Base.url_encode64(hash, padding: false)
+end
   # ── GC ────────────────────────────────────────────────────────────────────
 
   def gc_orphans do

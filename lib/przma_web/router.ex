@@ -7,6 +7,7 @@ defmodule PrzmaWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug OpenApiSpex.Plug.PutApiSpec, module: PrzmaWeb.ApiSpec
     plug PrzmaWeb.Plugs.SecurityHeaders
     plug PrzmaWeb.Plugs.RateLimit, limit: 100, window_seconds: 60
   end

@@ -1,44 +1,77 @@
-# This file is responsible for configuring your application
-# and its dependencies with the aid of the Config module.
-#
-# This configuration file is loaded before any dependency and
-# is restricted to this project.
-
-# General application configuration
 import Config
 
+# ── Application ────────────────────────────────────────────────────────────
 config :przma,
   ecto_repos: [Przma.Repo],
   generators: [timestamp_type: :utc_datetime]
 
-# Configure the endpoint
+# ── Phoenix Endpoint ───────────────────────────────────────────────────────
 config :przma, PrzmaWeb.Endpoint,
-  url: [host: "localhost"],
+  url:    [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
-  render_errors: [
-    formats: [json: PrzmaWeb.ErrorJSON],
-    layout: false
-  ],
+  render_errors: [formats: [json: PrzmaWeb.ErrorJSON], layout: false],
   pubsub_server: Przma.PubSub,
-  live_view: [signing_salt: "hW0kxnb2"]
+  live_view: [signing_salt: "przma_lv_salt"]
 
-# Configure the mailer
-#
-# By default it uses the "Local" adapter which stores the emails
-# locally. You can see the emails in your browser, at "/dev/mailbox".
-#
-# For production it's recommended to configure a different adapter
-# at the `config/runtime.exs`.
-config :przma, Przma.Mailer, adapter: Swoosh.Adapters.Local
+# ── JSON ───────────────────────────────────────────────────────────────────
+config :phoenix, :json_library, Jason
 
-# Configure Elixir's Logger
+# ── Logger ─────────────────────────────────────────────────────────────────
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
   metadata: [:request_id]
 
-# Use Jason for JSON parsing in Phoenix
-config :phoenix, :json_library, Jason
+# ── S3 (Linode Object Storage) — base config, credentials in dev.exs ───────
+config :ex_aws,
+  region: "in-maa-1",
+  retries: [max_attempts: 3, base_backoff_in_ms: 100, max_backoff_in_ms: 10_000]
 
-# Import environment specific config. This must remain at the bottom
-# of this file so it overrides the configuration defined above.
+config :ex_aws, :s3,
+  scheme: "https://",
+  host:   "in-maa-1.linodeobjects.com",
+  region: "in-maa-1"
+
+config :ex_aws, :hackney,
+  timeout:      600_000,
+  recv_timeout: 600_000
+
+# ── Vault lifecycle ────────────────────────────────────────────────────────
+config :przma, :vault,
+  hot_threshold_ms:  300_000,
+  warm_threshold_ms: 1_800_000,
+  pool_size: 4
+
+# ── sqld shards ────────────────────────────────────────────────────────────
+config :przma, :sqld_shards, [
+  %{index: 0, url: "http://sqld-0:8080", max_users: 2000},
+  %{index: 1, url: "http://sqld-1:8080", max_users: 2000},
+  %{index: 2, url: "http://sqld-2:8080", max_users: 2000},
+  %{index: 3, url: "http://sqld-3:8080", max_users: 2000}
+]
+
+# ── Oban background jobs ───────────────────────────────────────────────────
+config :przma, Oban,
+  repo:   Przma.Repo,
+  queues: [default: 10, inbox: 10, federation: 10, analytics: 20],
+  plugins: [
+    {Oban.Plugins.Pruner, max_age: 604_800},
+    {Oban.Plugins.Cron, crontab: [
+      {"0 3 * * *", Przma.Workers.ContentGCSweep},
+      {"0 4 * * 0", Przma.Workers.ParquetCompaction}
+    ]}
+  ]
+
+# ── S3 bucket ──────────────────────────────────────────────────────────────
+config :przma, :s3,
+  bucket: "perkeep",
+  region: "in-maa-1"
+
+# ── Hammer rate limiter ────────────────────────────────────────────────────
+config :hammer,
+  backend: {Hammer.Backend.ETS, [
+    expiry_ms:       60_000 * 60 * 4,   # 4 hours
+    cleanup_interval_ms: 60_000 * 10         # clean every 10 minutes
+  ]}
+
+# ── Import environment-specific config (must stay at bottom) ───────────────
 import_config "#{config_env()}.exs"

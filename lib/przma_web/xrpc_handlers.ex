@@ -73,10 +73,12 @@ defmodule PrzmaWeb.XRPC.DMHandler do
     json(conn, %{status: "reacted", reaction: params["reaction"]})
   end
 
-  defp compute_thread_id(did_a, did_b) when is_binary(did_a) and is_binary(did_b) do
-    sorted = Enum.sort([did_a, did_b]) |> Enum.join(":")
-    "blake3:" <> Base.url_encode64(:blake3.hash(sorted), padding: false)
-  end
+defp compute_thread_id(did_a, did_b) when is_binary(did_a) and is_binary(did_b) do
+  sorted = Enum.sort([did_a, did_b]) |> Enum.join(":")
+  hash = :crypto.hash(:sha256, sorted)
+  "sha256:" <> Base.url_encode64(hash, padding: false)
+end
+
   defp compute_thread_id(_, _), do: "thread_unknown"
 end
 

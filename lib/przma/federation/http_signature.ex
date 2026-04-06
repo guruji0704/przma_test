@@ -155,21 +155,55 @@ defmodule Przma.Federation.HttpSignature do
     if missing == [], do: :ok, else: {:error, {:unsigned_required_headers, missing}}
   end
 
-  defp check_date_freshness(conn) do
-    case Plug.Conn.get_req_header(conn, "date") do
-      [] -> {:error, :missing_date_header}
-      [date_str | _] ->
-        with {:ok, naive}    <- Timex.parse(date_str, "{RFC1123}"),
-             {:ok, req_time} <- DateTime.from_naive(naive, "Etc/UTC") do
+  # defp check_date_freshness(conn) do
+  #   case Plug.Conn.get_req_header(conn, "date") do
+  #     [] -> {:error, :missing_date_header}
+  #     [date_str | _] ->
+  #       with {:ok, naive}    <- Timex.parse(date_str, "{RFC1123}"),
+  #            {:ok, req_time} <- DateTime.from_naive(naive, "Etc/UTC") do
+  #         skew = abs(DateTime.diff(DateTime.utc_now(), req_time, :second))
+  #         if skew <= @max_clock_skew_seconds,
+  #           do: :ok,
+  #           else: {:error, {:clock_skew_exceeded, skew}}
+  #       else
+  #         _ -> {:error, {:invalid_date_format, date_str}}
+  #       end
+  #   end
+  # end
+
+  # ADD THESE TWO functions instead:
+defp check_date_freshness(conn) do
+  case Plug.Conn.get_req_header(conn, "date") do
+    [] -> {:error, :missing_date_header}
+    [date_str | _] ->
+      case parse_http_date(date_str) do
+        {:ok, req_time} ->
           skew = abs(DateTime.diff(DateTime.utc_now(), req_time, :second))
           if skew <= @max_clock_skew_seconds,
             do: :ok,
             else: {:error, {:clock_skew_exceeded, skew}}
-        else
-          _ -> {:error, {:invalid_date_format, date_str}}
-        end
-    end
+        :error ->
+          {:error, {:invalid_date_format, date_str}}
+      end
   end
+end
+
+defp parse_http_date(date_str) do
+  try do
+    case :httpd_util.convert_request_date(String.to_charlist(date_str)) do
+      {{year, month, day}, {hour, min, sec}} ->
+        {:ok, dt} = DateTime.new(
+          Date.new!(year, month, day),
+          Time.new!(hour, min, sec),
+          "Etc/UTC"
+        )
+        {:ok, dt}
+      :bad_date -> :error
+    end
+  rescue
+    _ -> :error
+  end
+end
 
   defp verify_digest("GET", _body, _conn), do: :ok
   defp verify_digest(_method, raw_body, conn) do
