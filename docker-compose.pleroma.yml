@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: pleroma_dev
+      POSTGRES_USER: pleroma
+      POSTGRES_PASSWORD: pleroma_dev_password
+    volumes:
+      - pleroma_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pleroma"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pleroma:
+    image: angristan/pleroma:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - PLEROMA_DATABASE_HOSTNAME=db
+      - PLEROMA_DATABASE_NAME=pleroma_dev
+      - PLEROMA_DATABASE_USERNAME=pleroma
+      - PLEROMA_DATABASE_PASSWORD=pleroma_dev_password
+      - PLEROMA_INSTANCE_NAME=Local Pleroma Dev
+      - PLEROMA_INSTANCE_EMAIL=admin@localhost
+      - PLEROMA_HOSTNAME=localhost
+      - PLEROMA_PORT=4001
+      - PLEROMA_SECRET_KEY_BASE=changeme_changeme_changeme_changeme_changeme_changeme_changeme_changeme_changeme_changeme
+      - DB_HOSTNAME=db
+      - DB_NAME=pleroma_dev
+      - DB_USER=pleroma
+      - DB_PASS=pleroma_dev_password
+    ports:
+      - "4001:4000"
+    volumes:
+      - pleroma_data:/var/lib/pleroma
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 5 &&
+        mix ecto.migrate &&
+        mix phx.server
+      "
+
+volumes:
+  pleroma_db_data:
+  pleroma_data:
+
+
+
+
+
+

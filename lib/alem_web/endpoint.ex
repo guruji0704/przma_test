@@ -1,0 +1,65 @@
+defmodule AlemWeb.Endpoint do
+  use Phoenix.Endpoint, otp_app: :alem
+  use Absinthe.Phoenix.Endpoint  # enables GraphQL subscriptions over WebSocket
+
+  # The session will be stored in the cookie and signed,
+  # this means its contents can be read but not tampered with.
+  # Set :encryption_salt if you would also like to encrypt it.
+  @session_options [
+    store: :cookie,
+    key: "_alem_key",
+    signing_salt: "LJI77cZd",
+    same_site: "Lax"
+  ]
+
+  socket "/live", Phoenix.LiveView.Socket,
+    websocket: [connect_info: [session: @session_options]],
+    longpoll: [connect_info: [session: @session_options]]
+
+  # GraphQL subscriptions WebSocket
+  socket "/socket", AlemWeb.UserSocket,
+    websocket: true,
+    longpoll: false
+
+  # Serve at "/" the static files from "priv/static" directory.
+  plug Plug.Static,
+    at: "/",
+    from: :alem,
+    gzip: not code_reloading?,
+    only: AlemWeb.static_paths(),
+    raise_on_missing_only: false
+
+  if code_reloading? do
+    socket "/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket
+    plug Phoenix.LiveReloader
+    plug Phoenix.CodeReloader
+    plug Phoenix.Ecto.CheckRepoStatus, otp_app: :alem
+  end
+
+  plug Phoenix.LiveDashboard.RequestLogger,
+    param_key: "request_logger",
+    cookie_key: "request_logger"
+
+  plug Plug.RequestId
+  plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+
+  plug Plug.Parsers,
+    parsers: [:urlencoded, :multipart, :json, Alem.Plug.MsgpackParser],
+    pass: ["*/*"],
+    validate_utf8: false,
+    json_decoder: Phoenix.json_library(),
+    length: 100_000_000,
+    read_length: 1_000_000,
+    read_timeout: 300_000
+
+  plug Plug.MethodOverride
+  plug Plug.Head
+  plug Plug.Session, @session_options
+
+  plug Corsica,
+  origins: ["http://localhost:1420", "http://localhost:1422", "http://localhost:4000", "tauri://localhost"],
+  allow_headers: :all,
+  allow_methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+
+  plug AlemWeb.Router
+end
