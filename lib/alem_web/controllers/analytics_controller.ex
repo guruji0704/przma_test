@@ -23,7 +23,14 @@ defmodule AlemWeb.AnalyticsController do
   use AlemWeb, :controller
   require Logger
 
-  @bucket System.get_env("AWS_S3_BUCKET", "perkeep")
+  # Dynamic bucket resolution
+  defp get_s3_bucket do
+    case System.get_env("AWS_S3_BUCKET") do
+      nil -> Application.get_env(:alem, :file_storage)[:bucket] || "perkeep"
+      ""  -> Application.get_env(:alem, :file_storage)[:bucket] || "perkeep"
+      val -> val
+    end
+  end
 
   # ── POST /api/v1/analytics/ingest ──────────────────────────────────────────
 
@@ -164,7 +171,7 @@ defmodule AlemWeb.AnalyticsController do
       Logger.info("[Analytics] [DEV] Parquet saved locally: #{local_path}")
       :ok
     else
-      op = ExAws.S3.put_object(@bucket, s3_key, bytes, [
+      op = ExAws.S3.put_object(get_s3_bucket(), s3_key, bytes, [
         {:content_type, "application/vnd.apache.parquet"},
         {:acl, :private}
       ])

@@ -131,7 +131,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
             user_id      TEXT,
             username     TEXT,
             email        TEXT,
-            server_url   TEXT NOT NULL DEFAULT 'http://172.235.17.68:4000',
+            server_url   TEXT NOT NULL DEFAULT 'http://172.235.17.68:4201',
             access_token TEXT,
             sqld_url     TEXT,
             s3_bucket    TEXT,
@@ -171,22 +171,13 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
     // Ensure all sync traffic goes to the new remote server.
     let _ = conn.execute(
         "UPDATE local_identity 
-         SET server_url = 'http://172.235.17.68:4000',
+         SET server_url = 'http://172.235.17.68:4201',
              sqld_url   = 'http://172.235.17.68:8080'
          WHERE id = 'singleton'",
         ()
     ).await;
 
-    if let Ok(mut rows) = conn.query("SELECT server_url, sqld_url FROM local_identity", ())
-        .await 
-    {
-        if let Ok(Some(row)) = rows.next().await {
-            let s_url: String = row.get(0).unwrap_or_default();
-            let q_url: String = row.get(1).unwrap_or_default();
-            log::info!("🌍 [Sync] Server URL: {}", s_url);
-            log::info!("📊 [Sync] SQLD URL:   {}", q_url);
-        }
-    }
+
 
     Ok(())
 }

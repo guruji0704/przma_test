@@ -10,19 +10,24 @@ defmodule AlemWeb.SyncController do
   # ══════════════════════════════════════════════════════════════════════════
 
   def crdt_upload(conn, params) do
-    file_content = Map.get(params, "file_content")
-    
-    # Debug logging to identify why the upload is failing
-    IO.inspect(Map.keys(params), label: "[SyncController] Params keys")
-    IO.inspect(is_binary(file_content), label: "[SyncController] file_content found as binary?")
-    
-    # Check for raw binary (MsgPack bin type)
-    if is_binary(file_content) and not match?(%Plug.Upload{}, file_content) do
-      IO.puts("[SyncController] Routing to crdt_upload_msgpack")
-      crdt_upload_msgpack(conn, params)
-    else
-      IO.puts("[SyncController] Routing to crdt_upload_json")
-      crdt_upload_json(conn, params)
+    content_type = get_req_header(conn, "content-type") |> List.first()
+
+    case content_type do
+      "application/x-msgpack-stream" ->
+        IO.puts("[SyncController] Routing to crdt_upload_stream")
+        AlemWeb.StreamingSync.handle_stream(conn)
+
+      _ ->
+        file_content = Map.get(params, "file_content")
+        
+        # Check for raw binary (MsgPack bin type)
+        if is_binary(file_content) and not match?(%Plug.Upload{}, file_content) do
+          IO.puts("[SyncController] Routing to crdt_upload_msgpack")
+          crdt_upload_msgpack(conn, params)
+        else
+          IO.puts("[SyncController] Routing to crdt_upload_json")
+          crdt_upload_json(conn, params)
+        end
     end
   end
 
@@ -54,20 +59,14 @@ defmodule AlemWeb.SyncController do
       device_id    = Map.get(params, "device_id", "unknown")
       modified_at  = Map.get(params, "last_modified_at", DateTime.utc_now() |> DateTime.to_iso8601())
       epoch_id     = Map.get(params, "epoch_id")
-      bucket       = System.get_env("AWS_S3_BUCKET", "perkeep")
+      bucket       = get_s3_bucket()
 
       if byte_size(file_bytes) == 0 do
         Logger.error("❌ [MsgPack] Refusing empty file for doc #{doc_id}")
         conn |> put_status(400) |> json(%{error: "Empty file content — nothing to store"})
       else
-        # Attempt S3 upload but handle connection refused gracefully in dev
-        res = case upload_content_to_s3(user_id, doc_id, filename, file_bytes, content_type, bucket) do
-          {:ok, key} -> {:ok, key}
-          {:error, :econnrefused} ->
-            Logger.warning("⚠ [MsgPack S3] Connection refused (localhost:9000). Skipping storage.")
-            {:ok, "local_dev_skipped"}
-          {:error, reason} -> {:error, reason}
-        end
+        # Attempt S3 upload
+        res = upload_content_to_s3(user_id, doc_id, filename, file_bytes, content_type, bucket)
 
         case res do
           {:ok, s3_key} ->
@@ -166,7 +165,7 @@ defmodule AlemWeb.SyncController do
       content_type = Map.get(params, "content_type", "application/octet-stream")
       device_id    = Map.get(params, "device_id", "unknown")
       modified_at  = Map.get(params, "last_modified_at", DateTime.utc_now() |> DateTime.to_iso8601())
-      bucket       = System.get_env("AWS_S3_BUCKET", "perkeep")
+      bucket       = get_s3_bucket()
 
       Logger.info("🔄 [Sync] Uploading '#{filename}' (#{byte_size(file_bytes)} bytes, #{content_type}) from device #{String.slice(device_id, 0, 8)}")
 
@@ -333,7 +332,7 @@ defmodule AlemWeb.SyncController do
       content_type = Map.get(params, "content_type", "application/octet-stream")
       device_id    = Map.get(params, "device_id", "unknown")
       modified_at  = Map.get(params, "last_modified_at", DateTime.utc_now() |> DateTime.to_iso8601())
-      bucket       = System.get_env("AWS_S3_BUCKET", "perkeep")
+      bucket       = get_s3_bucket()
 
       Logger.info("[Finalize] '#{filename}' assembled #{byte_size(file_bytes)} bytes from #{total_chunks} chunks")
 
@@ -415,7 +414,7 @@ defmodule AlemWeb.SyncController do
       modified_at  = Map.get(params, "last_modified_at", DateTime.utc_now() |> DateTime.to_iso8601())
       file_size    = Map.get(params, "file_size", 0)
       total_parts  = Map.get(params, "total_parts", 1)
-      bucket       = System.get_env("AWS_S3_BUCKET", "perkeep")
+      bucket       = get_s3_bucket()
       s3_key       = "user/#{user.id}/documents/#{doc_id}/#{filename}"
 
       Logger.info("[PresignedURL] Initiating multipart upload for '#{filename}' " <>
@@ -509,7 +508,7 @@ defmodule AlemWeb.SyncController do
       file_size    = Map.get(params, "file_size", 0)
       parts_raw    = Map.get(params, "parts", [])
       epoch_id     = Map.get(params, "epoch_id")  # nil for v1 vault files
-      bucket       = System.get_env("AWS_S3_BUCKET", "perkeep")
+      bucket       = get_s3_bucket()
 
       Logger.info("[PresignedUpload] Completing multipart for '#{filename}' " <>
                   "(#{length(parts_raw)} parts, upload_id=#{upload_id}, epoch_id=#{inspect(epoch_id)})")
@@ -641,22 +640,50 @@ defmodule AlemWeb.SyncController do
     end
   end
 
+  defp get_s3_bucket do
+    case System.get_env("AWS_S3_BUCKET") do
+      nil -> Application.get_env(:alem, :file_storage)[:bucket] || "perkeep"
+      ""  -> Application.get_env(:alem, :file_storage)[:bucket] || "perkeep"
+      val -> val
+    end
+  end
+
+  # Large files (>= 50MB) use multipart upload; smaller files use single PUT.
+  # We increased this to 50MB because single-part PUT is currently more stable 
+  # with Linode's path-style addressing requirements in ExAws.
+  @multipart_threshold 50_000_000
+
   # ══════════════════════════════════════════════════════════════════════════
   # S3 Upload
   # ══════════════════════════════════════════════════════════════════════════
 
   defp upload_content_to_s3(user_id, doc_id, filename, file_bytes, content_type, bucket) do
     s3_key = "user/#{user_id}/documents/#{doc_id}/#{filename}"
-
-    # Use ExAws.S3.upload (multipart) instead of put_object (single PUT)
-    # for better reliability with files over 5MB.
-    opts = [content_type: content_type]
+    file_size = byte_size(file_bytes)
+    
+    opts = [content_type: content_type, acl: :private]
+    
+    # We explicitly include virtual_host: false to ensure ExAws respects path-style
+    # even if it's called from a context where global config is hazy.
     request_opts = [
-      timeout: 600_000,
-      recv_timeout: 600_000
+      timeout: 600_000, 
+      recv_timeout: 600_000,
+      virtual_host: false
     ]
 
-    case ExAws.S3.upload(bucket, s3_key, file_bytes, opts) |> ExAws.request(request_opts) do
+    res = 
+      if file_size >= @multipart_threshold do
+        Logger.info("[S3] Using multipart upload for #{filename} (#{file_size} bytes)")
+        
+        ExAws.S3.upload(bucket, s3_key, file_bytes, opts) 
+        |> ExAws.request(request_opts)
+      else
+        # Single-part PUT for speed and stability on smaller files
+        ExAws.S3.put_object(bucket, s3_key, file_bytes, opts)
+        |> ExAws.request(request_opts)
+      end
+
+    case res do
       {:ok, _} ->
         Logger.info("✅ [S3] Stored #{byte_size(file_bytes)} bytes at #{s3_key}")
         {:ok, s3_key}
@@ -1239,4 +1266,154 @@ defmodule AlemWeb.SyncController do
         {:error, reason}
     end
   end
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # V2 PARALLEL SYNC (Track A)
+  # ══════════════════════════════════════════════════════════════════════════
+
+  @doc """
+  Initiates a parallel multipart sync. 
+  Returns an S3 upload_id and handles metadata ingestion.
+  """
+  def v2_initiate(conn, params) do
+    with {:ok, user}     <- get_current_user(conn),
+         {:ok, doc_id}   <- require_param(params, "doc_id"),
+         {:ok, filename} <- require_param(params, "filename")
+    do
+      content_type = Map.get(params, "content_type", "application/octet-stream")
+      bucket       = get_s3_bucket()
+      s3_key       = "user/#{user.id}/documents/#{doc_id}/#{filename}"
+
+      # 1. Initiate S3 Multipart
+      case ExAws.S3.initiate_multipart_upload(bucket, s3_key, content_type: content_type)
+           |> ExAws.request(virtual_host: false) do
+        {:ok, %{body: %{upload_id: upload_id}}} ->
+          
+          # 2. Ingest Analytics Metadata (Track B)
+          arrow_ipc = normalize_binary(Map.get(params, "arrow_metadata_ipc"))
+          if is_binary(arrow_ipc) and byte_size(arrow_ipc) > 0 do
+            Task.start(fn -> 
+              Alem.Analytics.MetadataStore.ingest(arrow_ipc, user.id, doc_id)
+            end)
+          end
+
+          json(conn, %{
+            success: true,
+            upload_id: upload_id,
+            s3_key: s3_key
+          })
+
+        {:error, reason} ->
+          Logger.error("[V2 Initiate] S3 failed: #{inspect(reason)}")
+          conn |> put_status(500) |> json(%{error: "S3 initiation failed"})
+      end
+    else
+      {:error, reason} -> conn |> put_status(400) |> json(%{error: inspect(reason)})
+    end
+  end
+
+  @doc """
+  Uploads a single block of a file in parallel.
+  Expects raw binary in 'chunk_data' part of a multipart request or MsgPack.
+  """
+  def v2_upload_part(conn, params) do
+    with {:ok, user}      <- get_current_user(conn),
+         {:ok, upload_id} <- require_param(params, "upload_id"),
+         {:ok, doc_id}    <- require_param(params, "doc_id"),
+         {:ok, part_num}  <- parse_integer(params, "part_num")
+    do
+      # Ensure we read the ENTIRE body to avoid socket leakage
+      case read_full_body(conn, <<>>) do
+        {:ok, binary, conn} ->
+          bucket   = get_s3_bucket()
+          filename = Map.get(params, "filename", "unknown")
+          s3_key   = "user/#{user.id}/documents/#{doc_id}/#{filename}"
+
+          Logger.info("[V2 Part] Uploading binary part #{part_num} for #{doc_id} (#{byte_size(binary)} bytes)")
+
+          case ExAws.S3.upload_part(bucket, s3_key, upload_id, part_num, binary)
+               |> ExAws.request(virtual_host: false) do
+            {:ok, res} ->
+              etag = res.headers |> Enum.find_value(fn {k, v} -> if String.downcase(k) == "etag", do: v end)
+              json(conn, %{success: true, etag: etag, part_num: part_num})
+
+            {:error, reason} ->
+              Logger.error("[V2 Part] S3 UploadPart failed: #{inspect(reason)}")
+              conn |> put_status(500) |> json(%{error: "UploadPart failed"})
+          end
+        {:error, reason} ->
+          Logger.error("[V2 Part] Binary upload failed: #{inspect(reason)}")
+          conn |> put_status(400) |> json(%{error: inspect(reason)})
+      end
+    else
+      {:error, reason} -> 
+        Logger.error("[V2 Part] Binary upload failed: #{inspect(reason)}")
+        conn |> put_status(400) |> json(%{error: inspect(reason)})
+    end
+  end
+
+  @doc """
+  Completes the parallel sync.
+  """
+  def v2_complete(conn, params) do
+    with {:ok, user}      <- get_current_user(conn),
+         {:ok, doc_id}    <- require_param(params, "doc_id"),
+         {:ok, upload_id} <- require_param(params, "upload_id"),
+         {:ok, filename}  <- require_param(params, "filename"),
+         {:ok, parts_raw} <- require_param(params, "parts")
+    do
+      bucket = get_s3_bucket()
+      s3_key = "user/#{user.id}/documents/#{doc_id}/#{filename}"
+
+      # S3 requires parts to be {part_number, etag} tuples sorted by part_number
+      parts = 
+        parts_raw
+        |> Enum.map(fn p -> {p["part_num"], p["etag"]} end)
+        |> Enum.sort_by(fn {n, _} -> n end)
+
+      case ExAws.S3.complete_multipart_upload(bucket, s3_key, upload_id, parts)
+           |> ExAws.request(virtual_host: false) do
+        {:ok, _} ->
+          # Update database
+          Task.start(fn -> 
+            upsert_document_metadata(%{
+              id: doc_id,
+              user_id: user.id,
+              filename: filename,
+              s3_content_key: s3_key,
+              status: "synced",
+              automerge_state: <<>>,
+              device_id: Map.get(params, "device_id", "unknown"),
+              last_modified_at: Map.get(params, "last_modified_at", ""),
+              file_size: Map.get(params, "file_size", 0)
+            }, @sqld_fallback)
+          end)
+
+          json(conn, %{success: true, s3_key: s3_key})
+
+        {:error, reason} ->
+          Logger.error("[V2 Complete] S3 failed: #{inspect(reason)}")
+          conn |> put_status(500) |> json(%{error: "S3 completion failed"})
+      end
+    else
+      {:error, reason} -> conn |> put_status(400) |> json(%{error: inspect(reason)})
+    end
+  end
+
+
+
+  defp decode_sqld_arg(val) when is_binary(val), do: %{type: "blob", base64: Base.encode64(val)}
+  defp decode_sqld_arg(val) when is_integer(val), do: val
+  defp decode_sqld_arg(val) when is_float(val), do: val
+  defp decode_sqld_arg(nil), do: nil
+  defp decode_sqld_arg(val), do: to_string(val)
+
+  defp read_full_body(conn, acc) do
+    case Plug.Conn.read_body(conn, length: 1_000_000) do
+      {:ok, binary, conn} -> {:ok, acc <> binary, conn}
+      {:more, binary, conn} -> read_full_body(conn, acc <> binary)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+  
 end

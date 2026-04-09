@@ -34,7 +34,7 @@ config :ex_aws, :s3,
   scheme: "https",
   host: s3_host,
   region: s3_host |> String.split(".") |> List.first() || "us-east-1",
-  virtual_host: true,
+  virtual_host: false,
   debug_requests: true
 
 config :ex_aws, :hackney,

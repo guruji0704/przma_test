@@ -46,6 +46,7 @@ defmodule AlemWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json, Alem.Plug.MsgpackParser],
     pass: ["*/*"],
+    validate_utf8: false,
     json_decoder: Phoenix.json_library(),
     length: 100_000_000,
     read_length: 1_000_000,

@@ -5,8 +5,8 @@ import Config
 # Change username/password to match your local postgres setup.
 config :alem, Alem.Repo,
   username: "postgres",
-  password: "1245",
-  hostname: "localhost",
+  password: "postgres",
+  hostname: "172.235.17.68",
   database: "dev_alem",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
@@ -31,7 +31,7 @@ config :ex_aws, :s3,
   scheme: "https",
   host: System.get_env("AWS_S3_ENDPOINT", "in-maa-1.linodeobjects.com") |> String.replace(~r/^https?:\/\//, ""),
   region: System.get_env("AWS_DEFAULT_REGION", "in-maa-1"),
-  virtual_host: true
+  virtual_host: false
 
 config :ex_aws, :hackney,
   timeout: 600_000,
@@ -92,7 +92,8 @@ config :phoenix_live_view,
 config :alem, :pleroma, base_url: "http://localhost:4001"
 
 # Allow unauthenticated analytics POST from localhost for local testing
-config :alem, :analytics_dev_bypass, true
+# Require real S3 storage for analytics even in dev
+config :alem, :analytics_dev_bypass, false
 
 config :alem, Alem.LocalFirst.LibSQLRepo,
   database: Path.expand("../priv/local_data/alem_local_dev.db", __DIR__),

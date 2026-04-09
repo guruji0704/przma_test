@@ -47,26 +47,9 @@ pub struct GenericResponse {
 // Helper
 // ══════════════════════════════════════════════════════════════════════════
 
-async fn get_server_url(conn: &libsql::Connection) -> String {
-    // Default: localhost for local dev, remote server for prod.
-    // Override by storing server_url in local_identity via the login flow.
-    let default_url = std::env::var("PRZMA_SERVER_URL")
-        .unwrap_or_else(|_| "http://172.235.17.68:4000".to_string());
-
-    if let Ok(mut rows) = conn
-        .query("SELECT server_url FROM local_identity WHERE id = 'singleton'", ())
-        .await
-    {
-        if let Ok(Some(row)) = rows.next().await {
-            if let Ok(libsql::Value::Text(s)) = row.get_value(0) {
-                if !s.is_empty() {
-                    return s;
-                }
-            }
-        }
-    }
-
-    default_url
+async fn get_server_url(_conn: &libsql::Connection) -> String {
+    // DIAGNOSTIC OVERRIDE: Unconditionally use the remote server
+    "http://172.235.17.68:4201".to_string()
 }
 
 fn get_text(row: &libsql::Row, idx: i32) -> String {

@@ -7,7 +7,7 @@ mod vault;
 mod arrow;
 
 use std::sync::Arc;
-use tauri::{Manager, Emitter};
+use tauri::Manager;
 
 pub struct AppState {
     pub db:        Arc<libsql::Database>,

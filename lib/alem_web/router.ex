@@ -115,6 +115,11 @@ defmodule AlemWeb.Router do
     post "/crdt/upload_chunk",    SyncController, :chunk_upload
     post "/crdt/finalize_upload", SyncController, :finalize_upload
 
+    # V2 Parallel Sync (Track A)
+    post "/v2/initiate", SyncController, :v2_initiate
+    post "/v2/part",     SyncController, :v2_upload_part
+    post "/v2/complete", SyncController, :v2_complete
+
     # SSE stream for real-time push events (Phase 3)
     get  "/stream",       SyncController, :event_stream
   end

@@ -64,7 +64,7 @@ config :ex_aws,
   ]
 
 config :ex_aws, :s3,
-  scheme: "https://",
+  scheme: "https",
   host: "in-maa-1.linodeobjects.com",
   region: "in-maa-1"
 

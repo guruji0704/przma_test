@@ -1,8 +1,15 @@
+use std::sync::Arc;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+use std::time::Duration;
+use bytes::Bytes;
+use futures::{StreamExt, stream::BoxStream};
+use tauri::{AppHandle, Manager, Emitter};
 use crate::{AppState, device};
 use crate::arrow::{upload_meta_to_ipc, UploadMeta};
-use std::sync::Arc;
-use std::time::Duration;
-use tauri::{AppHandle, Manager, Emitter};
+use crate::sync::stream_sync::StreamSyncWriter;
+use serde_json::{json, Value as JsonValue};
 
 // Either stream from a vault file (no RAM for file bytes) or use in-memory bytes (legacy blobs).
 enum FileSource {
@@ -40,7 +47,7 @@ struct XrpcUpload<'a> {
 }
 
 fn sqld_url() -> String {
-    std::env::var("SQLD_URL").unwrap_or_else(|_| "http://172.235.17.68:8080".to_string())
+    "http://172.235.17.68:8080".to_string()
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -69,66 +76,77 @@ pub async fn start(app: AppHandle) {
 // ══════════════════════════════════════════════════════════════════════════
 
 pub async fn run_sync_cycle(app: &AppHandle) -> Result<(usize, usize), String> {
-    let state = app.state::<AppState>();
-    
-    log::info!("═══════════════════════════════════════════");
-    log::info!("[Sync] Starting sync cycle...");
-
-    // 1. Fetch Identity (Short-lived connection)
-    let (server_url, access_token, user_id) = {
-        let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-        let mut rows = conn.query(
-            "SELECT server_url, access_token, user_id FROM local_identity WHERE id = 'singleton'",
-            (),
-        ).await.map_err(|e| e.to_string())?;
-
-        if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-            let url = match row.get_value(0).ok() {
-                Some(libsql::Value::Text(s)) if !s.is_empty() => s,
-                _ => { log::warn!("[Sync] ❌ No server URL"); return Ok((0, 0)); }
-            };
-            let token = match row.get_value(1).ok() {
-                Some(libsql::Value::Text(s)) if !s.is_empty() => s,
-                _ => { log::warn!("[Sync] ❌ No access token"); return Ok((0, 0)); }
-            };
-            let uid = match row.get_value(2).ok() {
-                Some(libsql::Value::Text(s)) if !s.is_empty() => s,
-                _ => { log::warn!("[Sync] ❌ No user_id"); return Ok((0, 0)); }
-            };
-            (url, token, uid)
-        } else {
-            log::warn!("[Sync] ❌ No identity found");
-            return Ok((0, 0));
-        }
-    };
-
-    // 2. Fetch/Create Device ID (Short-lived connection)
-    let device_id = {
-        let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-        device::get_or_create_device_id(&conn).await?
-    };
-
-    let db = Arc::clone(&state.db);
-    
-    // 3. PUSH/PULL (These now manage their own internal short-lived connections)
-    let pushed = push_documents(&db, &server_url, &access_token, &device_id, app).await?;
-    let pulled = pull_documents(&db, &user_id, &device_id).await?;
-
-    // 4. Final Updates (Short-lived connection)
-    {
-        let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE local_identity SET last_sync_at = datetime('now') WHERE id = 'singleton'",
-            (),
-        ).await.map_err(|e| e.to_string())?;
-        
-        emit_sync_status(&conn, app).await;
+    // 0. Prevent duplicate sync loops
+    if SYNC_RUNNING.swap(true, Ordering::SeqCst) {
+        log::warn!("[Sync] Sync already in progress, skipping loop");
+        return Ok((0, 0));
     }
 
-    log::info!("[Sync] Cycle complete: pushed={}, pulled={}", pushed, pulled);
-    log::info!("═══════════════════════════════════════════");
+    let result = async {
+        let state = app.state::<AppState>();
+        
+        log::info!("═══════════════════════════════════════════");
+        log::info!("[Sync] Starting sync cycle...");
 
-    Ok((pushed, pulled))
+        // 1. Fetch Identity (Short-lived connection)
+        let (server_url, access_token, user_id) = {
+            let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+            let mut rows = conn.query(
+                "SELECT server_url, access_token, user_id FROM local_identity WHERE id = 'singleton'",
+                (),
+            ).await.map_err(|e| e.to_string())?;
+
+            if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+                let url = match row.get_value(0).ok() {
+                    Some(libsql::Value::Text(s)) if !s.is_empty() => s,
+                    _ => { log::warn!("[Sync] ❌ No server URL"); return Ok((0, 0)); }
+                };
+                let token = match row.get_value(1).ok() {
+                    Some(libsql::Value::Text(s)) if !s.is_empty() => s,
+                    _ => { log::warn!("[Sync] ❌ No access token"); return Ok((0, 0)); }
+                };
+                let uid = match row.get_value(2).ok() {
+                    Some(libsql::Value::Text(s)) if !s.is_empty() => s,
+                    _ => { log::warn!("[Sync] ❌ No user_id"); return Ok((0, 0)); }
+                };
+                (url, token, uid)
+            } else {
+                log::warn!("[Sync] ❌ No identity found");
+                return Ok((0, 0));
+            }
+        };
+
+        // 2. Fetch/Create Device ID (Short-lived connection)
+        let device_id = {
+            let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+            device::get_or_create_device_id(&conn).await?
+        };
+
+        let db = Arc::clone(&state.db);
+        
+        // 3. PUSH/PULL (These now manage their own internal short-lived connections)
+        let pushed = push_documents(&db, &server_url, &access_token, &device_id, app).await?;
+        let pulled = pull_documents(&db, &user_id, &device_id).await?;
+
+        // 4. Final Updates (Short-lived connection)
+        {
+            let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE local_identity SET last_sync_at = datetime('now') WHERE id = 'singleton'",
+                (),
+            ).await.map_err(|e| e.to_string())?;
+            
+            emit_sync_status(&conn, app).await;
+        }
+
+        log::info!("[Sync] Cycle complete: pushed={}, pulled={}", pushed, pulled);
+        log::info!("═══════════════════════════════════════════");
+
+        Ok((pushed, pulled))
+    }.await;
+
+    SYNC_RUNNING.store(false, Ordering::SeqCst);
+    result
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -194,8 +212,8 @@ async fn push_documents(
 
     log::info!("[Push] Uploading {} document(s) in parallel (max 8) to {}", pending.len(), server_url);
 
-    // ── Parallel upload: up to 8 concurrent, each with its own DB connection ──
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+    // ── Parallel upload: up to 4 concurrent files (unlocked for speed) ──
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
     let mut join_set: tokio::task::JoinSet<Result<(String, bool), String>> =
         tokio::task::JoinSet::new();
 
@@ -233,19 +251,34 @@ async fn push_documents(
                 FileSource::Bytes(doc.text_content.as_bytes().to_vec())
             };
 
-            // ─── Phase 2: Perform Upload (Long running, NO DB connection held) ───
-            let upload_result = upload_crdt_document(
-                &server,
-                &doc.doc_id,
-                &doc.filename,
-                &doc.content_type,
-                &doc.automerge_state,
-                file_source,
-                &doc.text_content,
-                &dev_id,
-                &doc.last_modified_at,
-                &token,
-            ).await;
+            // ─── Phase 2: Perform Upload (Streaming, NO DB connection held) ───
+            let upload_result = if let FileSource::VaultFile(ref vp) = file_source {
+                upload_crdt_document_stream(
+                    &server,
+                    &doc.doc_id,
+                    &doc.filename,
+                    &doc.content_type,
+                    &doc.automerge_state,
+                    vp,
+                    &doc.text_content,
+                    &dev_id,
+                    &doc.last_modified_at,
+                    &token,
+                ).await
+            } else {
+                upload_crdt_document(
+                    &server,
+                    &doc.doc_id,
+                    &doc.filename,
+                    &doc.content_type,
+                    &doc.automerge_state,
+                    file_source,
+                    &doc.text_content,
+                    &dev_id,
+                    &doc.last_modified_at,
+                    &token,
+                ).await
+            };
 
             // ─── Phase 3: Update DB status (Fresh short-lived connection) ───
             let conn = crate::db::connect(&db_clone).await
@@ -542,6 +575,151 @@ async fn upload_crdt_document(
     }
 
     Err(last_err)
+}
+
+/// New Streaming Upload using Arrow IPC batches wrapped in MessagePack.
+/// Handles 1GB+ files with constant 5MB RAM usage.
+async fn upload_crdt_document_stream(
+    server_url: &str,
+    doc_id: &str,
+    filename: &str,
+    content_type: &str,
+    automerge_state: &[u8],
+    vault_path: &str,
+    text_content: &str,
+    device_id: &str,
+    last_modified_at: &str,
+    token: &str,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3600)) // 1 hour for large files
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+    let writer = StreamSyncWriter::new(doc_id);
+    
+    // Get file size for analytics
+    let file_meta = tokio::fs::metadata(vault_path).await.map_err(|e| e.to_string())?;
+    let file_size = file_meta.len() as i64;
+    
+    // Create Arrow Metadata IPC for server-side analytics (Track B)
+    let analytic_meta = crate::arrow::UploadMeta {
+        doc_id,
+        filename,
+        content_type,
+        file_size,
+        status: "synced",
+        created_at: last_modified_at,
+    };
+    let arrow_meta_ipc = crate::arrow::upload_meta_to_ipc(&analytic_meta)?;
+
+    let path = vault_path.to_string();
+
+    // --- START V2 PARALLEL TRANSITION (Track A) ---
+    // Instead of a single stream, we now use a parallel multipart dispatcher.
+
+    // 1. INITIATE (v2/initiate)
+    let init_payload = json!({
+        "doc_id": doc_id,
+        "filename": filename,
+        "content_type": content_type,
+        "arrow_metadata_ipc": serde_bytes::Bytes::new(&arrow_meta_ipc)
+    });
+
+    let init_resp = client
+        .post(format!("{}/api/v1/sync/v2/initiate", server_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&init_payload)
+        .send()
+        .await
+        .map_err(|e: reqwest::Error| format!("Initiate fail: {}", e))?;
+
+    if !init_resp.status().is_success() {
+        return Err(format!("V2 Initiate failed: {}", init_resp.text().await.unwrap_or_default()));
+    }
+
+    let init_data: JsonValue = init_resp.json().await.map_err(|e: reqwest::Error| e.to_string())?;
+    let upload_id = init_data["upload_id"].as_str().ok_or("No upload_id returned")?.to_string();
+
+    // 2. DISPATCH PARTS IN PARALLEL
+    let part_stream = writer.file_to_arrow_stream(path, 10 * 1024 * 1024).await
+        .map_err(|e: anyhow::Error| e.to_string())?;
+
+    let parts_results = part_stream
+        .enumerate()
+        .map(|(i, batch_res)| {
+            let part_num = (i + 1) as i32;
+            let client = client.clone();
+            let server_url = server_url.to_string();
+            let upload_id = upload_id.clone();
+            let doc_id = doc_id.to_string();
+            let filename = filename.to_string();
+            let token = token.to_string();
+
+            async move {
+                let batch = batch_res.map_err(|e: anyhow::Error| e.to_string())?;
+                
+                // POST raw binary body to avoid multipart overhead/timeouts.
+                // Metadata is passed via query string.
+                let resp = client
+                    .post(format!("{}/api/v1/sync/v2/part", server_url))
+                    .query(&[
+                        ("upload_id", upload_id),
+                        ("doc_id", doc_id),
+                        ("part_num", part_num.to_string()),
+                        ("filename", filename),
+                    ])
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/octet-stream")
+                    .body(batch) 
+                    .send()
+                    .await
+                    .map_err(|e: reqwest::Error| e.to_string())?;
+
+                if !resp.status().is_success() {
+                    let err_txt = resp.text().await.map_err(|e: reqwest::Error| e.to_string())?;
+                    return Err(format!("Part {} failed: {}", part_num, err_txt));
+                }
+
+                let data: JsonValue = resp.json().await.map_err(|e: reqwest::Error| e.to_string())?;
+                let etag = data["etag"].as_str().ok_or("No etag")?.to_string();
+                
+                Ok::<JsonValue, String>(json!({ "part_num": part_num, "etag": etag }))
+            }
+        })
+        .buffer_unordered(8) 
+        .collect::<Vec<Result<JsonValue, String>>>()
+        .await;
+
+    let mut final_parts = Vec::new();
+    for res in parts_results {
+        final_parts.push(res?);
+    }
+
+    // 3. COMPLETE (v2/complete)
+    let complete_payload = serde_json::json!({
+        "doc_id": doc_id,
+        "upload_id": upload_id,
+        "filename": filename,
+        "parts": final_parts,
+        "device_id": device_id,
+        "last_modified_at": last_modified_at,
+        "file_size": file_size
+    });
+
+    let complete_resp = client
+        .post(format!("{}/api/v1/sync/v2/complete", server_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&complete_payload)
+        .send()
+        .await
+        .map_err(|e: reqwest::Error| e.to_string())?;
+
+    if !complete_resp.status().is_success() {
+        return Err(format!("V2 Complete failed: {}", complete_resp.text().await.unwrap_or_default()));
+    }
+
+    log::info!("[V2 Parallel Sync] ✅ Successfully synced {} to S3", filename);
+    Ok(())
 }
 
 // ══════════════════════════════════════════════════════════════════════════

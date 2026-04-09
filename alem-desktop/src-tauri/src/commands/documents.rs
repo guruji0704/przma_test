@@ -1096,10 +1096,10 @@ async fn get_server_url_inner(conn: &libsql::Connection) -> Result<String, Strin
     if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
         match row.get_value(0).ok() {
             Some(libsql::Value::Text(s)) if !s.is_empty() => Ok(s),
-            _ => Ok("http://localhost:4000".to_string()),
+            _ => Ok("http://localhost:4201".to_string()),
         }
     } else {
-        Ok("http://localhost:4000".to_string())
+        Ok("http://localhost:4201".to_string())
     }
 }
 
