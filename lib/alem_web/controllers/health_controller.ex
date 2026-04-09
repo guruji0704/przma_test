@@ -1,64 +1,67 @@
 defmodule AlemWeb.HealthController do
+  @moduledoc """
+  GET /api/health — checked by Linode NodeBalancer every 10 seconds.
+  Returns 200 if all critical services are healthy, 503 if degraded.
+
+  Services checked:
+    - PostgreSQL (Ecto)
+    - S3/Linode Object Storage
+    - sqld (LibSQL HTTP API)
+    - Horde registry (namespace manager distribution)
+  """
+
   use AlemWeb, :controller
   require Logger
   alias Alem.Repo
 
   def check(conn, _params) do
     services = check_services()
-    overall = if all_healthy?(services), do: :ok, else: :service_unavailable
+    overall  = if all_healthy?(services), do: :ok, else: :service_unavailable
+
     conn
     |> put_status(overall)
     |> json(%{
-      status: if(overall == :ok, do: "ok", else: "degraded"),
+      status:    if(overall == :ok, do: "ok", else: "degraded"),
       timestamp: DateTime.utc_now(),
-      version: Application.spec(:alem, :vsn) |> to_string(),
-      services: services
+      version:   Application.spec(:alem, :vsn) |> to_string(),
+      services:  services
     })
   end
 
   defp check_services do
     %{
-      database:       check_database(),
-      libsql:         check_libsql(),
+      postgres:       check_postgres(),
       object_storage: check_object_storage(),
-      couchdb:        check_couchdb(),
+      sqld:           check_sqld(),
       horde:          check_horde()
     }
   end
 
-  defp check_database do
+  defp check_postgres do
     case Repo.query("SELECT 1", []) do
-      {:ok, _}        -> %{status: "healthy", message: "PostgreSQL OK"}
-      {:error, reason}-> %{status: "unhealthy", message: inspect(reason)}
-    end
-  rescue
-    e -> %{status: "unhealthy", message: inspect(e)}
-  end
-
-  defp check_libsql do
-    case Code.ensure_loaded(Alem.LocalFirst.LibSQLRepo) do
-      {:module, _}    -> %{status: "healthy", message: "LibSQL module loaded"}
-      {:error, reason}-> %{status: "unhealthy", message: inspect(reason)}
+      {:ok, _}         -> %{status: "healthy",   message: "PostgreSQL OK"}
+      {:error, reason} -> %{status: "unhealthy", message: inspect(reason)}
     end
   rescue
     e -> %{status: "unhealthy", message: inspect(e)}
   end
 
   defp check_object_storage do
-    bucket = Application.get_env(:alem, :file_storage)[:bucket]
-    # list/2 — (bucket, prefix).  No third argument.
+    bucket = Application.get_env(:alem, :file_storage, [])[:bucket] || "perkeep"
     case Alem.Storage.ObjectStore.list(bucket, "") do
-      {:ok, _}        -> %{status: "healthy", message: "Object storage accessible"}
-      {:error, reason}-> %{status: "unhealthy", message: inspect(reason)}
+      {:ok, _}         -> %{status: "healthy",   message: "S3 accessible (#{bucket})"}
+      {:error, reason} -> %{status: "unhealthy", message: inspect(reason)}
     end
   rescue
     e -> %{status: "unhealthy", message: inspect(e)}
   end
 
-  defp check_couchdb do
-    case Alem.Storage.DocumentStore.ensure_database("health_check") do
-      :ok             -> %{status: "healthy", message: "CouchDB accessible"}
-      {:error, reason}-> %{status: "unhealthy", message: inspect(reason)}
+  defp check_sqld do
+    sqld_url = Application.get_env(:alem, :sqld_url, "http://localhost:8080")
+    case Req.get("#{sqld_url}/health", receive_timeout: 3_000) do
+      {:ok, %{status: 200}}    -> %{status: "healthy",   message: "sqld OK at #{sqld_url}"}
+      {:ok, %{status: status}} -> %{status: "unhealthy", message: "sqld HTTP #{status}"}
+      {:error, reason}         -> %{status: "unhealthy", message: inspect(reason)}
     end
   rescue
     e -> %{status: "unhealthy", message: inspect(e)}
@@ -66,12 +69,14 @@ defmodule AlemWeb.HealthController do
 
   defp check_horde do
     count = Horde.Registry.count(Alem.Namespace.HordeRegistry)
-    %{status: "healthy", message: "Horde registry active", registrations: count}
+    %{status: "healthy", message: "Horde active, #{count} registrations"}
   rescue
     e -> %{status: "unhealthy", message: inspect(e)}
   end
 
   defp all_healthy?(services) do
-    Enum.all?(services, fn {_k, v} -> v[:status] == "healthy" end)
+    # sqld being down is non-fatal — sync is optional
+    critical = Map.drop(services, [:sqld])
+    Enum.all?(critical, fn {_, v} -> v[:status] == "healthy" end)
   end
 end

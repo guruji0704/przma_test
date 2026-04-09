@@ -108,8 +108,10 @@ defmodule Alem.MixProject do
       # Analytics: MessagePack serialization (benchmark comparison + XRPC wire)
       {:msgpax, "~> 2.4"},
 
-      # Analytics: Broadway pipeline for scan events
-      {:broadway, "~> 1.0"}
+      # GraphQL — Absinthe
+      {:absinthe,         "~> 1.7"},
+      {:absinthe_plug,    "~> 1.5"},
+      {:absinthe_phoenix, "~> 2.0"}
     ]
   end
 

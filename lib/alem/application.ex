@@ -21,17 +21,25 @@ defmodule Alem.Application do
       {Finch, name: Alem.Finch},
 
       Alem.Sync.Manager,
-
-      # Epoch key manager — generates + rotates x25519 keypairs for vault CAS decryption.
-      # Must start before AlemWeb.Endpoint so the epoch endpoint is ready on first request.
-      # Requires EPOCH_MASTER_KEY env var (32 random bytes, base64-encoded).
       Alem.Vault.EpochKeyManager,
 
-      # Distributed namespace management
-      #Alem.Namespace.HordeSupervisor,
+      # ← Horde registry first
+      {Horde.Registry,
+        name: Alem.Namespace.HordeRegistry,
+        keys: :unique,
+        members: :auto},
 
-      # Web endpoint (Phoenix on port 4201)
-      AlemWeb.Endpoint
+      # ← then Horde supervisor
+      {Horde.DynamicSupervisor,
+        name: Alem.Namespace.DynamicSupervisor,
+        strategy: :one_for_one,
+        members: :auto},
+
+      # Web endpoint
+      AlemWeb.Endpoint,
+
+      # GraphQL subscriptions
+      {Absinthe.Subscription, AlemWeb.Endpoint}
     ]
 
     # NOTE: PleromaMockServer is REMOVED.

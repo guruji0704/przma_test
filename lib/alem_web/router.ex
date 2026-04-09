@@ -124,14 +124,27 @@ defmodule AlemWeb.Router do
     get  "/stream",       SyncController, :event_stream
   end
 
-  scope "/api/swagger" do
-    pipe_through :browser
-    get "/", OpenApiSpex.Plug.SwaggerUI, path: "/api/swagger/openapi.json"
+  # ── GraphQL endpoint ────────────────────────────────────────────────────────
+  scope "/graphql" do
+    pipe_through :api
+    forward "/", Absinthe.Plug,
+      schema: AlemWeb.Schema,
+      json_codec: Jason
   end
 
-  scope "/api/swagger" do
-    pipe_through [:swagger]
-    get "/openapi.json", OpenApiSpex.Plug.RenderSpec, []
+  # ── GraphiQL browser UI (dev only) ─────────────────────────────────────────
+  if Mix.env() == :dev do
+    scope "/graphiql" do
+      pipe_through :browser
+      forward "/", Absinthe.Plug.GraphiQL,
+        schema: AlemWeb.Schema,
+        interface: :simple
+    end
+  end
+
+  scope "/api", AlemWeb do
+    pipe_through :api
+    get "/health", HealthController, :check
   end
 
   if Application.compile_env(:alem, :dev_routes) do
