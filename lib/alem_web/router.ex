@@ -24,6 +24,10 @@ defmodule AlemWeb.Router do
     plug AlemWeb.Plugs.AdminAuth
   end
 
+  pipeline :admin_layout do
+    plug :put_root_layout, html: {AlemWeb.Layouts, :admin_root}
+  end
+
   # ── Public browser routes ─────────────────────────────────────────────────
   scope "/", AlemWeb do
     pipe_through :browser
@@ -41,7 +45,7 @@ defmodule AlemWeb.Router do
 
   # ── Admin Panel (LiveView — protected) ────────────────────────────────────
   scope "/admin", AlemWeb do
-    pipe_through [:browser, :admin_auth]
+    pipe_through [:browser, :admin_auth, :admin_layout]
     live "/",         AdminLive, :index
     live "/users",    AdminLive, :users
     live "/vault",    AdminLive, :vault
