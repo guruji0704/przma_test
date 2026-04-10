@@ -319,8 +319,12 @@ defmodule AlemWeb.AdminLive do
           </div>
           <div class="str">
             <span class="sl">Saved by dedup</span>
-            <div class="sb2"><div class="sf gn" style={"width:#{if @stats.total_bytes > 0, do: min(100, round(@stats.saved_bytes / @stats.total_bytes * 100)), else: 0}%"}></div></div>
-            <span class="sv gc"><%= Admin.format_bytes(@stats.saved_bytes) %></span>
+            <div class="sb2">
+              <div class="sf gn"
+                  style={"width:#{if @stats.total_bytes > 0,
+                    do: min(100, round(@stats.saved_bytes / @stats.total_bytes * 100)),
+                    else: 0}%"}></div>
+            </div>
           </div>
         </div>
         <div class="dc">

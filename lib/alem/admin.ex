@@ -18,9 +18,9 @@ defmodule Alem.Admin do
     total_files    = Repo.aggregate(Document, :count, :id)
     total_cas      = Repo.aggregate(CasObject, :count, :content_hash)
     duplicate_cas  = Repo.aggregate(from(c in CasObject, where: c.ref_count > 1), :count, :content_hash)
-    total_bytes    = Repo.one(from c in CasObject, select: coalesce(sum(c.file_size), 0)) || 0
+    total_bytes    = Repo.one(from c in CasObject, select: coalesce(sum(c.file_size), 0)) |> to_int()
     saved_bytes    = Repo.one(from c in CasObject, where: c.ref_count > 1,
-                       select: coalesce(sum(c.file_size * (c.ref_count - 1)), 0)) || 0
+                       select: coalesce(sum(c.file_size * (c.ref_count - 1)), 0)) |> to_int()
     seven_days_ago = DateTime.add(DateTime.utc_now(), -7, :day) |> DateTime.to_naive()
     new_this_week  = Repo.aggregate(from(u in User, where: u.inserted_at >= ^seven_days_ago), :count, :id)
 
@@ -125,7 +125,8 @@ defmodule Alem.Admin do
         join: c in CasObject, on: c.content_hash == d.content_hash,
         where: d.user_id == ^user.id,
         select: coalesce(sum(c.file_size), 0))
-      |> Repo.one() || 0
+      |> Repo.one()
+      |> to_int()
 
     type_breakdown =
       from(d in Document,
@@ -245,6 +246,7 @@ defmodule Alem.Admin do
                 total_bytes: coalesce(sum(c.file_size), 0)},
       order_by: [desc: count(c.content_hash)])
     |> Repo.all()
+    |> Enum.map(fn row -> Map.update!(row, :total_bytes, &to_int/1) end)
   end
 
   def duplicate_analysis do
@@ -257,7 +259,8 @@ defmodule Alem.Admin do
     total_wasted =
       from(c in CasObject, where: c.ref_count > 1,
         select: coalesce(sum(c.file_size * (c.ref_count - 1)), 0))
-      |> Repo.one() || 0
+      |> Repo.one()
+      |> to_int()
 
     %{duplicates: duplicates, total_wasted: total_wasted}
   end
@@ -333,4 +336,12 @@ defmodule Alem.Admin do
     end
   end
   def format_bytes(_), do: "0 B"
+
+  # Normalises any value returned by Ecto's coalesce(sum(...), 0) to a plain
+  # integer.  PostgreSQL SUM always comes back as a Decimal struct, even when
+  # the underlying column is an integer type, so the naive `|| 0` guard is
+  # useless (a %Decimal{} is truthy regardless of its numeric value).
+  defp to_int(%Decimal{} = d), do: d |> Decimal.round(0) |> Decimal.to_integer()
+  defp to_int(n) when is_integer(n), do: n
+  defp to_int(_), do: 0
 end
