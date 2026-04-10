@@ -213,6 +213,7 @@ pub async fn upload_files_from_paths(
     // Snapshot epoch key once before entering the Rayon blocking context.
     // EpochPublicKey is Copy so this is a cheap stack copy, not a heap allocation.
     let epoch_key_snapshot: Option<vault::EpochPublicKey> = *state.epoch_key.read().await;
+    let epoch_id = epoch_key_snapshot.map(|ek| ek.epoch_id as i64);
 
     struct ReadyFile {
         doc_id:        String,
@@ -276,11 +277,17 @@ pub async fn upload_files_from_paths(
 
                     // Use v2 dual-key encryption when server epoch key is available.
                     // v2 embeds a server-readable wrapped key so the server can
-                    // decrypt for CAS extraction.  Falls back to v1 if offline.
+                    // Streaming encrypt → .vault file
                     let encrypt_result = match epoch_key_snapshot {
-                        Some(ref ek) => vault::encrypt_file_v2(path, &vault_path, &vault_key, ek, progress_cb)
-                                            .map(|r| r.original_size),
-                        None         => vault::encrypt_file(path, &vault_path, &vault_key, progress_cb),
+                        Some(ref ek) => {
+                            log::info!("[Vault] 🔐 Using V2 encryption for '{}' (epoch_id={})", filename, ek.epoch_id);
+                            vault::encrypt_file_v2(path, &vault_path, &vault_key, ek, progress_cb)
+                                .map(|r| r.original_size)
+                        },
+                        None => {
+                            log::warn!("[Vault] ⚠️ Falling back to V1 encryption for '{}' (No Epoch Key)", filename);
+                            vault::encrypt_file(path, &vault_path, &vault_key, progress_cb)
+                        },
                     };
                     let original_size = match encrypt_result {
                         Ok(n)  => n,
@@ -377,8 +384,8 @@ pub async fn upload_files_from_paths(
             "INSERT INTO documents (
                 id, filename, automerge_state, vault_path, content_type,
                 text_content, device_id, last_modified_at, updated_at,
-                status, needs_upload, is_synced, version
-            ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', 1, 0, 1)",
+                status, needs_upload, is_synced, version, epoch_id
+            ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', 1, 0, 1, ?)",
             libsql::params![
                 ready.doc_id.clone(),
                 ready.filename.clone(),
@@ -388,6 +395,7 @@ pub async fn upload_files_from_paths(
                 device_id,
                 now.clone(),
                 now,
+                epoch_id,
             ],
         ).await {
             Ok(_) => {
@@ -668,6 +676,78 @@ pub async fn delete_document(
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// rename_document
+// ══════════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+pub async fn rename_document(
+    id: String,
+    new_name: String,
+    state: tauri::State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+    
+    log::info!("✏️  Renaming document {} to '{}'", id, new_name);
+
+    conn.execute(
+        "UPDATE documents SET 
+            filename = ?, 
+            updated_at = datetime('now'),
+            version = version + 1,
+            needs_upload = 1,
+            is_synced = 0,
+            status = 'pending'
+         WHERE id = ?",
+        libsql::params![new_name, id],
+    ).await.map_err(|e| e.to_string())?;
+
+    log::info!("✅ Document renamed");
+    tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// get_file_bytes — decrypt a vault document and return raw bytes to the
+// frontend for download (avoids needing fs:read permissions on the frontend).
+// ══════════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+pub async fn get_file_bytes(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<u8>, String> {
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+
+    let mut rows = conn.query(
+        "SELECT binary_content, vault_path FROM documents WHERE id = ?",
+        libsql::params![id.clone()],
+    ).await.map_err(|e| e.to_string())?;
+
+    let row = rows.next().await.map_err(|e| e.to_string())?
+        .ok_or_else(|| "File not found".to_string())?;
+
+    let binary_content = match row.get_value(0).ok() {
+        Some(libsql::Value::Blob(b)) if !b.is_empty() => Some(b),
+        _ => None,
+    };
+    let vault_path_str = match row.get_value(1).ok() {
+        Some(libsql::Value::Text(s)) if !s.is_empty() => Some(s),
+        _ => None,
+    };
+
+    if let Some(vp) = vault_path_str {
+        vault::decrypt_file_any(std::path::Path::new(&vp), &state.vault_key)
+            .map_err(|e| format!("Decrypt failed: {}", e))
+    } else if let Some(enc) = binary_content {
+        state.vault_key.decrypt(&enc)
+            .map_err(|e| format!("Decrypt failed: {}", e))
+    } else {
+        Err("No file content found".to_string())
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // open_file_for_edit
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -699,7 +779,7 @@ pub async fn open_file_for_edit(
 
     // Decrypt: prefer vault file (streaming), fall back to legacy blob
     let bytes = if let Some(vp) = vault_path_str {
-        vault::decrypt_file(std::path::Path::new(&vp), &state.vault_key)
+        vault::decrypt_file_any(std::path::Path::new(&vp), &state.vault_key)
             .map_err(|e| format!("Vault decrypt failed: {}", e))?
     } else if let Some(enc) = binary_content {
         state.vault_key.decrypt(&enc)
@@ -760,7 +840,7 @@ pub async fn save_edited_file(
 
     // Decrypt current version for comparison
     let current_bytes = if let Some(ref vp) = vault_path_opt {
-        vault::decrypt_file(std::path::Path::new(vp), &state.vault_key)
+        vault::decrypt_file_any(std::path::Path::new(vp), &state.vault_key)
             .map_err(|e| format!("Vault decrypt failed: {}", e))?
     } else if let Some(enc) = binary_content_opt {
         state.vault_key.decrypt(&enc)

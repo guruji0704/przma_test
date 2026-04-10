@@ -613,21 +613,11 @@ pub async fn load_or_generate_key(db: &libsql::Database) -> Result<VaultKey, Str
                 let key = VaultKey::from_b64(&b64)?;
                 log::info!("🔐 [Vault] Key found in SQLite — migrating to OS keychain");
 
-                // Migrate: move the key to the keychain
+                // Copy key to keychain; keep SQLite as backup (never wipe it —
+                // if keychain is lost, SQLite is the only recovery path).
                 match key.save_to_keyring() {
-                    Ok(_) => {
-                        // Clear the plain-text key from SQLite for security
-                        let _ = conn
-                            .execute(
-                                "UPDATE local_identity SET vault_key = '' WHERE id = 'singleton'",
-                                (),
-                            )
-                            .await;
-                        log::info!("🔐 [Vault] Migration complete — plain-text key cleared from SQLite");
-                    }
-                    Err(e) => {
-                        log::warn!("🔐 [Vault] Keychain migration failed (keeping in SQLite): {}", e);
-                    }
+                    Ok(_) => log::info!("🔐 [Vault] Key copied to OS keychain (SQLite backup retained)"),
+                    Err(e) => log::warn!("🔐 [Vault] Keychain copy failed (SQLite remains authoritative): {}", e),
                 }
 
                 return Ok(key);
@@ -635,25 +625,23 @@ pub async fn load_or_generate_key(db: &libsql::Database) -> Result<VaultKey, Str
         }
     }
 
-    // ── Step 3: Generate a new key ────────────────────────────────────────
+    // ── Step 3: Generate a new key — save to BOTH keychain and SQLite ────
     let key = VaultKey::generate();
 
+    // Always persist in SQLite first (guaranteed local storage).
+    conn.execute(
+        "INSERT INTO local_identity (id, vault_key)
+         VALUES ('singleton', ?)
+         ON CONFLICT(id) DO UPDATE SET vault_key = excluded.vault_key",
+        libsql::params![key.to_b64()],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Also try keychain (faster lookup on subsequent starts).
     match key.save_to_keyring() {
-        Ok(_) => {
-            log::info!("🔐 [Vault] New key generated and saved to OS keychain");
-        }
-        Err(e) => {
-            log::warn!("🔐 [Vault] Keychain save failed — falling back to SQLite: {}", e);
-            // Fallback: store in SQLite (keychain unavailable, e.g. headless CI)
-            conn.execute(
-                "INSERT INTO local_identity (id, vault_key)
-                 VALUES ('singleton', ?)
-                 ON CONFLICT(id) DO UPDATE SET vault_key = excluded.vault_key",
-                libsql::params![key.to_b64()],
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        }
+        Ok(_)  => log::info!("🔐 [Vault] New key saved to SQLite + OS keychain"),
+        Err(e) => log::warn!("🔐 [Vault] Keychain save failed (SQLite only): {}", e),
     }
 
     Ok(key)

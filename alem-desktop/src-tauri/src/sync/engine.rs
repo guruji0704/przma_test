@@ -1,10 +1,8 @@
 use std::sync::Arc;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 use std::time::Duration;
-use bytes::Bytes;
-use futures::{StreamExt, stream::BoxStream};
+use futures::StreamExt;
 use tauri::{AppHandle, Manager, Emitter};
 use crate::{AppState, device};
 use crate::arrow::{upload_meta_to_ipc, UploadMeta};
@@ -163,6 +161,7 @@ struct PendingDoc {
     last_modified_at: String,
     status:           String,
     vault_path:       Option<String>,
+    epoch_id:         Option<i64>,
 }
 
 async fn push_documents(
@@ -180,7 +179,7 @@ async fn push_documents(
         let conn = crate::db::connect(db).await.map_err(|e| e.to_string())?;
         let mut docs = conn.query(
             "SELECT id, filename, automerge_state, text_content,
-                    binary_content, content_type, last_modified_at, status, vault_path
+                    binary_content, content_type, last_modified_at, status, vault_path, epoch_id
              FROM documents
              WHERE needs_upload = 1
              ORDER BY created_at ASC",
@@ -197,10 +196,11 @@ async fn push_documents(
             let last_modified_at = row.get_value(6).ok().and_then(|v| match v { libsql::Value::Text(s) => Some(s), _ => None }).unwrap_or_default();
             let status = row.get_value(7).ok().and_then(|v| match v { libsql::Value::Text(s) => Some(s), _ => None }).unwrap_or_else(|| "pending".to_string());
             let vault_path = row.get_value(8).ok().and_then(|v| match v { libsql::Value::Text(s) if !s.is_empty() => Some(s), _ => None });
+            let epoch_id = row.get_value(9).ok().and_then(|v| match v { libsql::Value::Integer(i) => Some(i), _ => None });
 
             pending.push(PendingDoc {
                 doc_id, filename, automerge_state, text_content,
-                binary_content, content_type, last_modified_at, status, vault_path,
+                binary_content, content_type, last_modified_at, status, vault_path, epoch_id,
             });
         }
     } // End of fetch connection scope
@@ -255,15 +255,16 @@ async fn push_documents(
             let upload_result = if let FileSource::VaultFile(ref vp) = file_source {
                 upload_crdt_document_stream(
                     &server,
-                    &doc.doc_id,
-                    &doc.filename,
-                    &doc.content_type,
+                    doc.doc_id.as_str(),
+                    doc.filename.as_str(),
+                    doc.content_type.as_str(),
                     &doc.automerge_state,
-                    vp,
-                    &doc.text_content,
-                    &dev_id,
-                    &doc.last_modified_at,
-                    &token,
+                    vp.as_str(),
+                    doc.text_content.as_str(),
+                    dev_id.as_str(),
+                    doc.last_modified_at.as_str(),
+                    token.as_str(),
+                    doc.epoch_id,
                 ).await
             } else {
                 upload_crdt_document(
@@ -277,6 +278,7 @@ async fn push_documents(
                     &dev_id,
                     &doc.last_modified_at,
                     &token,
+                    doc.epoch_id,
                 ).await
             };
 
@@ -455,6 +457,7 @@ async fn upload_crdt_document(
     device_id: &str,
     last_modified_at: &str,
     token: &str,
+    epoch_id: Option<i64>,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
@@ -472,9 +475,8 @@ async fn upload_crdt_document(
 
     let file_size = file_bytes.len();
 
-    // Extract epoch_id from vault header v2 so the server knows which epoch
-    // private key to use for CAS decryption.  Returns None for v1 vault files.
-    let epoch_id = read_vault_epoch_id(&file_bytes);
+    // Use the epoch_id from the DB if available, fallback to header parsing
+    let epoch_id = epoch_id.map(|id| id as u32).or_else(|| read_vault_epoch_id(&file_bytes));
     log::info!("[Upload] '{}' ({} bytes, epoch_id={:?})", filename, file_size, epoch_id);
 
     // ══════════════════════════════════════════════════════════════════════
@@ -584,12 +586,13 @@ async fn upload_crdt_document_stream(
     doc_id: &str,
     filename: &str,
     content_type: &str,
-    automerge_state: &[u8],
+    _automerge_state: &[u8],
     vault_path: &str,
-    text_content: &str,
+    _text_content: &str,
     device_id: &str,
     last_modified_at: &str,
     token: &str,
+    epoch_id: Option<i64>,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3600)) // 1 hour for large files
@@ -641,7 +644,7 @@ async fn upload_crdt_document_stream(
     let upload_id = init_data["upload_id"].as_str().ok_or("No upload_id returned")?.to_string();
 
     // 2. DISPATCH PARTS IN PARALLEL
-    let part_stream = writer.file_to_arrow_stream(path, 10 * 1024 * 1024).await
+    let part_stream = writer.file_to_raw_stream(path, 10 * 1024 * 1024).await
         .map_err(|e: anyhow::Error| e.to_string())?;
 
     let parts_results = part_stream
@@ -703,7 +706,8 @@ async fn upload_crdt_document_stream(
         "parts": final_parts,
         "device_id": device_id,
         "last_modified_at": last_modified_at,
-        "file_size": file_size
+        "file_size": file_size,
+        "epoch_id": epoch_id
     });
 
     let complete_resp = client

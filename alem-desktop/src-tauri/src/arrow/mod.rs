@@ -35,7 +35,7 @@ use arrow::array::{
     StringBuilder, TimestampMillisecondBuilder,
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use arrow::ipc::writer::StreamWriter;
+use arrow::ipc::writer::FileWriter;
 use arrow::record_batch::RecordBatch;
 use chrono::{DateTime, Datelike, Utc};
 
@@ -174,17 +174,16 @@ pub fn documents_to_record_batch(docs: &[Document]) -> Result<RecordBatch, arrow
 
 // ── IPC serialiser ────────────────────────────────────────────────────────
 
-/// Serialize a RecordBatch to Arrow IPC **streaming** format bytes.
+/// Serialize a RecordBatch to Arrow IPC **file** format bytes.
 ///
-/// The streaming format is preferred over file format because:
-///   - No seek required — can be piped over HTTP/WebSocket
-///   - Compatible with zero-copy memory mapping on the server
-///   - Explorer.DataFrame.load_ipc/1 on the Elixir server reads this format
+/// The file format includes a footer (metadata index) which is required
+/// by Polars / Explorer on the server to perform sharding and conversion.
 pub fn record_batch_to_ipc(batch: &RecordBatch) -> Result<Vec<u8>, String> {
     let mut buf    = Cursor::new(Vec::<u8>::new());
     let schema_ref = batch.schema();
 
-    let mut writer = StreamWriter::try_new(&mut buf, &schema_ref)
+    // Use FileWriter instead of StreamWriter to add File Footer/Magic Bytes
+    let mut writer = FileWriter::try_new(&mut buf, &schema_ref)
         .map_err(|e| format!("IPC writer init failed: {e}"))?;
 
     writer.write(batch)

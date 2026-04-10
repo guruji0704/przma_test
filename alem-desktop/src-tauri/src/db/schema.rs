@@ -23,6 +23,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
             last_synced_at    TEXT,
             is_synced         INTEGER DEFAULT 0,
             needs_upload      INTEGER DEFAULT 1,
+            epoch_id          INTEGER,
             status            TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'synced', 'failed')),
             last_error        TEXT
         )",
@@ -45,6 +46,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
         "ALTER TABLE documents ADD COLUMN tags TEXT DEFAULT '[]'",
         "ALTER TABLE documents ADD COLUMN vault_path TEXT",
         "ALTER TABLE documents ADD COLUMN last_error TEXT",
+        "ALTER TABLE documents ADD COLUMN epoch_id INTEGER",
     ];
 
     for sql in schema_migrations {
@@ -97,6 +99,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
             chunk_index  INTEGER NOT NULL,
             total_chunks INTEGER NOT NULL,
             data         BLOB NOT NULL,
+            epoch_id     INTEGER,
             created_at   TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(doc_id, chunk_index)
         )",
@@ -109,6 +112,13 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
     ).await?;
 
     log::info!("  ✅ file_chunks table ready");
+    
+    // Add epoch_id to file_chunks if it doesn't exist
+    match conn.execute("ALTER TABLE file_chunks ADD COLUMN epoch_id INTEGER", ()).await {
+        Ok(_) => log::info!("  ✅ Schema migration: epoch_id column added to file_chunks"),
+        Err(e) if e.to_string().contains("duplicate column") => {}
+        Err(e) => log::warn!("  ⚠️  file_chunks epoch_id migration skipped: {}", e),
+    }
 
     // ── device_identity ──────────────────────────────────────────────────
     conn.execute(
