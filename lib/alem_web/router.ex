@@ -156,4 +156,17 @@ defmodule AlemWeb.Router do
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end
+
+  # ── Admin Panel (LiveView) ────────────────────────────────────────────────
+  pipeline :admin_auth do
+    plug :browser
+  end
+
+  scope "/admin", AlemWeb do
+    pipe_through [:browser, :admin_auth]
+    live "/",          AdminLive, :index
+    live "/users",     AdminLive, :users
+    live "/vault",     AdminLive, :vault
+    live "/dupes",     AdminLive, :duplicates
+  end
 end

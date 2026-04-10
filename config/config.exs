@@ -34,28 +34,29 @@ config :alem, AlemWeb.Endpoint,
     ]
   ]
 
-config :alem, Alem.Mailer,
-  adapter: Swoosh.Adapters.SMTP,
-  relay: "przma.com",
-  port: 465,
-  username: "noreply@przma.com",
-  password: "dev.mail@12345",
-  ssl: true,
-  auth: :always,
-  retries: 2,
-  no_mx_lookups: true,
-  sockopts: [
-    {:verify, :verify_none},
-    {:versions, [:"tlsv1.2"]}
-  ]
+# config :alem, Alem.Mailer,
+#   adapter: Swoosh.Adapters.SMTP,
+#   relay: "przma.com",
+#   port: 465,
+#   username: "noreply@przma.com",
+#   password: "dev.mail@12345",
+#   ssl: true,
+#   auth: :always,
+#   retries: 2,
+#   no_mx_lookups: true,
+#   sockopts: [
+#     {:verify, :verify_none},
+#     {:versions, [:"tlsv1.2"]}
+#   ]
 
 
-# config :swoosh, :api_client, Swoosh.ApiClient.Finch
 
 # ExAws S3 Configuration
+# NOTE: access_key_id and secret_access_key use list syntax [{:system, ...}]
+# This is required by ex_aws to support multiple credential providers.
 config :ex_aws,
-  access_key_id: {:system, "AWS_ACCESS_KEY_ID"},
-  secret_access_key: {:system, "AWS_SECRET_ACCESS_KEY"},
+  access_key_id: [{:system, "AWS_ACCESS_KEY_ID"}],
+  secret_access_key: [{:system, "AWS_SECRET_ACCESS_KEY"}],
   region: "in-maa-1",
   retries: [
     max_attempts: 1,
@@ -71,14 +72,6 @@ config :ex_aws, :s3,
 config :ex_aws, :hackney,
   timeout: 600_000,
   recv_timeout: 600_000
-
-# CouchDB Configuration — overridden per environment in config/dev.exs
-config :alem, :couchdb,
-  enabled: true,
-  url: System.get_env("COUCHDB_URL", "http://localhost:5984"),
-  user: System.get_env("COUCHDB_USER", "admin"),
-  password: System.get_env("COUCHDB_PASSWORD", "admin"),
-  timeout: 10_000
 
 # File Storage
 config :alem, :file_storage,
@@ -120,8 +113,6 @@ config :logger, :console,
   metadata: [:request_id]
 
 config :phoenix, :json_library, Jason
-
-
 
 config :alem, Alem.LocalFirst.LibSQLRepo,
   database: Path.expand("../priv/local_data/alem_local.db", __DIR__),
