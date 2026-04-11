@@ -5,9 +5,9 @@ import Config
 # Change username/password to match your local postgres setup.
 config :alem, Alem.Repo,
   username: "postgres",
-  password: "new.P@ssw0rd",
-  hostname: "localhost",
-  database: "dev_alem_admin",
+  password: "postgres",
+  hostname: "172.235.17.68",
+  database: "dev_alem_integrated",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
