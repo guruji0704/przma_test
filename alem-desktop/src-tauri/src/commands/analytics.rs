@@ -45,7 +45,7 @@ pub async fn get_documents_arrow(
                 '' AS tenant_id,
                 filename,
                 content_type,
-                NULL AS file_size,
+                file_size,
                 NULL AS content_hash,
                 vault_path AS local_path,
                 NULL AS object_key,

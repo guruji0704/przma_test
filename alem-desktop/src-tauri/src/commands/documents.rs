@@ -39,6 +39,7 @@ pub struct DocumentInfo {
     pub updated_at: String,
     pub content_type: String,
     pub version: i64,
+    pub file_size: i64,
     pub conflict_copy_of: Option<String>,
 }
 
@@ -54,6 +55,7 @@ pub async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Doc
         "SELECT id, filename, text_content, is_synced, status, created_at, updated_at,
                 COALESCE(NULLIF(content_type, ''), 'text/plain') as content_type,
                 COALESCE(version, 1) as version,
+                COALESCE(file_size, 0) as file_size,
                 conflict_copy_of
          FROM documents ORDER BY created_at DESC",
         (),
@@ -71,7 +73,8 @@ pub async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Doc
             updated_at:       get_text(&row, 6),
             content_type:     get_text(&row, 7),
             version:          get_int(&row, 8),
-            conflict_copy_of: get_opt_text(&row, 9),
+            file_size:        get_int(&row, 9),
+            conflict_copy_of: get_opt_text(&row, 10),
         });
     }
     Ok(docs)
@@ -119,8 +122,8 @@ pub async fn upload_file(
         "INSERT INTO documents (
             id, filename, automerge_state, binary_content, content_type,
             text_content, device_id, last_modified_at, updated_at,
-            status, needs_upload, is_synced, version
-        ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', 1, 0, 1)",
+            status, needs_upload, is_synced, version, file_size
+        ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', 1, 0, 1, ?)",
         libsql::params![
             doc_id.clone(),
             filename.clone(),
@@ -130,6 +133,7 @@ pub async fn upload_file(
             device_id,
             now.clone(),
             now,
+            raw_bytes.len() as i64,
         ],
     ).await.map_err(|e| e.to_string())?;
 
@@ -384,8 +388,8 @@ pub async fn upload_files_from_paths(
             "INSERT INTO documents (
                 id, filename, automerge_state, vault_path, content_type,
                 text_content, device_id, last_modified_at, updated_at,
-                status, needs_upload, is_synced, version, epoch_id
-            ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', 1, 0, 1, ?)",
+                status, needs_upload, is_synced, version, epoch_id, file_size
+            ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', 1, 0, 1, ?, ?)",
             libsql::params![
                 ready.doc_id.clone(),
                 ready.filename.clone(),
@@ -396,6 +400,7 @@ pub async fn upload_files_from_paths(
                 now.clone(),
                 now,
                 epoch_id,
+                ready.original_size as i64,
             ],
         ).await {
             Ok(_) => {
@@ -572,17 +577,18 @@ pub async fn create_document(
         "INSERT INTO documents (
             id, filename, automerge_state, text_content, content_type,
             device_id, last_modified_at, updated_at,
-            status, needs_upload, is_synced, version, tags
-        ) VALUES (?, ?, ?, ?, 'text/plain', ?, ?, ?, 'pending', 1, 0, 1, ?)",
+            status, needs_upload, is_synced, version, tags, file_size
+        ) VALUES (?, ?, ?, ?, 'text/plain', ?, ?, ?, 'pending', 1, 0, 1, ?, ?)",
         libsql::params![
             doc_id.clone(),
             filename,
             crdt_doc.automerge_state,
-            text_content,
+            text_content.clone(),
             device_id,
             now.clone(),
             now,
             tags_json,
+            text_content.len() as i64,
         ],
     ).await.map_err(|e| e.to_string())?;
 

@@ -24,6 +24,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
             is_synced         INTEGER DEFAULT 0,
             needs_upload      INTEGER DEFAULT 1,
             epoch_id          INTEGER,
+            file_size         INTEGER DEFAULT 0,
             status            TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'synced', 'failed')),
             last_error        TEXT
         )",
@@ -47,6 +48,7 @@ pub async fn create_tables(conn: &Connection) -> Result<(), libsql::Error> {
         "ALTER TABLE documents ADD COLUMN vault_path TEXT",
         "ALTER TABLE documents ADD COLUMN last_error TEXT",
         "ALTER TABLE documents ADD COLUMN epoch_id INTEGER",
+        "ALTER TABLE documents ADD COLUMN file_size INTEGER DEFAULT 0",
     ];
 
     for sql in schema_migrations {

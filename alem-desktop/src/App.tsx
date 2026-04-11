@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { tableFromIPC } from "apache-arrow";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface Doc {
@@ -14,6 +15,7 @@ interface Doc {
   updated_at: string;
   content_type: string;
   version: number;
+  file_size: number;
   conflict_copy_of: string | null;
   tags?: string[];
 }
@@ -24,27 +26,75 @@ interface Toast {
   type: "info" | "success" | "error";
 }
 
+function formatFileSize(bytes: number) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 // ── Doc Action Icons ───────────────────────────────────────────────────────
-const IconView = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
-  </svg>
-);
-const IconEdit = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-  </svg>
-);
-const IconDownload = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-  </svg>
-);
-const IconDelete = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4h6v2" />
-  </svg>
-);
+const IconView = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
+const IconEdit = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>;
+const IconDownload = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>;
+const IconDelete = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></svg>;
+
+const Thumbnail = ({ type, filename, id }: { type: string, filename: string, id?: string }) => {
+  const [src, setSrc] = useState<string | null>(null);
+  const ct = type.toLowerCase();
+  const isImage = ct.startsWith("image/");
+  
+  useEffect(() => {
+    if (isImage && id) {
+      invoke<number[]>("get_file_bytes", { id })
+        .then(bytes => {
+          const blob = new Blob([new Uint8Array(bytes)], { type: ct });
+          setSrc(URL.createObjectURL(blob));
+        })
+        .catch(console.error);
+    }
+  }, [id, isImage, ct]);
+
+  const isVideo = ct.startsWith("video/");
+  const isAudio = ct.startsWith("audio/");
+  const isPdf = ct === "application/pdf";
+  const isDoc = ct.includes("word") || ct.includes("officedocument") || filename.endsWith(".docx") || filename.endsWith(".doc");
+
+  if (isImage && src) return <img src={src} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />;
+
+  if (isImage) return (
+    <div style={{ background: 'rgba(74, 158, 255, 0.1)', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#4A9EFF' }}><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>
+    </div>
+  );
+  if (isVideo) return (
+    <div style={{ background: 'rgba(255, 184, 0, 0.1)', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#FFB800' }}><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
+    </div>
+  );
+  if (isAudio) return (
+    <div style={{ background: 'rgba(0, 224, 198, 0.1)', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#00E0C6' }}><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
+    </div>
+  );
+  if (isPdf) return (
+    <div style={{ background: 'rgba(255, 107, 107, 0.1)', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#FF6B6B' }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" /></svg>
+    </div>
+  );
+  if (isDoc) return (
+    <div style={{ background: 'rgba(74, 158, 255, 0.1)', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#4A9EFF' }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><line x1="12" y1="9" x2="8" y2="9" /></svg>
+    </div>
+  );
+
+  return (
+    <div style={{ background: 'rgba(255, 255, 255, 0.03)', width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.3 }}><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><polyline points="13 2 13 9 20 9" /></svg>
+    </div>
+  );
+};
 
 // ── SVG Icons ──────────────────────────────────────────────────────────────
 const EyeOpenIcon = () => (
@@ -63,91 +113,65 @@ const EyeClosedIcon = () => (
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 const css = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg-primary: #05070A;
+    --bg-secondary: #0A0D14;
+    --bg-header: rgba(5, 7, 10, 0.8);
+    --text-primary: #FFFFFF;
+    --text-secondary: rgba(255,255,255,0.5);
+    --border: rgba(255,255,255,0.1);
+    --accent: #58A6FF;
+    --accent-glow: rgba(88,166,255,0.15);
+    --card-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+
+  [data-theme='light'] {
+    --bg-primary: #FFFFFF;
+    --bg-secondary: #F4F7FA;
+    --bg-header: rgba(255, 255, 255, 0.9);
+    --text-primary: #1E293B;
+    --text-secondary: #64748B;
+    --border: #E2E8F0;
+    --accent: #2563EB;
+    --accent-glow: rgba(37, 99, 235, 0.08);
+    --card-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  }
+
+  [data-theme='dark'] {
+    --bg-primary: #0B0E14;
+    --bg-secondary: #161B22;
+    --bg-header: rgba(11, 14, 20, 0.8);
+    --text-primary: #F0F6FC;
+    --text-secondary: #8B949E;
+    --border: #30363D;
+    --accent: #58A6FF;
+    --accent-glow: rgba(88, 166, 255, 0.15);
+    --card-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  [data-theme='prism'] body {
+    background: var(--bg-primary);
+  }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  @keyframes orb-a {
-    0%   { transform: translate(0px,   0px)   scale(1);    }
-    25%  { transform: translate(40px, -60px)  scale(1.1);  }
-    50%  { transform: translate(-30px, 50px)  scale(0.92); }
-    75%  { transform: translate(60px,  30px)  scale(1.06); }
-    100% { transform: translate(0px,   0px)   scale(1);    }
-  }
-  @keyframes orb-b {
-    0%   { transform: translate(0px,  0px)   scale(1);    }
-    25%  { transform: translate(-50px, 40px) scale(1.08); }
-    50%  { transform: translate(60px, -30px) scale(0.94); }
-    75%  { transform: translate(-20px,-60px) scale(1.05); }
-    100% { transform: translate(0px,  0px)   scale(1);    }
-  }
-  @keyframes orb-c {
-    0%   { transform: translate(0px,  0px)  scale(1);    }
-    33%  { transform: translate(30px, 50px) scale(1.07); }
-    66%  { transform: translate(-60px,-20px)scale(0.95); }
-    100% { transform: translate(0px,  0px)  scale(1);    }
-  }
-
-  body, html, #root {
-    height: 100%;
-    background: #060810;
-    color: #F0F4F8;
-    font-family: 'Inter', sans-serif;
-    font-size: 14px;
-    line-height: 1.6;
+  body { 
+    background: var(--bg-primary); 
+    color: var(--text-primary); 
+    font-family: 'Inter', system-ui, sans-serif;
+    transition: background 0.4s ease, color 0.4s ease;
+    height: 100vh;
     overflow: hidden;
   }
 
-  /* ── Prism orb layer 1: cool tones ── */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    background:
-      radial-gradient(ellipse 70% 55% at 12% 18%,  rgba(74,  158, 255, 0.28) 0%, transparent 60%),
-      radial-gradient(ellipse 55% 65% at 85% 8%,   rgba(120,  60, 255, 0.22) 0%, transparent 60%),
-      radial-gradient(ellipse 60% 50% at 60% 88%,  rgba(0,  224, 198, 0.20) 0%, transparent 60%);
-    animation: orb-a 20s ease-in-out infinite;
-    mix-blend-mode: screen;
-  }
-  /* ── Prism orb layer 2: warm tones ── */
-  body::after {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    background:
-      radial-gradient(ellipse 50% 60% at 88% 72%,  rgba(255,  80, 140, 0.18) 0%, transparent 60%),
-      radial-gradient(ellipse 60% 45% at 18% 78%,  rgba(255, 184,   0, 0.16) 0%, transparent 60%),
-      radial-gradient(ellipse 45% 55% at 50% 40%,  rgba(80,  200, 255, 0.14) 0%, transparent 60%);
-    animation: orb-b 26s ease-in-out infinite;
-    mix-blend-mode: screen;
-  }
-
-  /* ── Noise grain overlay for depth ── */
-  #root {
-    position: relative;
-    z-index: 1;
-  }
-  #root::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 2;
-    opacity: 0.025;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    background-size: 180px 180px;
-  }
-
-  .app {
-    display: grid;
-    grid-template-columns: 260px 1fr;
-    grid-template-rows: 60px 1fr;
+  .app-container {
     height: 100vh;
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    grid-template-rows: 72px 1fr;
+    overflow: hidden;
+    position: relative;
   }
 
   .header {
@@ -156,187 +180,225 @@ const css = `
     align-items: center;
     justify-content: space-between;
     padding: 0 40px;
-    background: rgba(6, 8, 16, 0.55);
-    backdrop-filter: blur(20px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    z-index: 100;
+    background: var(--bg-header);
+    backdrop-filter: blur(32px);
+    border-bottom: 1px solid var(--border);
+    z-index: 1000;
   }
 
-  .logo {
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: 4px;
-    background: linear-gradient(135deg, #4A9EFF 0%, #FFB800 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+  .prism-bg {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 1s ease;
+    pointer-events: none;
+  }
+  [data-theme='prism'] .prism-bg { opacity: 1; }
+
+  .prism-orb {
+    position: absolute;
+    width: 600px;
+    height: 600px;
+    border-radius: 50%;
+    filter: blur(120px);
+    mix-blend-mode: screen;
+    animation: flow 20s infinite alternate;
   }
 
-  .header-right {
+  @keyframes flow {
+    0% { transform: translate(-20%, -20%) rotate(0deg); }
+    100% { transform: translate(30%, 40%) rotate(360deg); }
+  }
+
+  .sidebar { 
+    background: var(--bg-secondary); 
+    border-right: 1px solid var(--border);
+    padding: 32px 16px;
     display: flex;
-    align-items: center;
-    gap: 24px;
-    font-size: 11px;
-    color: #94A9C9;
-  }
-
-  .sidebar {
-    border-right: 1px solid rgba(255,255,255,0.05);
-    background: rgba(6, 8, 16, 0.5);
-    padding: 24px 16px;
-    overflow-y: auto;
-    position: relative;
-    z-index: 1;
-  }
-
-  .doc-action-btn {
-    flex: 1; padding: 10px 8px; display: flex; align-items: center; justify-content: center;
+    flex-direction: column;
+    gap: 8px;
   }
 
   .nav-item {
-    padding: 14px 20px;
-    margin-bottom: 8px;
+    padding: 12px 16px;
+    border-radius: 12px;
     cursor: pointer;
-    border-radius: 14px;
+    font-size: 14px;
+    font-weight: 600;
     transition: all 0.2s;
+    color: var(--text-secondary);
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    font-weight: 500;
-    color: rgba(255, 255, 255, 0.4);
+    gap: 12px;
   }
-  .nav-item:hover { background: rgba(255, 255, 255, 0.03); color: #fff; }
-  .nav-item.active { background: rgba(74, 158, 255, 0.1); color: #4A9EFF; }
+  .nav-item:hover { background: var(--border); color: var(--text-primary); }
+  .nav-item.active { background: var(--accent-glow); color: var(--accent); }
 
-  .main { overflow-y: auto; background: transparent; }
+  .main { overflow-y: hidden; background: transparent; display: flex; flex-direction: column; }
 
-  .panel { padding: 40px; max-width: 1200px; }
+  .panel { 
+    padding: 24px 40px; 
+    max-width: 1400px; 
+    margin: 0 auto; 
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .scroll-content {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 12px;
+    margin-top: 24px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .scroll-content::-webkit-scrollbar { width: 6px; }
+  .scroll-content::-webkit-scrollbar-track { background: transparent; }
+  .scroll-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
 
   .card {
-    border: 1px solid rgba(255,255,255,0.07);
-    padding: 24px;
-    background: rgba(6, 8, 16, 0.45);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     backdrop-filter: blur(12px);
-    border-radius: 12px;
-    box-shadow: 0 8px 40px rgba(0,0,0,0.35);
+    position: relative;
+    overflow: hidden;
   }
-
-  .doc-list { 
-    display: grid; 
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); 
-    gap: 24px; 
+  .card:hover { 
+    transform: translateY(-4px); 
+    border-color: var(--accent);
+    box-shadow: 0 12px   .sort-bar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 24px;
+    align-items: center;
   }
-
-  .doc-name { font-weight:600; margin-bottom:4px; color:#F0F4F8; }
-  .doc-meta { font-size:12px; color:rgba(255,255,255,0.3); font-family:'JetBrains Mono',monospace; }
-
-  .btn {
-    padding:12px 20px; border:1px solid rgba(255,255,255,0.1); background:transparent;
-    color:#F0F4F8; font-size:13px; font-weight:600;
-    cursor:pointer; transition:all 0.2s; border-radius:10px;
-    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  .sort-select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 6px 32px 6px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 14px;
+    outline: none;
+    transition: all 0.2s;
   }
-  .btn:hover { background:rgba(255,255,255,0.05); transform:translateY(-1px); }
-  .btn-danger { border-color:rgba(255,107,107,0.3); color:#FF6B6B; }
-  .btn-danger:hover { background:rgba(255,107,107,0.1); }
+  .sort-select:hover { border-color: var(--accent); }
 
-  .input-group { position: relative; margin-bottom: 20px; width: 100%; }
   .input {
-    width:100%; padding:14px 18px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05);
-    color:#F0F4F8; font-size:14px; outline:none; border-radius:12px; transition:all 0.2s;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 14px 20px;
+    border-radius: 14px;
+    width: 100%;
+    outline: none;
+    transition: all 0.2s;
+    font-size: 14px;
   }
-  .input:focus { border-color:#4A9EFF; background: rgba(255,255,255,0.05); }
+  .input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
 
   .input-icon-btn {
-    position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-    background: transparent; border: none; padding: 4px; cursor: pointer; color: #8b949e;
-  }
-
-  .toast-container { position:fixed; bottom:24px; right:24px; display:flex; flex-direction:column; gap:12px; z-index:2000; }
-  .toast {
-    padding:14px 18px; border:1px solid rgba(255,255,255,0.1); background:rgba(13,17,23,0.9);
-    font-size:13px; border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,0.4);
-    backdrop-filter:blur(10px); color: #fff; min-width: 260px;
-    animation: slideIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  }
-  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-
-  .fullscreen {
-    height: 100vh; display: flex; align-items: center; justifyContent: center;
+    position: absolute;
+    right: 16px;
+    top: 50%;
+    transform: translateY(-50%);
     background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    padding: 4px;
   }
+  .input-icon-btn:hover { color: var(--accent); }
+
   .auth-container {
-    width: 440px; padding: 32px; background: rgba(6, 8, 16, 0.5);
-    border: 1px solid rgba(255,255,255,0.08); border-radius: 24px;
-    backdrop-filter: blur(24px); max-height: 95vh; overflow-y: auto;
-    box-shadow: 0 24px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06);
-    scrollbar-width: none; /* Firefox */
+    background: rgba(10, 13, 20, 0.7);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(40px);
+    border-radius: 24px;
+    padding: 48px 40px;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.5);
   }
-  .auth-container::-webkit-scrollbar { display: none; } /* Chrome/Safari */
+  [data-theme='light'] .auth-container { background: rgba(255, 255, 255, 0.85); }
 
-  .sync-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; }
-  .sync-dot.online  { background: #00E0C6; box-shadow: 0 0 12px rgba(0,224,198,0.5); }
-  .sync-dot.offline { background: #FF6B6B; }
-
-  .pw-rules {
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.05);
+  .btn {
+    padding: 10px 20px;
     border-radius: 12px;
-    padding: 16px;
-    margin-bottom: 20px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
   }
-  .pw-rules-title {
-    font-size: 11px;
-    color: rgba(255, 255, 255, 0.3);
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 12px;
-    font-weight: 700;
+  .btn:hover { background: var(--border); }
+  .btn-accent { background: var(--accent); color: white; border: none; }
+  .btn-accent:hover { opacity: 0.9; }
+  .btn-danger { color: #FF6B6B; border-color: rgba(255,107,107,0.2); }
+  .btn-danger:hover { background: rgba(255,107,107,0.1); }
+
+  .doc-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 16px;
   }
-  .pw-rule {
+
+  .header-right { display: flex; align-items: center; gap: 16px; }
+  .sync-status-box {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.4);
-    padding: 3px 0;
-    transition: color 0.2s;
+    background: var(--border);
+    padding: 6px 12px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
   }
-  .pw-rule.ok { color: #00E0C6; }
-  .pw-rule-icon { width: 14px; text-align: center; }
-  .pw-strength-bar {
-    height: 4px; border-radius: 2px;
-    margin-bottom: 12px; background: rgba(255, 255, 255, 0.05);
-    overflow: hidden;
-  }
-  .pw-strength-fill { height: 100%; transition: all 0.3s; }
+  .sync-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .sync-dot.online { background: #10B981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.4); }
+  .sync-dot.offline { background: #EF4444; }
 
-  .dob-row { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 20px; }
-  .dob-row .input-group { flex: 1; margin-bottom: 0; }
-  
-  .age-badge {
-    padding: 14px; border-radius: 12px; font-size: 13px; font-weight: 700;
-    font-family: 'JetBrains Mono', monospace; border: 1px solid rgba(255, 255, 255, 0.05);
-    background: rgba(255, 255, 255, 0.02); color: rgba(255, 255, 255, 0.3);
-    min-width: 70px; text-align: center; height: 48px; display: flex; align-items: center; justify-content: center;
+  .theme-select {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    outline: none;
+    padding: 4px;
+    text-transform: uppercase;
   }
-  .age-badge.ok  { border-color: rgba(0, 224, 198, 0.2); color: #00E0C6; background: rgba(0, 224, 198, 0.05); }
-  .age-badge.err { border-color: rgba(255, 107, 107, 0.2); color: #FF6B6B; background: rgba(255, 107, 107, 0.05); }
+  .theme-select:hover { color: var(--text-primary); }
+  .theme-select option { background: var(--bg-primary); color: var(--text-primary); }
 
-  .captcha-box {
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    background: rgba(255, 255, 255, 0.03);
-    margin-bottom: 20px; border-radius: 12px;
-    padding: 16px 18px;
+  .toast-container { position:fixed; bottom:24px; right:24px; display:flex; flex-direction:column; gap:12px; z-index:2000; }
+  .toast {
+    padding:14px 18px; border:1px solid var(--border); background:var(--bg-secondary);
+    font-size:13px; border-radius:12px; box-shadow:var(--card-shadow);
+    backdrop-filter:blur(10px); color: var(--text-primary); min-width: 260px;
+    animation: slideIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
   }
-  .captcha-img {
-    width: 100%; border-radius: 8px; overflow: hidden;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    margin-bottom: 12px; padding: 12px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .captcha-img svg, .captcha-img img { filter: invert(1) brightness(0.85); display: block; }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
   
   .did-box {
     padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px;
@@ -409,12 +471,27 @@ let toastId = 0;
 export default function App() {
   const [view, setView] = useState<"boot" | "auth" | "dashboard" | "error">("boot");
   const [username, setUsername] = useState<string | null>(() => localStorage.getItem("przma_username"));
-  const [tab, setTab] = useState<"docs" | "create">("docs");
+  const [curPanel, setCurPanel] = useState<'library' | 'search' | 'settings'>('library');
+  const [theme, setTheme] = useState<'prism'|'dark'|'light'>('prism');
+  const [sortBy, setSortBy] = useState<'date'|'name'|'size'>('date');
+
   const [viewDoc, setViewDoc] = useState<Doc | null>(null);
   const [pendingEdit, setPendingEdit] = useState<{ id: string; localPath: string; version: number; filename: string } | null>(null);
   const [docs, setDocs] = useState<Doc[]>([]);
   const [toasts, setToasts] = useState<{ id: number, msg: string, type: string }[]>([]);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  const displayDocs = useMemo(() => {
+    let list = [...docs];
+    if (sortBy === 'date') list.sort((a,b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    else if (sortBy === 'name') list.sort((a,b) => (a.filename || "").localeCompare(b.filename || ""));
+    else if (sortBy === 'size') list.sort((a,b) => (Number(b.file_size) || 0) - (Number(a.file_size) || 0));
+    return list;
+  }, [docs, sortBy]);
 
   // Auth state
   const [authMode, setAuthMode] = useState<"register" | "login" | "forgot">("register");
@@ -471,8 +548,64 @@ export default function App() {
   }, [view]);
 
   const loadDocs = async () => {
-    try { setDocs(await invoke<Doc[]>("list_documents")); }
-    catch (err) { console.error(err); }
+    try {
+      // Step 1: Call the Arrow-based command
+      const result: { ipc_base64: string, record_count: number } = await invoke("get_documents_arrow");
+      
+      if (!result.ipc_base64) {
+        setDocs([]);
+        return;
+      }
+
+      // Step 2: Decode Arrow IPC buffer
+      const binary = atob(result.ipc_base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      
+      const table = tableFromIPC(bytes);
+      
+      // Step 3: Convert Arrow rows to plain objects for the React state
+      // This allows us to keep the rest of the UI logic identical while 
+      // obtaining the data via the high-performance Arrow flow.
+      const documents: Doc[] = [];
+      const rowCount = table.numRows;
+      
+      // We iterate through the table to build our local state objects
+      for (let i = 0; i < rowCount; i++) {
+        const row = table.get(i);
+        if (!row) continue;
+        
+        // Map Arrow columns to our Doc interface
+        // Field names must match what's in analytics.rs
+        documents.push({
+          id: String(row.id),
+          filename: String(row.filename),
+          text_content: String(row.text_content || ""),
+          is_synced: row.is_synced ? 1 : 0,
+          status: String(row.status),
+          created_at: String(row.created_at || ""),
+          updated_at: String(row.updated_at || ""),
+          content_type: String(row.content_type || ""),
+          version: Number(row.local_version || 1),
+          file_size: Number(row.file_size || 0),
+          conflict_copy_of: null,
+          tags: []
+        });
+      }
+      
+      setDocs(documents);
+    }
+    catch (err) { 
+      console.error("Arrow doc load failed:", err);
+      // Fallback to standard JSON if Arrow fails (optional, but good for robustness)
+      try {
+        setDocs(await invoke<Doc[]>("list_documents"));
+      } catch (e) {
+        console.error("Fallback load failed:", e);
+      }
+    }
   };
 
   const loadCaptcha = async () => {
@@ -596,7 +729,7 @@ export default function App() {
     }
   };
 
-  const displayDocs = docs.filter(d => d.filename.toLowerCase().includes(searchQuery.toLowerCase()));
+
 
   // ── Render Logic ──────────────────────────────────────────────────────────
 
@@ -614,13 +747,13 @@ export default function App() {
     <div className="fullscreen" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <style>{css}</style>
       <div className="auth-container" style={{ width: 440 }}>
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div className="logo" style={{ fontSize: 32 }}>PRZMA</div>
-          <div style={{ fontSize: 10, opacity: 0.5, marginTop: 4, letterSpacing: 2 }}>DECENTRALIZED IDENTITY SYSTEM</div>
+        <div style={{ textAlign: 'center', marginBottom: 40 }}>
+          <div className="logo" style={{ fontSize: 40, letterSpacing: -2, background: 'linear-gradient(135deg, #58A6FF 0%, #00E0C6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PRZMA</div>
+          <div style={{ fontSize: 11, opacity: 0.6, marginTop: 8, letterSpacing: 2, fontWeight: 600 }}>DECENTRALIZED IDENTITY SYSTEM</div>
         </div>
 
         {authMode !== "forgot" && regStep !== 3 && (
-          <div style={{ display: 'flex', gap: 8, marginBottom: 32, background: 'rgba(255,255,255,0.03)', padding: 4, borderRadius: 14 }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 32, background: 'var(--bg-secondary)', padding: 6, border: '1px solid var(--border)', borderRadius: 16 }}>
             <button
               className={`btn ${authMode === "login" ? "active" : ""}`}
               style={{ flex: 1, border: 'none', background: authMode === "login" ? 'rgba(74, 158, 255, 0.1)' : 'transparent', color: authMode === "login" ? '#4A9EFF' : 'rgba(255,255,255,0.3)' }}
@@ -751,92 +884,134 @@ export default function App() {
   return (
     <>
       <style>{css}</style>
-      <div className="app">
+      <div className="prism-bg">
+        <div className="prism-orb" style={{ top: '-10%', left: '-10%', background: 'rgba(74, 158, 255, 0.3)' }} />
+        <div className="prism-orb" style={{ bottom: '-10%', right: '-10%', background: 'rgba(255, 184, 0, 0.2)' }} />
+        <div className="prism-orb" style={{ top: '40%', left: '30%', background: 'rgba(0, 224, 198, 0.15)', width: 400, height: 400 }} />
+      </div>
+
+      <div className="app-container">
         <header className="header">
-          <div className="logo">PRZMA</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: -1, background: 'linear-gradient(135deg, #58A6FF 0%, #00E0C6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PRZMA</div>
+          </div>
+
           <div className="header-right">
-            <div>
-              <span className={`sync-dot ${isOnline ? "online" : "offline"}`} />
-              {isOnline ? "ONLINE" : "OFFLINE"}
+            <div className="sync-status-box">
+              <span className={`sync-dot ${isOnline ? 'online' : 'offline'}`} />
+              <span style={{ fontSize: 10, fontWeight: 800 }}>{isOnline ? 'ONLINE' : 'OFFLINE'}</span>
             </div>
-            <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, opacity: 0.7 }}>{username}</div>
-            <button className="btn btn-danger" onClick={handleLogout} style={{ padding: '6px 12px', fontSize: 11 }}>Logout</button>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, borderLeft: '1px solid var(--border)', paddingLeft: 16 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{username || 'Account'}</span>
+              
+              <select 
+                className="theme-select" 
+                value={theme} 
+                onChange={(e) => setTheme(e.target.value as any)}
+                title="Theme"
+              >
+                <option value="prism">PRISM</option>
+                <option value="dark">DARK</option>
+                <option value="light">LIGHT</option>
+              </select>
+
+              <button 
+                className="btn" 
+                style={{ height: 32, padding: '0 12px', fontSize: 11, background: 'rgba(239, 68, 68, 0.05)', color: '#EF4444', borderColor: 'rgba(239, 68, 68, 0.2)' }} 
+                onClick={handleLogout}
+              >
+                Logout
+              </button>
+            </div>
           </div>
         </header>
 
         <nav className="sidebar">
-          <div className={`nav-item ${tab === 'docs' ? 'active' : ''}`} onClick={() => setTab('docs')}>
-            <span>◉ Library</span>
-          </div>
-          <div className={`nav-item ${tab === 'create' ? 'active' : ''}`} onClick={() => { setTab('create'); handleUpload(); }}>
-            <span>⊕ Add File</span>
+          <button className={`nav-item ${curPanel === 'library' ? 'active' : ''}`} onClick={() => setCurPanel('library')}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            Library
+          </button>
+          <button className={`nav-item upload-btn`} style={{ marginTop: 8, background: 'linear-gradient(135deg, rgba(88,166,255,0.15) 0%, rgba(0,224,198,0.1) 100%)', border: '1px solid var(--border)', color: 'var(--accent)' }} onClick={handleUpload}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span style={{ fontWeight: 800 }}>Upload Item</span>
+          </button>
+          <div style={{ flex: 1 }} />
+          <div style={{ padding: 12, borderRadius: 12, background: 'var(--accent-glow)', border: '1px solid var(--accent)', color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>
+            <div style={{ marginBottom: 4 }}>PRZMA Node Beta</div>
+            <div style={{ opacity: 0.7 }}>Secure P2P Storage Active</div>
           </div>
         </nav>
 
         <main className="main">
-          {tab === 'docs' && (
+          {curPanel === 'library' && (
             <div className="panel">
-              <div style={{ marginBottom: 40 }}>
-                <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: -1 }}>Vault Library</div>
-                <div style={{ opacity: 0.3, fontSize: 13 }}>{docs.length} encrypted artifacts stored locally and mirrored on PRZMA nodes</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 20 }}>
+                <div>
+                  <h1 style={{ fontSize: 32, fontWeight: 900, marginBottom: 4 }}>Vault Library</h1>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>{docs.length} artifacts secured via distributed encryption</p>
+                </div>
+                <div className="sort-bar">
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', marginRight: 4 }}>SORT BY</span>
+                  <select 
+                    className="sort-select" 
+                    value={sortBy} 
+                    onChange={e => setSortBy(e.target.value as any)}
+                  >
+                    <option value="date">Date</option>
+                    <option value="name">Name</option>
+                    <option value="size">Size</option>
+                  </select>
+                </div>
               </div>
 
-              <div className="input-group" style={{ marginBottom: 48 }}>
-                <input
-                  className="input"
-                  style={{ padding: '18px 24px', borderRadius: 20 }}
-                  placeholder="Search artifacts..."
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                />
-              </div>
+              <input className="input" placeholder="Filter vault..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
 
-              <div className="doc-list">
-                {displayDocs.map(d => (
-                  <div key={d.id} className="card">
-                    <div className="doc-name" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span>{d.filename}</span>
-                      <span style={{ fontSize: 9, background: 'rgba(74, 158, 255, 0.1)', color: '#4A9EFF', padding: '2px 6px', borderRadius: 4 }}>
-                        V{d.version || 1}
-                      </span>
+              <div className="scroll-content">
+                <div className="doc-list">
+                  {displayDocs.filter((d: Doc) => d.filename.toLowerCase().includes(searchQuery.toLowerCase())).map((d: Doc) => (
+                    <div key={d.id} className="card">
+                      <div className="thumbnail-box">
+                        <Thumbnail type={d.content_type || ''} filename={d.filename} id={d.id} />
+                      </div>
+                      
+                      <div className="doc-name">{d.filename}</div>
+                      <div className="doc-meta">
+                        {formatFileSize(d.file_size)} · {new Date(d.updated_at).toLocaleDateString()} at {new Date(d.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
+                        <button className="btn doc-action-btn" style={{ flex: 1, height: 36, background: 'var(--border)' }} title="View" onClick={() => setViewDoc(d)}><IconView /></button>
+                        
+                        <button className="btn doc-action-btn" style={{ width: 44, height: 36 }} title="Edit" onClick={async () => {
+                          addToast("Accessing file...", "info");
+                          try {
+                            const localPath = await invoke<string>("open_file_for_edit", { id: d.id, filename: d.filename });
+                            setPendingEdit({ id: d.id, localPath, version: d.version, filename: d.filename });
+                          } catch (e: any) { addToast(e, "error"); }
+                        }}><IconEdit /></button>
+
+                        <button className="btn doc-action-btn" title="Download" style={{ width: 44, height: 36, color: 'var(--accent)', borderColor: 'var(--accent-glow)' }} onClick={async () => {
+                          const { save } = await import("@tauri-apps/plugin-dialog");
+                          const { writeFile } = await import("@tauri-apps/plugin-fs");
+                          const savePath = await save({ defaultPath: d.filename });
+                          if (!savePath) return;
+                          addToast("Downloading...", "info");
+                          try {
+                            const bytes = await invoke<number[]>("get_file_bytes", { id: d.id });
+                            await writeFile(savePath, new Uint8Array(bytes));
+                            addToast("File saved safely", "success");
+                          } catch (e: any) { addToast(e, "error"); }
+                        }}><IconDownload /></button>
+
+                        <button className="btn doc-action-btn btn-danger" style={{ width: 44, height: 36 }} title="Delete" onClick={() => handleDocDelete(d.id)}><IconDelete /></button>
+                      </div>
                     </div>
-
-                    <div className="doc-meta">
-                      {new Date(d.updated_at).toLocaleDateString()} · {new Date(d.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </div>
-
-                    <div style={{ display: 'flex', gap: 6, marginTop: 20 }}>
-                      <button className="btn doc-action-btn" title="View" onClick={() => setViewDoc(d)}><IconView /></button>
-
-                      <button className="btn doc-action-btn" title="Edit" onClick={async () => {
-                        addToast("Opening file...", "info");
-                        try {
-                          const localPath = await invoke<string>("open_file_for_edit", { id: d.id, filename: d.filename });
-                          setPendingEdit({ id: d.id, localPath, version: d.version, filename: d.filename });
-                        } catch (e: any) { addToast(e, "error"); }
-                      }}><IconEdit /></button>
-
-                      <button className="btn doc-action-btn" title="Download" style={{ color: '#4A9EFF', borderColor: 'rgba(74,158,255,0.2)' }} onClick={async () => {
-                        const { save } = await import("@tauri-apps/plugin-dialog");
-                        const { writeFile } = await import("@tauri-apps/plugin-fs");
-                        const savePath = await save({ defaultPath: d.filename });
-                        if (!savePath) return;
-                        addToast("Downloading...", "info");
-                        try {
-                          const bytes = await invoke<number[]>("get_file_bytes", { id: d.id });
-                          await writeFile(savePath, new Uint8Array(bytes));
-                          addToast("File saved", "success");
-                        } catch (e: any) { addToast(e, "error"); }
-                      }}><IconDownload /></button>
-
-                      <button className="btn doc-action-btn btn-danger" title="Delete" onClick={() => handleDocDelete(d.id)}><IconDelete /></button>
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           )}
-
         </main>
 
         {viewDoc && (

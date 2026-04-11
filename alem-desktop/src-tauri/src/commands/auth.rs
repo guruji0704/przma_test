@@ -416,6 +416,29 @@ pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct UserInfo {
+    pub username: String,
+    pub did: String,
+}
+
+#[tauri::command]
+pub async fn get_current_user(state: State<'_, AppState>) -> Result<UserInfo, String> {
+    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+    let mut rows = conn
+        .query("SELECT username, did FROM local_identity WHERE id = 'singleton'", ())
+        .await.map_err(|e| e.to_string())?;
+
+    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
+        Ok(UserInfo {
+            username: get_text(&row, 0),
+            did:      get_text(&row, 1),
+        })
+    } else {
+        Err("No user logged in".to_string())
+    }
+}
+
 /// Returns the stored access_token from local_identity so the frontend
 /// can use it for direct fetch() calls (e.g. analytics test in DevTools).
 #[tauri::command]
