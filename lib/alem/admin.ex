@@ -637,7 +637,6 @@ defmodule Alem.Admin do
   defp to_int(%Decimal{} = d), do: Decimal.to_integer(d)
   defp to_int(i) when is_integer(i), do: i
   defp to_int(_), do: 0
-end
 
   # ── Audit Log ────────────────────────────────────────────────────────────
   # Simple in-memory audit log (persists to ETS, resets on restart)
@@ -700,3 +699,4 @@ end
 
     Map.merge(doc_stats, cas_stats)
   end
+end
