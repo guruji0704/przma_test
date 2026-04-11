@@ -201,6 +201,9 @@ defmodule AlemWeb.AdminLive do
     {:noreply, socket |> assign(:sql_query, q) |> assign(:sql_error, nil)}
   end
 
+  # Fallback: phx-keyup sends %{"key"=>k,"value"=>v} - ignore stale events
+  def handle_event("sql_input", _params, socket), do: {:noreply, socket}
+
   def handle_event("sql_run", _, socket) do
     {result, err} =
       case Admin.run_sql(socket.assigns.sql_query) do
@@ -898,7 +901,7 @@ defmodule AlemWeb.AdminLive do
         </div>
         <div class="dp">
           <div class="dph">SQL Editor <span style="color:var(--t3);font-size:9px"> — SELECT only</span></div>
-          <textarea class="sqle" phx-keyup="sql_input" phx-debounce="80" name="sql" rows="9" placeholder="SELECT ..."><%= @sql_query %></textarea>
+          <textarea class="sqle" phx-change="sql_input" phx-debounce="80" name="sql" rows="9" placeholder="SELECT ..."><%= @sql_query %></textarea>
           <div class="sqltb">
             <button class="sqlrun" phx-click="sql_run">▶ Run</button>
             <button class="sqlclr" phx-click="sql_clear">✕ Clear</button>
