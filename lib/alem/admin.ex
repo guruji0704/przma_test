@@ -638,3 +638,65 @@ defmodule Alem.Admin do
   defp to_int(i) when is_integer(i), do: i
   defp to_int(_), do: 0
 end
+
+  # ── Audit Log ────────────────────────────────────────────────────────────
+  # Simple in-memory audit log (persists to ETS, resets on restart)
+  # In production, write to a database table
+
+  def log_audit(admin_id, action, target \\ nil) do
+    ensure_audit_ets()
+    entry = %{
+      id:         System.unique_integer([:positive]),
+      admin_id:   admin_id,
+      action:     action,
+      target:     target,
+      at:         DateTime.utc_now() |> DateTime.truncate(:second)
+    }
+    :ets.insert(:admin_audit_log, {entry.id, entry})
+    entry
+  rescue
+    _ -> :ok
+  end
+
+  def get_audit_log(limit \\ 50) do
+    ensure_audit_ets()
+    :ets.tab2list(:admin_audit_log)
+    |> Enum.map(fn {_k, v} -> v end)
+    |> Enum.sort_by(& &1.at, {:desc, DateTime})
+    |> Enum.take(limit)
+  rescue
+    _ -> []
+  end
+
+  defp ensure_audit_ets do
+    if :ets.whereis(:admin_audit_log) == :undefined do
+      :ets.new(:admin_audit_log, [:named_table, :public, :set])
+    end
+  rescue
+    _ -> :ok
+  end
+
+  # ── Quick Platform Summary (single optimized query) ───────────────────────
+
+  def platform_summary do
+    # One query for all document stats
+    doc_stats =
+      Repo.one(
+        from d in Alem.Schemas.Document,
+        select: %{total: count(d.id), users_with_files: count(d.user_id, :distinct)}
+      ) || %{total: 0, users_with_files: 0}
+
+    # One query for all CAS stats
+    cas_stats =
+      Repo.one(
+        from c in CasObject,
+        select: %{
+          total:      count(c.content_hash),
+          dupes:      sum(fragment("CASE WHEN ? > 1 THEN 1 ELSE 0 END", c.ref_count)),
+          bytes:      coalesce(sum(c.file_size), 0),
+          saved:      coalesce(sum(fragment("? * (? - 1)", c.file_size, c.ref_count)), 0)
+        }
+      ) || %{total: 0, dupes: 0, bytes: 0, saved: 0}
+
+    Map.merge(doc_stats, cas_stats)
+  end

@@ -32,6 +32,8 @@ defmodule AlemWeb.AdminLive do
       |> assign(:s3_error,         nil)
       |> assign(:s3_presigned,     nil)
       |> assign(:s3_roots,         [])
+      |> assign(:quota_data,       nil)
+      |> assign(:audit_log,        [])
 
     if connected?(socket), do: :timer.send_interval(30_000, self(), :refresh_stats)
     {:ok, socket}
@@ -57,7 +59,7 @@ defmodule AlemWeb.AdminLive do
         :duplicates -> assign(socket, :duplicates, Admin.duplicate_analysis())
         :monitoring -> assign(socket, :monitoring, Admin.monitoring_stats())
         :s3         -> socket |> assign(:s3_roots, Admin.s3_root_folders()) |> assign(:s3_result, nil) |> assign(:s3_prefix, "")
-        :dashboard  -> assign(socket, :stats, Admin.dashboard_stats())
+        :dashboard  -> socket |> assign(:stats, Admin.dashboard_stats()) |> assign(:audit_log, Admin.get_audit_log(20))
         _           -> socket
       end
 
@@ -160,10 +162,12 @@ defmodule AlemWeb.AdminLive do
     socket =
       case result do
         {:ok, _} ->
+          Admin.log_audit("admin", action, uid)
           socket
           |> assign(:confirm_action, nil)
           |> assign(:flash_msg, {:success, msg})
           |> assign(:stats, Admin.dashboard_stats())
+          |> assign(:audit_log, Admin.get_audit_log(20))
           |> then(fn s ->
             case s.assigns.page do
               :users       -> assign(s, :users, Admin.list_users(%{search: s.assigns.search, filter: s.assigns.user_filter, sort: s.assigns.user_sort}))
@@ -354,49 +358,100 @@ defmodule AlemWeb.AdminLive do
     ~H"""
     <div>
       <div class="sg">
-        <.sc lb="Total Users"      v={@stats.total_users}      ic="◎" cl="bl" />
-        <.sc lb="Verified"         v={@stats.verified_users}   ic="✓" cl="gn" />
-        <.sc lb="Blocked"          v={@stats.blocked_users}    ic="✗" cl="rd" />
-        <.sc lb="Admins"           v={@stats.admin_users}      ic="★" cl="am" />
-        <.sc lb="Total Files"      v={@stats.total_files}      ic="◈" cl="pu" />
-        <.sc lb="Unique Objects"   v={@stats.total_cas}        ic="◆" cl="bl" />
-        <.sc lb="Active Sessions"  v={@stats.active_sessions}  ic="⟳" cl="gn" />
-        <.sc lb="New This Week"    v={@stats.new_this_week}    ic="↑" cl="am" />
+        <.sc lb="Total Users"      v={@stats.total_users}      ic="u" cl="bl" />
+        <.sc lb="Verified"         v={@stats.verified_users}   ic="v" cl="gn" />
+        <.sc lb="Blocked"          v={@stats.blocked_users}    ic="b" cl="rd" />
+        <.sc lb="Admins"           v={@stats.admin_users}      ic="a" cl="am" />
+        <.sc lb="Total Files"      v={@stats.total_files}      ic="f" cl="pu" />
+        <.sc lb="CAS Objects"      v={@stats.total_cas}        ic="c" cl="bl" />
+        <.sc lb="Sessions"         v={@stats.active_sessions}  ic="s" cl="gn" />
+        <.sc lb="New This Week"    v={@stats.new_this_week}    ic="n" cl="am" />
       </div>
 
-      <div class="dr">
-        <div class="dc" style="flex:1.5">
-          <div class="dh">Storage Health</div>
-          <div class="str"><span class="sl">Total stored</span><div class="sb2"><div class="sf bl" style="width:100%"></div></div><span class="sv"><%= Admin.format_bytes(@stats.total_bytes) %></span></div>
-          <div class="str">
-            <span class="sl">Dedup savings</span>
-            <div class="sb2"><div class="sf gn" style={"width:#{if @stats.total_bytes > 0, do: min(100, round(Decimal.to_integer(Decimal.new(@stats.saved_bytes)) / max(Decimal.to_integer(Decimal.new(@stats.total_bytes)), 1) * 100)), else: 0}%"}></div></div>
-            <span class="sv gc"><%= Admin.format_bytes(@stats.saved_bytes) %></span>
+      <div class="dr" style="grid-template-columns:1.4fr 1fr">
+        <!-- Left: Storage + Services -->
+        <div>
+          <div class="dc" style="margin-bottom:12px">
+            <div class="dh">Storage Health</div>
+            <div class="str">
+              <span class="sl">Total stored</span>
+              <div class="sb2"><div class="sf bl" style="width:100%"></div></div>
+              <span class="sv"><%= Admin.format_bytes(@stats.total_bytes) %></span>
+            </div>
+            <div class="str">
+              <span class="sl">Dedup savings</span>
+              <div class="sb2">
+                <div class="sf gn" style={"width:#{compute_pct(@stats.saved_bytes, @stats.total_bytes)}%"}></div>
+              </div>
+              <span class="sv gc"><%= Admin.format_bytes(@stats.saved_bytes) %></span>
+            </div>
+            <div class="str">
+              <span class="sl">Duplicates</span>
+              <div class="sb2">
+                <div class="sf rd" style={"width:#{if @stats.total_cas > 0, do: min(100, round(@stats.duplicate_cas/@stats.total_cas*100)), else: 0}%"}></div>
+              </div>
+              <span class="sv" style="color:var(--rd)"><%= @stats.duplicate_cas %> objects</span>
+            </div>
+
+            <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--bo)">
+              <div style="font-size:10px;font-weight:600;color:var(--t2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px">Data Plane</div>
+              <div class="dp-row"><span>Documents</span><b><%= @stats.total_files %></b></div>
+              <div class="dp-row"><span>CAS Objects</span><b><%= @stats.total_cas %></b></div>
+              <div class="dp-row"><span>Active Sessions</span><b><%= @stats.active_sessions %></b></div>
+              <div class="dp-row"><span>Active OAuth Tokens</span><b><%= @stats.active_tokens %></b></div>
+            </div>
           </div>
-          <div class="str"><span class="sl">Duplicates</span><div class="sb2"><div class="sf rd" style={"width:#{if @stats.total_cas > 0, do: min(100, round(@stats.duplicate_cas / @stats.total_cas * 100)), else: 0}%"}></div></div><span class="sv" style="color:var(--rd)"><%= @stats.duplicate_cas %> objects</span></div>
+
+          <div class="dc">
+            <div class="dh">Quick Actions</div>
+            <button class="qb" phx-click="nav" phx-value-page="users"><span class="qi">+</span> Manage Users</button>
+            <button class="qb" phx-click="nav" phx-value-page="permissions"><span class="qi">*</span> Permissions</button>
+            <button class="qb" phx-click="nav" phx-value-page="monitoring"><span class="qi">~</span> Monitoring</button>
+            <button class="qb" phx-click="nav" phx-value-page="s3"><span class="qi">&gt;</span> S3 Browser</button>
+            <button class="qb" phx-click="nav" phx-value-page="sql"><span class="qi">&gt;</span> SQL Console</button>
+          </div>
         </div>
 
-        <div class="dc">
-          <div class="dh">Platform Status</div>
-          <div class="status-row"><span class="dot-on"></span><span>PostgreSQL</span><span class="sbadge gn">Online</span></div>
-          <div class="status-row"><span class="dot-on"></span><span>Linode S3</span><span class="sbadge gn">Online</span></div>
-          <div class="status-row"><span class="dot-on"></span><span>Horde Registry</span><span class="sbadge gn">Online</span></div>
-          <div class="status-row"><span class="dot-on"></span><span>Active Tokens</span><span class="sbadge bl"><%= @stats.active_tokens %></span></div>
-          <div class="status-row"><span class="dot-on"></span><span>Active Sessions</span><span class="sbadge bl"><%= @stats.active_sessions %></span></div>
-        </div>
+        <!-- Right: Services + Audit -->
+        <div>
+          <div class="dc" style="margin-bottom:12px">
+            <div class="dh">Services</div>
+            <div class="svc-row"><span class="dot-on"></span><span>PostgreSQL</span><span class="sbadge gn">Online</span></div>
+            <div class="svc-row"><span class="dot-on"></span><span>Linode S3 (in-maa-1)</span><span class="sbadge gn">Online</span></div>
+            <div class="svc-row"><span class="dot-on"></span><span>Horde Registry</span><span class="sbadge gn">Online</span></div>
+            <div class="svc-row"><span class="dot-on"></span><span>CAS Engine</span><span class="sbadge gn">Online</span></div>
+            <div class="svc-row"><span class="dot-on blue"></span><span>Tokens</span><span class="sbadge bl"><%= @stats.active_tokens %></span></div>
+          </div>
 
-        <div class="dc">
-          <div class="dh">Quick Actions</div>
-          <button class="qb" phx-click="nav" phx-value-page="users"><span class="qic">◎</span> Manage Users</button>
-          <button class="qb" phx-click="nav" phx-value-page="monitoring"><span class="qic">◈</span> Monitoring</button>
-          <button class="qb" phx-click="nav" phx-value-page="permissions"><span class="qic">🔐</span> Permissions</button>
-          <button class="qb" phx-click="nav" phx-value-page="s3"><span class="qic">◫</span> S3 Browser</button>
-          <button class="qb" phx-click="nav" phx-value-page="sql"><span class="qic">⌘</span> SQL Console</button>
+          <div class="dc">
+            <div class="dh">Audit Log</div>
+            <%= if @audit_log == [] do %>
+              <div class="audit-empty">No admin actions yet this session</div>
+            <% end %>
+            <%= for entry <- Enum.take(@audit_log, 10) do %>
+              <div class="audit-row">
+                <span class="audit-action"><%= entry.action %></span>
+                <%= if entry.target do %><span class="audit-target"><%= String.slice(entry.target, 0, 12) %>...</span><% end %>
+                <span class="audit-time"><%= Calendar.strftime(entry.at, "%H:%M:%S") %></span>
+              </div>
+            <% end %>
+          </div>
         </div>
       </div>
     </div>
     """
   end
+
+  defp compute_pct(val, max) do
+    b = to_int_safe(val)
+    m = max(to_int_safe(max), 1)
+    if m > 0, do: min(100, round(b/m*100)), else: 0
+  end
+
+  defp to_int_safe(%Decimal{} = d), do: Decimal.to_integer(d)
+  defp to_int_safe(i) when is_integer(i), do: i
+  defp to_int_safe(_), do: 0
+
 
   defp sc(assigns) do
     ~H"""
@@ -1338,6 +1393,25 @@ defmodule AlemWeb.AdminLive do
     .ft-success{border-color:rgba(0,224,160,.3);color:var(--gn)}
     .ft-error{border-color:rgba(255,90,90,.3);color:var(--rd)}
     @keyframes fi{from{transform:translateX(40px);opacity:0}to{transform:translateX(0);opacity:1}}
+
+    /* Dashboard extras */
+    .dp-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--bo);font-size:12px}
+    .dp-row:last-child{border-bottom:none}
+    .dp-row span{color:var(--t2)}
+    .dp-row b{font-family:monospace;font-size:11px}
+    .svc-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bo);font-size:12px}
+    .svc-row:last-child{border-bottom:none}
+    .svc-row span:nth-child(2){flex:1;color:var(--t2)}
+    .sbadge.bl{background:rgba(74,158,255,.1);color:var(--bl)}
+    .dot-on{width:6px;height:6px;border-radius:50%;background:var(--gn);box-shadow:0 0 5px rgba(0,224,160,.5);flex-shrink:0}
+    .dot-on.blue{background:var(--bl);box-shadow:0 0 5px rgba(74,158,255,.4)}
+    .qi{font-size:11px;opacity:.7}
+    .audit-row{display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--bo);font-size:11px}
+    .audit-row:last-child{border-bottom:none}
+    .audit-action{flex:1;font-weight:600;color:var(--tx)}
+    .audit-target{color:var(--t3);font-family:monospace;font-size:10px}
+    .audit-time{color:var(--t3);font-size:10px;white-space:nowrap}
+    .audit-empty{padding:12px;text-align:center;color:var(--t3);font-size:11px}
     </style>
     """
   end

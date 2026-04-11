@@ -3,6 +3,11 @@ defmodule AlemWeb.AdminSessionController do
   alias Alem.Pleroma.User
   alias Alem.Repo
 
+  # Track login attempts per IP (in-memory, resets on restart)
+  # For production use a proper rate limiter like Hammer
+  @max_attempts 5
+  @lockout_seconds 300
+
   def new(conn, _params) do
     flash_error = Phoenix.Flash.get(conn.assigns.flash, :error)
     flash_info  = Phoenix.Flash.get(conn.assigns.flash, :info)
@@ -12,33 +17,90 @@ defmodule AlemWeb.AdminSessionController do
   end
 
   def create(conn, %{"email" => email, "password" => password}) do
-    case Repo.get_by(User, email: email) do
-      %User{is_admin: true} = user ->
-        if User.verify_password(user, password) do
-          conn
-          |> put_session(:admin_user_id, user.id)
-          |> redirect(to: "/admin")
-        else
+    ip = conn.remote_ip |> Tuple.to_list() |> Enum.join(".")
+
+    if rate_limited?(ip) do
+      redirect_login_with_error(conn, "Too many attempts. Try again in 5 minutes.")
+    else
+      case Repo.get_by(User, email: String.trim(email)) do
+        %User{is_admin: true} = user ->
+          if User.verify_password(user, password) do
+            clear_attempts(ip)
+            conn
+            |> configure_session(renew: true)
+            |> put_session(:admin_user_id, user.id)
+            |> put_session(:admin_login_at, System.system_time(:second))
+            |> redirect(to: "/admin")
+          else
+            record_attempt(ip)
+            redirect_login_with_error(conn, "Invalid email or password.")
+          end
+
+        %User{is_admin: false} ->
+          record_attempt(ip)
+          redirect_login_with_error(conn, "This account does not have admin access.")
+
+        nil ->
+          Pbkdf2.no_user_verify()
+          record_attempt(ip)
           redirect_login_with_error(conn, "Invalid email or password.")
-        end
-
-      %User{is_admin: false} ->
-        redirect_login_with_error(conn, "This account does not have admin access.")
-
-      nil ->
-        # Prevent timing attacks — still run a dummy check
-        Pbkdf2.no_user_verify()
-        redirect_login_with_error(conn, "Invalid email or password.")
+      end
     end
   end
 
   def delete(conn, _params) do
     conn
     |> delete_session(:admin_user_id)
+    |> delete_session(:admin_login_at)
     |> redirect(to: "/admin/login")
   end
 
-  # ── Private helpers ──────────────────────────────────────────────────────────
+  # ── Rate limiting (simple ETS-based) ─────────────────────────────────────
+
+  defp rate_limited?(ip) do
+    case :ets.whereis(:admin_login_attempts) do
+      :undefined ->
+        :ets.new(:admin_login_attempts, [:named_table, :public, :set])
+        false
+      _ ->
+        case :ets.lookup(:admin_login_attempts, ip) do
+          [{^ip, count, ts}] ->
+            now = System.system_time(:second)
+            if now - ts < @lockout_seconds && count >= @max_attempts, do: true, else: false
+          _ -> false
+        end
+    end
+  rescue
+    _ -> false
+  end
+
+  defp record_attempt(ip) do
+    ensure_ets()
+    now = System.system_time(:second)
+    case :ets.lookup(:admin_login_attempts, ip) do
+      [{^ip, count, _ts}] -> :ets.insert(:admin_login_attempts, {ip, count + 1, now})
+      _                   -> :ets.insert(:admin_login_attempts, {ip, 1, now})
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp clear_attempts(ip) do
+    ensure_ets()
+    :ets.delete(:admin_login_attempts, ip)
+  rescue
+    _ -> :ok
+  end
+
+  defp ensure_ets do
+    if :ets.whereis(:admin_login_attempts) == :undefined do
+      :ets.new(:admin_login_attempts, [:named_table, :public, :set])
+    end
+  rescue
+    _ -> :ok
+  end
+
+  # ── Helpers ────────────────────────────────────────────────────────────────
 
   defp redirect_login_with_error(conn, message) do
     conn
@@ -71,63 +133,123 @@ defmodule AlemWeb.AdminSessionController do
 
     """
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
       <meta charset="utf-8"/>
       <meta name="viewport" content="width=device-width, initial-scale=1"/>
-      <title>PRZMA Admin Login</title>
+      <title>PRZMA Control Plane</title>
       <style>
         *{margin:0;padding:0;box-sizing:border-box}
-        body{background:#0a0a0f;color:#e8e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-             display:flex;align-items:center;justify-content:center;height:100vh}
-        .card{background:#111118;border:1px solid rgba(255,255,255,.07);border-radius:14px;
-              padding:40px;width:360px}
-        .logo{display:flex;align-items:center;gap:10px;margin-bottom:32px;justify-content:center}
-        .lm{width:32px;height:32px;background:linear-gradient(135deg,#4a9eff,#a78bfa);
-            border-radius:8px;display:flex;align-items:center;justify-content:center;
-            font-weight:800;color:#fff;font-size:15px}
-        .lt{font-size:15px;font-weight:700;letter-spacing:2px;
-            background:linear-gradient(135deg,#4a9eff,#a78bfa);
-            -webkit-background-clip:text;-webkit-text-fill-color:transparent}
-        h2{font-size:18px;font-weight:700;margin-bottom:6px;text-align:center}
-        p{font-size:12px;color:#9898b0;text-align:center;margin-bottom:28px}
-        label{display:block;font-size:11px;font-weight:600;color:#9898b0;
-              text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
-        input{width:100%;background:#18181f;border:1px solid rgba(255,255,255,.07);
-              border-radius:7px;padding:10px 12px;color:#e8e8f0;font-size:13px;
-              outline:none;margin-bottom:16px;transition:border-color .15s}
-        input:focus{border-color:#4a9eff}
-        button{width:100%;background:#4a9eff;color:#fff;border:none;border-radius:7px;
-               padding:11px;font-size:13px;font-weight:700;cursor:pointer;margin-top:4px;
-               transition:background .15s}
-        button:hover{background:#3a8eef}
-        .err{background:rgba(255,90,90,.1);border:1px solid rgba(255,90,90,.2);
-             border-radius:7px;padding:10px 12px;font-size:12px;color:#ff5a5a;margin-bottom:16px}
-        .inf{background:rgba(0,224,160,.1);border:1px solid rgba(0,224,160,.2);
-             border-radius:7px;padding:10px 12px;font-size:12px;color:#00e0a0;margin-bottom:16px}
+        body{
+          background:#080b12;
+          color:#cdd9e5;
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif;
+          display:flex;align-items:center;justify-content:center;min-height:100vh;
+        }
+        .bg{position:fixed;inset:0;background:radial-gradient(ellipse at 20% 50%,rgba(88,166,255,.04) 0%,transparent 60%),radial-gradient(ellipse at 80% 20%,rgba(188,140,255,.03) 0%,transparent 60%)}
+        .wrap{position:relative;z-index:1;width:100%;max-width:400px;padding:20px}
+        .card{background:#0d1117;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+        .logo{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px}
+        .logo-hex{font-size:26px;background:linear-gradient(135deg,#58a6ff,#bc8cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+        .logo-name{font-size:16px;font-weight:800;letter-spacing:3px;background:linear-gradient(135deg,#58a6ff,#bc8cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+        .logo-sub{text-align:center;font-size:10px;color:#484f58;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:32px}
+        h2{font-size:17px;font-weight:700;text-align:center;margin-bottom:4px;color:#e6edf3}
+        .sub{font-size:12px;color:#8b949e;text-align:center;margin-bottom:24px}
+        label{display:block;font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+        .field{position:relative;margin-bottom:14px}
+        input{width:100%;background:#161b22;border:1px solid rgba(255,255,255,.08);border-radius:7px;padding:10px 12px;color:#e6edf3;font-size:13px;outline:none;transition:border-color .15s;font-family:inherit}
+        input:focus{border-color:#58a6ff;background:#1c2128}
+        input::placeholder{color:#484f58}
+        .pw-wrap{position:relative}
+        .pw-wrap input{padding-right:40px}
+        .eye{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#484f58;font-size:15px;padding:0;line-height:1;transition:color .15s}
+        .eye:hover{color:#8b949e}
+        .remember{display:flex;align-items:center;gap:8px;margin-bottom:20px;cursor:pointer;font-size:12px;color:#8b949e}
+        .remember input[type=checkbox]{width:auto;margin-bottom:0;accent-color:#58a6ff;cursor:pointer}
+        .submit{width:100%;background:linear-gradient(135deg,#58a6ff,#bc8cff);color:#fff;border:none;border-radius:7px;padding:11px;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s;letter-spacing:.3px;position:relative}
+        .submit:hover{opacity:.9}
+        .submit:active{opacity:.8}
+        .submit.loading{opacity:.7;cursor:wait}
+        .err{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.2);border-radius:7px;padding:10px 12px;font-size:12px;color:#f85149;margin-bottom:14px}
+        .inf{background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.2);border-radius:7px;padding:10px 12px;font-size:12px;color:#3fb950;margin-bottom:14px}
+        .divider{display:flex;align-items:center;gap:10px;margin:20px 0;color:#484f58;font-size:11px}
+        .divider::before,.divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.06)}
+        .footer{text-align:center;font-size:11px;color:#484f58;margin-top:24px}
       </style>
     </head>
     <body>
-      <div class="card">
-        <div class="logo">
-          <div class="lm">P</div>
-          <span class="lt">PRZMA</span>
+      <div class="bg"></div>
+      <div class="wrap">
+        <div class="card">
+          <div class="logo">
+            <span class="logo-hex">&#11041;</span>
+            <span class="logo-name">PRZMA</span>
+          </div>
+          <div class="logo-sub">Control Plane</div>
+
+          <h2>Administrator Sign In</h2>
+          <p class="sub">Restricted access &mdash; authorised personnel only</p>
+
+          #{error_html}
+          #{info_html}
+
+          <form method="post" action="/admin/login" id="loginForm" onsubmit="handleSubmit(event)">
+            <input type="hidden" name="_csrf_token" value="#{csrf_token}"/>
+
+            <div class="field">
+              <label for="email">Email Address</label>
+              <input type="email" id="email" name="email"
+                placeholder="admin@przma.com"
+                autocomplete="email" required autofocus/>
+            </div>
+
+            <div class="field">
+              <label for="password">Password</label>
+              <div class="pw-wrap">
+                <input type="password" id="password" name="password"
+                  placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
+                  autocomplete="current-password" required/>
+                <button type="button" class="eye" id="eyeBtn"
+                  onclick="togglePw()" title="Show/hide password">&#9679;</button>
+              </div>
+            </div>
+
+            <label class="remember">
+              <input type="checkbox" name="remember_me" value="1"/>
+              Keep me signed in for 7 days
+            </label>
+
+            <button type="submit" class="submit" id="submitBtn">
+              Sign In &rarr;
+            </button>
+          </form>
+
+          <div class="footer">PRZMA Platform &mdash; Admin Access Only</div>
         </div>
-        <h2>Admin Login</h2>
-        <p>Sign in with your admin account</p>
-
-        #{error_html}
-        #{info_html}
-
-        <form method="post" action="/admin/login">
-          <input type="hidden" name="_csrf_token" value="#{csrf_token}"/>
-          <label>Email</label>
-          <input type="email" name="email" placeholder="admin@przma.com" autocomplete="email" required/>
-          <label>Password</label>
-          <input type="password" name="password" placeholder="••••••••" autocomplete="current-password" required/>
-          <button type="submit">Sign In →</button>
-        </form>
       </div>
+
+      <script>
+        function togglePw() {
+          var inp = document.getElementById('password');
+          var btn = document.getElementById('eyeBtn');
+          if (inp.type === 'password') {
+            inp.type = 'text';
+            btn.innerHTML = '&#9673;';
+            btn.title = 'Hide password';
+          } else {
+            inp.type = 'password';
+            btn.innerHTML = '&#9679;';
+            btn.title = 'Show password';
+          }
+        }
+
+        function handleSubmit(e) {
+          var btn = document.getElementById('submitBtn');
+          btn.classList.add('loading');
+          btn.innerHTML = 'Signing in&hellip;';
+          btn.disabled = true;
+        }
+      </script>
     </body>
     </html>
     """
