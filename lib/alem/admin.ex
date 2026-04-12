@@ -699,4 +699,131 @@ defmodule Alem.Admin do
 
     Map.merge(doc_stats, cas_stats)
   end
+
+  # ── Analytics Queries ─────────────────────────────────────────────────────
+
+  def users_analytics do
+    # Users registered per day (last 30 days)
+    thirty_ago = DateTime.add(DateTime.utc_now(), -30, :day) |> DateTime.to_naive()
+    daily_signups =
+      from(u in User,
+        where: u.inserted_at >= ^thirty_ago,
+        group_by: fragment("date_trunc('day', ?)", u.inserted_at),
+        select: {fragment("date_trunc('day', ?)", u.inserted_at), count(u.id)},
+        order_by: [asc: fragment("date_trunc('day', ?)", u.inserted_at)])
+      |> Repo.all()
+      |> Enum.map(fn {dt, c} -> %{date: NaiveDateTime.to_date(dt) |> Date.to_string(), count: c} end)
+
+    # Verification breakdown
+    verified   = Repo.aggregate(from(u in User, where: u.is_verified == true), :count, :id)
+    unverified = Repo.aggregate(from(u in User, where: u.is_verified == false), :count, :id)
+    blocked    = Repo.aggregate(from(u in User, where: u.is_active == false), :count, :id)
+    active     = Repo.aggregate(from(u in User, where: u.is_active == true), :count, :id)
+    admins     = Repo.aggregate(from(u in User, where: u.is_admin == true), :count, :id)
+    total      = Repo.aggregate(User, :count, :id)
+
+    # Top users by file count
+    top_users =
+      from(u in User,
+        left_join: d in Alem.Schemas.Document, on: d.user_id == u.id,
+        group_by: [u.id, u.nickname],
+        select: %{nickname: u.nickname, files: count(d.id)},
+        order_by: [desc: count(d.id)],
+        limit: 8)
+      |> Repo.all()
+
+    %{
+      daily_signups: daily_signups,
+      verified: verified, unverified: unverified,
+      active: active, blocked: blocked,
+      admins: admins, total: total,
+      top_users: top_users
+    }
+  end
+
+  def storage_analytics do
+    # Uploads per day (last 30 days)
+    thirty_ago = DateTime.add(DateTime.utc_now(), -30, :day) |> DateTime.to_naive()
+    daily_uploads =
+      from(d in Alem.Schemas.Document,
+        where: d.inserted_at >= ^thirty_ago,
+        group_by: fragment("date_trunc('day', ?)", d.inserted_at),
+        select: {fragment("date_trunc('day', ?)", d.inserted_at), count(d.id)},
+        order_by: [asc: fragment("date_trunc('day', ?)", d.inserted_at)])
+      |> Repo.all()
+      |> Enum.map(fn {dt, c} -> %{date: NaiveDateTime.to_date(dt) |> Date.to_string(), count: c} end)
+
+    # File type breakdown
+    type_breakdown =
+      from(c in CasObject,
+        where: not is_nil(c.media_type),
+        group_by: c.media_type,
+        select: %{type: c.media_type, count: count(c.content_hash), bytes: coalesce(sum(c.file_size), 0)},
+        order_by: [desc: count(c.content_hash)])
+      |> Repo.all()
+      |> Enum.map(fn r -> Map.put(r, :bytes, to_int(r.bytes)) end)
+
+    # Storage totals
+    total_bytes  = Repo.one(from c in CasObject, select: coalesce(sum(c.file_size), 0)) || 0
+    saved_bytes  = Repo.one(from c in CasObject, where: c.ref_count > 1,
+                     select: coalesce(sum(c.file_size * (c.ref_count - 1)), 0)) || 0
+    total_files  = Repo.aggregate(Alem.Schemas.Document, :count, :id)
+    total_cas    = Repo.aggregate(CasObject, :count, :content_hash)
+
+    %{
+      daily_uploads: daily_uploads,
+      type_breakdown: type_breakdown,
+      total_bytes: to_int(total_bytes),
+      saved_bytes: to_int(saved_bytes),
+      total_files: total_files,
+      total_cas: total_cas
+    }
+  end
+
+  def cas_analytics do
+    # Ref-count distribution (how many objects are 1x, 2x, 3x+)
+    ref_dist =
+      from(c in CasObject,
+        group_by: c.ref_count,
+        select: %{ref_count: c.ref_count, count: count(c.content_hash)},
+        order_by: [asc: c.ref_count],
+        limit: 10)
+      |> Repo.all()
+
+    # Top duplicated files
+    top_dupes =
+      from(c in CasObject,
+        where: c.ref_count > 1,
+        order_by: [desc: c.ref_count],
+        select: %{
+          content_hash: c.content_hash,
+          media_type:   c.media_type,
+          file_size:    c.file_size,
+          ref_count:    c.ref_count,
+          saved:        c.file_size * (c.ref_count - 1)
+        },
+        limit: 10)
+      |> Repo.all()
+      |> Enum.map(fn r -> Map.merge(r, %{file_size: to_int(r.file_size), saved: to_int(r.saved)}) end)
+
+    total_cas  = Repo.aggregate(CasObject, :count, :content_hash)
+    dupes      = Repo.aggregate(from(c in CasObject, where: c.ref_count > 1), :count, :content_hash)
+    total_bytes = to_int(Repo.one(from c in CasObject, select: coalesce(sum(c.file_size), 0)) || 0)
+    saved_bytes = to_int(Repo.one(from c in CasObject, where: c.ref_count > 1,
+                    select: coalesce(sum(c.file_size * (c.ref_count - 1)), 0)) || 0)
+
+    %{
+      ref_dist: ref_dist,
+      top_dupes: top_dupes,
+      total_cas: total_cas,
+      dupes: dupes,
+      total_bytes: total_bytes,
+      saved_bytes: saved_bytes,
+      dedup_pct: if(total_bytes > 0, do: round(saved_bytes / total_bytes * 100), else: 0)
+    }
+  end
+
+  defp to_int(%Decimal{} = d), do: Decimal.to_integer(d)
+  defp to_int(i) when is_integer(i), do: i
+  defp to_int(_), do: 0
 end

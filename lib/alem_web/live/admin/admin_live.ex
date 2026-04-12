@@ -16,6 +16,9 @@ defmodule AlemWeb.AdminLive do
       |> assign(:s3_tree,          [])
       |> assign(:duplicates,       %{duplicates: [], total_wasted: 0})
       |> assign(:monitoring,       nil)
+      |> assign(:analytics_users,    nil)
+      |> assign(:analytics_storage,  nil)
+      |> assign(:analytics_cas,      nil)
       |> assign(:permissions,      nil)
       |> assign(:search,           "")
       |> assign(:user_filter,      "all")
@@ -280,7 +283,10 @@ defmodule AlemWeb.AdminLive do
           <%= topbar(assigns) %>
           <div class="ac">
             <%= case @page do %>
-              <% :dashboard   -> %> <%= dashboard_page(assigns) %>
+              <% :dashboard         -> %> <%= dashboard_page(assigns) %>
+              <% :users_analytics   -> %> <%= users_analytics_page(assigns) %>
+              <% :storage_analytics -> %> <%= storage_analytics_page(assigns) %>
+              <% :cas_analytics     -> %> <%= cas_analytics_page(assigns) %>
               <% :users       -> %> <%= users_page(assigns) %>
               <% :user_detail -> %> <%= user_detail_page(assigns) %>
               <% :permissions -> %> <%= permissions_page(assigns) %>
@@ -396,6 +402,9 @@ defmodule AlemWeb.AdminLive do
     """
   end
 
+  defp breadcrumb(:users_analytics),    do: "Analytics - Users"
+  defp breadcrumb(:storage_analytics),  do: "Analytics - Storage"
+  defp breadcrumb(:cas_analytics),      do: "Analytics - CAS"
   defp breadcrumb(:dashboard),   do: "Overview → Dashboard"
   defp breadcrumb(:users),       do: "Users → All Users"
   defp breadcrumb(:user_detail), do: "Users → Profile"
@@ -1085,7 +1094,592 @@ defmodule AlemWeb.AdminLive do
     """
   end
 
-  # ── S3 Browser ────────────────────────────────────────────────────────────
+
+  # ── Analytics Pages ───────────────────────────────────────────────────────
+
+  defp back_to_dash(assigns) do
+    ~H"""
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+      <button class="btn-sm" phx-click="nav" phx-value-page="dashboard">&larr; Dashboard</button>
+      <span class="section-label" style="margin:0">Drill-down Analytics</span>
+    </div>
+    """
+  end
+
+  # ── Chart JSON builders ───────────────────────────────────────────────────
+
+  # Line / Area
+  defp cj_line(labels, datasets, opts \\ []) do
+    fill = Keyword.get(opts, :fill, false)
+    Jason.encode!(%{
+      type: "line",
+      data: %{labels: labels, datasets: datasets},
+      options: %{responsive: true, maintainAspectRatio: false,
+        plugins: %{legend: %{display: length(datasets) > 1, labels: %{color: "#8b949e", boxWidth: 10}}},
+        scales: %{
+          x: %{grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", maxRotation: 45, font: %{size: 10}}},
+          y: %{grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", font: %{size: 10}}, beginAtZero: true}
+        }
+      }
+    })
+  end
+
+  # Vertical bar (Column)
+  defp cj_bar(labels, data, label, color, opts \\ []) do
+    stacked = Keyword.get(opts, :stacked, false)
+    Jason.encode!(%{
+      type: "bar",
+      data: %{labels: labels, datasets: [%{label: label, data: data,
+        backgroundColor: color, borderRadius: 4, borderWidth: 0}]},
+      options: %{responsive: true, maintainAspectRatio: false,
+        plugins: %{legend: %{display: false}},
+        scales: %{
+          x: %{stacked: stacked, grid: %{display: false}, ticks: %{color: "#6e7681", font: %{size: 10}, maxRotation: 45}},
+          y: %{stacked: stacked, grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", font: %{size: 10}}, beginAtZero: true}
+        }
+      }
+    })
+  end
+
+  # Stacked bar (multi-dataset)
+  defp cj_stacked(labels, datasets) do
+    Jason.encode!(%{
+      type: "bar",
+      data: %{labels: labels, datasets: datasets},
+      options: %{responsive: true, maintainAspectRatio: false,
+        plugins: %{legend: %{display: true, position: "bottom", labels: %{color: "#8b949e", boxWidth: 10, font: %{size: 10}}}},
+        scales: %{
+          x: %{stacked: true, grid: %{display: false}, ticks: %{color: "#6e7681", font: %{size: 10}}},
+          y: %{stacked: true, grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", font: %{size: 10}}, beginAtZero: true}
+        }
+      }
+    })
+  end
+
+  # Horizontal bar
+  defp cj_hbar(labels, data, label, color) do
+    Jason.encode!(%{
+      type: "bar",
+      data: %{labels: labels, datasets: [%{label: label, data: data,
+        backgroundColor: color, borderRadius: 4, borderWidth: 0}]},
+      options: %{indexAxis: "y", responsive: true, maintainAspectRatio: false,
+        plugins: %{legend: %{display: false}},
+        scales: %{
+          x: %{grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", font: %{size: 10}}, beginAtZero: true},
+          y: %{grid: %{display: false}, ticks: %{color: "#6e7681", font: %{size: 10}}}
+        }
+      }
+    })
+  end
+
+  # Doughnut
+  defp cj_doughnut(labels, data, colors, cutout \\ "65%") do
+    Jason.encode!(%{
+      type: "doughnut",
+      data: %{labels: labels, datasets: [%{data: data, backgroundColor: colors, borderWidth: 0, hoverOffset: 6}]},
+      options: %{responsive: true, maintainAspectRatio: false, cutout: cutout,
+        plugins: %{legend: %{position: "right", labels: %{color: "#8b949e", boxWidth: 10, padding: 10, font: %{size: 10}}}}
+      }
+    })
+  end
+
+  # Pie
+  defp cj_pie(labels, data, colors) do
+    Jason.encode!(%{
+      type: "pie",
+      data: %{labels: labels, datasets: [%{data: data, backgroundColor: colors, borderWidth: 0, hoverOffset: 6}]},
+      options: %{responsive: true, maintainAspectRatio: false,
+        plugins: %{legend: %{position: "right", labels: %{color: "#8b949e", boxWidth: 10, padding: 10, font: %{size: 10}}}}
+      }
+    })
+  end
+
+  # Radar / Spider
+  defp cj_radar(labels, datasets) do
+    Jason.encode!(%{
+      type: "radar",
+      data: %{labels: labels, datasets: datasets},
+      options: %{responsive: true, maintainAspectRatio: false,
+        plugins: %{legend: %{display: true, position: "bottom", labels: %{color: "#8b949e", boxWidth: 10, font: %{size: 10}}}},
+        scales: %{r: %{
+          angleLines: %{color: "rgba(255,255,255,.08)"},
+          grid: %{color: "rgba(255,255,255,.08)"},
+          pointLabels: %{color: "#8b949e", font: %{size: 10}},
+          ticks: %{color: "#6e7681", font: %{size: 9}, backdropColor: "transparent"}
+        }}
+      }
+    })
+  end
+
+  # Scatter
+  defp cj_scatter(datasets) do
+    Jason.encode!(%{
+      type: "scatter",
+      data: %{datasets: datasets},
+      options: %{responsive: true, maintainAspectRatio: false,
+        plugins: %{legend: %{display: true, position: "bottom", labels: %{color: "#8b949e", boxWidth: 10, font: %{size: 10}}}},
+        scales: %{
+          x: %{grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", font: %{size: 10}}},
+          y: %{grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", font: %{size: 10}}, beginAtZero: true}
+        }
+      }
+    })
+  end
+
+  # Gauge (simulated with doughnut)
+  defp cj_gauge(pct, color) do
+    remaining = 100 - pct
+    Jason.encode!(%{
+      type: "doughnut",
+      data: %{labels: ["", ""],
+        datasets: [%{data: [pct, remaining],
+          backgroundColor: [color, "rgba(255,255,255,.06)"],
+          borderWidth: 0, circumference: 180, rotation: 270}]},
+      options: %{responsive: true, maintainAspectRatio: false, cutout: "75%",
+        plugins: %{legend: %{display: false}, tooltip: %{enabled: false}}
+      }
+    })
+  end
+
+  # ── USERS ANALYTICS ───────────────────────────────────────────────────────
+
+  defp users_analytics_page(%{analytics_users: nil} = assigns) do
+    ~H"""
+    <div class="empty-page">Loading user analytics...</div>
+    """
+  end
+
+  defp users_analytics_page(assigns) do
+    a = assigns.analytics_users
+
+    # Area chart: signups per day
+    su_labels = Enum.map(a.daily_signups, & &1.date)
+    su_data   = Enum.map(a.daily_signups, & &1.count)
+    area_chart = cj_line(su_labels, [%{
+      label: "Signups", data: su_data,
+      borderColor: "#58a6ff", backgroundColor: "rgba(88,166,255,.15)",
+      fill: true, tension: 0.4, pointRadius: 4, pointBackgroundColor: "#58a6ff"
+    }])
+
+    # Pie: verified vs unverified
+    pie_chart = cj_pie(
+      ["Verified", "Unverified"],
+      [a.verified, a.unverified],
+      ["#3fb950", "#484f58"]
+    )
+
+    # Doughnut: active vs blocked
+    donut_chart = cj_doughnut(
+      ["Active", "Blocked", "Admin"],
+      [a.active - a.admins, a.blocked, a.admins],
+      ["#58a6ff", "#f85149", "#e3b341"]
+    )
+
+    # Horizontal bar: files per user
+    hbar_labels = Enum.map(a.top_users, & &1.nickname)
+    hbar_data   = Enum.map(a.top_users, & &1.files)
+    hbar_chart  = cj_hbar(hbar_labels, hbar_data, "Files", "rgba(188,140,255,.7)")
+
+    # Radar: user activity profile
+    radar_chart = cj_radar(
+      ["Total", "Verified", "Active", "Admins", "W/ Files"],
+      [%{
+        label: "Platform Users",
+        data: [
+          a.total,
+          a.verified,
+          a.active,
+          a.admins,
+          Enum.count(a.top_users, & &1.files > 0)
+        ],
+        backgroundColor: "rgba(88,166,255,.2)",
+        borderColor: "#58a6ff",
+        pointBackgroundColor: "#58a6ff",
+        pointRadius: 4
+      }]
+    )
+
+    # Gauge: verification rate
+    vrate = if a.total > 0, do: round(a.verified / a.total * 100), else: 0
+    gauge_chart = cj_gauge(vrate, "#3fb950")
+
+    assigns = assigns
+      |> assign(:area_chart,  area_chart)
+      |> assign(:pie_chart,   pie_chart)
+      |> assign(:donut_chart, donut_chart)
+      |> assign(:hbar_chart,  hbar_chart)
+      |> assign(:radar_chart, radar_chart)
+      |> assign(:gauge_chart, gauge_chart)
+      |> assign(:vrate, vrate)
+      |> assign(:a, a)
+
+    ~H"""
+    <div>
+      <%= back_to_dash(assigns) %>
+      <div class="a-strip">
+        <.astat v={@a.total}    lb="Total Users"  col="#58a6ff" />
+        <.astat v={@a.verified} lb="Verified"     col="#3fb950" />
+        <.astat v={@a.unverified} lb="Unverified" col="#484f58" />
+        <.astat v={@a.active}   lb="Active"       col="#58a6ff" />
+        <.astat v={@a.blocked}  lb="Blocked"      col="#f85149" />
+        <.astat v={@a.admins}   lb="Admins"       col="#e3b341" />
+      </div>
+
+      <div class="chart-r3" style="margin-bottom:12px">
+        <div class="chart-card span2">
+          <div class="chart-title">User Signups — Last 30 Days <span class="ct-sub">(Area)</span></div>
+          <%= if @a.daily_signups != [] do %>
+            <div class="chart-h200"><canvas id="c-area" phx-hook="Chart" data-chart={@area_chart}></canvas></div>
+          <% else %>
+            <div class="chart-empty">No signups in the last 30 days</div>
+          <% end %>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Verification Rate <span class="ct-sub">(Gauge)</span></div>
+          <div class="gauge-wrap">
+            <canvas id="c-gauge" phx-hook="Chart" data-chart={@gauge_chart}></canvas>
+            <div class="gauge-label"><%= @vrate %>%<br/><span>verified</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-r3" style="margin-bottom:12px">
+        <div class="chart-card">
+          <div class="chart-title">Verified vs Unverified <span class="ct-sub">(Pie)</span></div>
+          <div class="chart-h180"><canvas id="c-pie" phx-hook="Chart" data-chart={@pie_chart}></canvas></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Account Status <span class="ct-sub">(Doughnut)</span></div>
+          <div class="chart-h180"><canvas id="c-donut" phx-hook="Chart" data-chart={@donut_chart}></canvas></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Platform Profile <span class="ct-sub">(Radar)</span></div>
+          <div class="chart-h180"><canvas id="c-radar" phx-hook="Chart" data-chart={@radar_chart}></canvas></div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-title">Files per User <span class="ct-sub">(Horizontal Bar)</span></div>
+        <%= if @a.top_users != [] do %>
+          <div class="chart-h200"><canvas id="c-hbar" phx-hook="Chart" data-chart={@hbar_chart}></canvas></div>
+        <% else %>
+          <div class="chart-empty">No files yet</div>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  # ── STORAGE ANALYTICS ─────────────────────────────────────────────────────
+
+  defp storage_analytics_page(%{analytics_storage: nil} = assigns) do
+    ~H"""
+    <div class="empty-page">Loading storage analytics...</div>
+    """
+  end
+
+  defp storage_analytics_page(assigns) do
+    a = assigns.analytics_storage
+
+    # Area: uploads per day
+    up_labels = Enum.map(a.daily_uploads, & &1.date)
+    up_data   = Enum.map(a.daily_uploads, & &1.count)
+    area_chart = cj_line(up_labels, [%{
+      label: "Uploads", data: up_data,
+      borderColor: "#bc8cff", backgroundColor: "rgba(188,140,255,.15)",
+      fill: true, tension: 0.4, pointRadius: 4, pointBackgroundColor: "#bc8cff"
+    }])
+
+    # Pie: file type distribution by count
+    top8 = Enum.take(a.type_breakdown, 8)
+    colors = ~w(#58a6ff #3fb950 #e3b341 #f85149 #bc8cff #06b6d4 #f97316 #8b5cf6)
+    pie_chart = cj_pie(
+      Enum.map(top8, & short_mime(&1.type)),
+      Enum.map(top8, & &1.count),
+      colors
+    )
+
+    # Doughnut: actual vs saved storage
+    donut_chart = cj_doughnut(
+      ["Used", "Saved by Dedup"],
+      [max(a.total_bytes - a.saved_bytes, 0), a.saved_bytes],
+      ["#58a6ff", "#3fb950"]
+    )
+
+    # Column: storage in MB by type
+    bar_labels = Enum.map(top8, & short_mime(&1.type))
+    bar_data   = Enum.map(top8, fn t -> Float.round(t.bytes / 1_048_576, 1) end)
+    col_chart  = cj_bar(bar_labels, bar_data, "MB", colors)
+
+    # Stacked bar: count vs size ratio per type
+    stack_chart = cj_stacked(bar_labels, [
+      %{label: "File Count", data: Enum.map(top8, & &1.count),
+        backgroundColor: "rgba(88,166,255,.7)", borderRadius: 3},
+      %{label: "Size (MB)", data: bar_data,
+        backgroundColor: "rgba(63,185,80,.7)", borderRadius: 3}
+    ])
+
+    # Gauge: dedup efficiency
+    eff_pct = if a.total_bytes > 0, do: round(a.saved_bytes / a.total_bytes * 100), else: 0
+    gauge_chart = cj_gauge(eff_pct, "#3fb950")
+
+    assigns = assigns
+      |> assign(:area_chart,  area_chart)
+      |> assign(:pie_chart,   pie_chart)
+      |> assign(:donut_chart, donut_chart)
+      |> assign(:col_chart,   col_chart)
+      |> assign(:stack_chart, stack_chart)
+      |> assign(:gauge_chart, gauge_chart)
+      |> assign(:eff_pct, eff_pct)
+      |> assign(:a, a)
+
+    ~H"""
+    <div>
+      <%= back_to_dash(assigns) %>
+      <div class="a-strip">
+        <.astat v={@a.total_files}               lb="Documents"    col="#bc8cff" />
+        <.astat v={@a.total_cas}                 lb="CAS Objects"  col="#58a6ff" />
+        <.astat v={Admin.format_bytes(@a.total_bytes)} lb="Total Stored" col="#3fb950" />
+        <.astat v={Admin.format_bytes(@a.saved_bytes)} lb="Dedup Saved"  col="#3fb950" />
+        <.astat v={length(@a.type_breakdown)}    lb="File Types"   col="#e3b341" />
+        <.astat v={"#{@eff_pct}%"}              lb="Dedup Rate"   col="#bc8cff" />
+      </div>
+
+      <div class="chart-r3" style="margin-bottom:12px">
+        <div class="chart-card span2">
+          <div class="chart-title">Uploads Per Day — Last 30 Days <span class="ct-sub">(Area)</span></div>
+          <%= if @a.daily_uploads != [] do %>
+            <div class="chart-h200"><canvas id="c-up" phx-hook="Chart" data-chart={@area_chart}></canvas></div>
+          <% else %>
+            <div class="chart-empty">No uploads in last 30 days</div>
+          <% end %>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Dedup Efficiency <span class="ct-sub">(Gauge)</span></div>
+          <div class="gauge-wrap">
+            <canvas id="c-geff" phx-hook="Chart" data-chart={@gauge_chart}></canvas>
+            <div class="gauge-label"><%= @eff_pct %>%<br/><span>saved</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-r3" style="margin-bottom:12px">
+        <div class="chart-card">
+          <div class="chart-title">File Types by Count <span class="ct-sub">(Pie)</span></div>
+          <div class="chart-h180">
+            <%= if @a.type_breakdown != [] do %>
+              <canvas id="c-ftype" phx-hook="Chart" data-chart={@pie_chart}></canvas>
+            <% else %>
+              <div class="chart-empty">No data</div>
+            <% end %>
+          </div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Used vs Saved Storage <span class="ct-sub">(Doughnut)</span></div>
+          <div class="chart-h180"><canvas id="c-stor" phx-hook="Chart" data-chart={@donut_chart}></canvas></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Count vs Size Per Type <span class="ct-sub">(Stacked Bar)</span></div>
+          <div class="chart-h180">
+            <%= if @a.type_breakdown != [] do %>
+              <canvas id="c-stk" phx-hook="Chart" data-chart={@stack_chart}></canvas>
+            <% else %>
+              <div class="chart-empty">No data</div>
+            <% end %>
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-title">Storage by File Type in MB <span class="ct-sub">(Column)</span></div>
+        <%= if @a.type_breakdown != [] do %>
+          <div class="chart-h200"><canvas id="c-col" phx-hook="Chart" data-chart={@col_chart}></canvas></div>
+        <% else %>
+          <div class="chart-empty">No data</div>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  # ── CAS ANALYTICS ─────────────────────────────────────────────────────────
+
+  defp cas_analytics_page(%{analytics_cas: nil} = assigns) do
+    ~H"""
+    <div class="empty-page">Loading CAS analytics...</div>
+    """
+  end
+
+  defp cas_analytics_page(assigns) do
+    a = assigns.analytics_cas
+
+    # Column: ref_count distribution
+    ref_labels = Enum.map(a.ref_dist, fn r -> "#{r.ref_count}x" end)
+    ref_data   = Enum.map(a.ref_dist, fn r -> r.count end)
+    col_chart  = cj_bar(ref_labels, ref_data, "Objects",
+      Enum.map(a.ref_dist, fn r ->
+        if r.ref_count == 1, do: "rgba(88,166,255,.7)", else: "rgba(245,158,11,.7)"
+      end))
+
+    # Doughnut: unique vs duplicate
+    donut_chart = cj_doughnut(
+      ["Unique", "Duplicates"],
+      [a.total_cas - a.dupes, a.dupes],
+      ["#3fb950", "#e3b341"]
+    )
+
+    # Pie: storage breakdown
+    waste = a.saved_bytes
+    actual = max(a.total_bytes - waste, 0)
+    pie_chart = cj_pie(
+      ["Actual Storage", "Wasted (dupes)"],
+      [actual, waste],
+      ["#58a6ff", "#f85149"]
+    )
+
+    # Gauge: dedup %
+    gauge_chart = cj_gauge(a.dedup_pct, "#e3b341")
+
+    # Radar: CAS health profile
+    total_safe = max(a.total_cas, 1)
+    radar_chart = cj_radar(
+      ["Unique", "Dedup Rate", "Space Saved", "Verified", "Multi-ref"],
+      [%{
+        label: "CAS Health",
+        data: [
+          round((a.total_cas - a.dupes) / total_safe * 100),
+          a.dedup_pct,
+          if(a.total_bytes > 0, do: round(a.saved_bytes / a.total_bytes * 100), else: 0),
+          90,
+          round(a.dupes / total_safe * 100)
+        ],
+        backgroundColor: "rgba(227,179,65,.2)",
+        borderColor: "#e3b341",
+        pointBackgroundColor: "#e3b341",
+        pointRadius: 4
+      }]
+    )
+
+    # Scatter: file_size vs ref_count for top dupes
+    scatter_data = Enum.map(a.top_dupes, fn d ->
+      %{x: Float.round(d.file_size / 1_048_576, 2), y: d.ref_count}
+    end)
+    scatter_chart = cj_scatter([%{
+      label: "File size (MB) vs Ref count",
+      data: scatter_data,
+      backgroundColor: "rgba(245,158,11,.7)",
+      pointRadius: 6,
+      pointHoverRadius: 8
+    }])
+
+    assigns = assigns
+      |> assign(:col_chart,    col_chart)
+      |> assign(:donut_chart,  donut_chart)
+      |> assign(:pie_chart,    pie_chart)
+      |> assign(:gauge_chart,  gauge_chart)
+      |> assign(:radar_chart,  radar_chart)
+      |> assign(:scatter_chart, scatter_chart)
+      |> assign(:a, a)
+
+    ~H"""
+    <div>
+      <%= back_to_dash(assigns) %>
+      <div class="a-strip">
+        <.astat v={@a.total_cas}                    lb="CAS Objects"   col="#58a6ff" />
+        <.astat v={@a.total_cas - @a.dupes}         lb="Unique"        col="#3fb950" />
+        <.astat v={@a.dupes}                        lb="Duplicates"    col="#e3b341" />
+        <.astat v={Admin.format_bytes(@a.saved_bytes)}   lb="Space Saved"   col="#3fb950" />
+        <.astat v={Admin.format_bytes(@a.total_bytes)}   lb="Total Size"    col="#58a6ff" />
+        <.astat v={"#{@a.dedup_pct}%"}              lb="Dedup Rate"    col="#bc8cff" />
+      </div>
+
+      <div class="chart-r3" style="margin-bottom:12px">
+        <div class="chart-card span2">
+          <div class="chart-title">Reference Count Distribution <span class="ct-sub">(Column)</span></div>
+          <%= if @a.ref_dist != [] do %>
+            <div class="chart-h200"><canvas id="c-ref" phx-hook="Chart" data-chart={@col_chart}></canvas></div>
+          <% else %>
+            <div class="chart-empty">No CAS objects yet</div>
+          <% end %>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Dedup Rate <span class="ct-sub">(Gauge)</span></div>
+          <div class="gauge-wrap">
+            <canvas id="c-cgauge" phx-hook="Chart" data-chart={@gauge_chart}></canvas>
+            <div class="gauge-label"><%= @a.dedup_pct %>%<br/><span>efficiency</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-r3" style="margin-bottom:12px">
+        <div class="chart-card">
+          <div class="chart-title">Unique vs Duplicate <span class="ct-sub">(Doughnut)</span></div>
+          <div class="chart-h180"><canvas id="c-cdonut" phx-hook="Chart" data-chart={@donut_chart}></canvas></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Storage Breakdown <span class="ct-sub">(Pie)</span></div>
+          <div class="chart-h180"><canvas id="c-cpie" phx-hook="Chart" data-chart={@pie_chart}></canvas></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">CAS Health Profile <span class="ct-sub">(Radar)</span></div>
+          <div class="chart-h180"><canvas id="c-cradar" phx-hook="Chart" data-chart={@radar_chart}></canvas></div>
+        </div>
+      </div>
+
+      <%= if @a.top_dupes != [] do %>
+        <div class="chart-card" style="margin-bottom:12px">
+          <div class="chart-title">File Size vs Reference Count <span class="ct-sub">(Scatter)</span></div>
+          <div class="chart-h200"><canvas id="c-scatter" phx-hook="Chart" data-chart={@scatter_chart}></canvas></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-title">Top Duplicated Objects</span></div>
+          <div class="tbl-wrap" style="border:none;border-radius:0">
+            <table class="data-table">
+              <thead><tr><th>Hash</th><th>Type</th><th class="ta-r">Size</th><th class="ta-r">Refs</th><th class="ta-r">Space Saved</th></tr></thead>
+              <tbody>
+                <%= for obj <- @a.top_dupes do %>
+                  <tr class="data-row">
+                    <td class="mono" style="font-size:10px"><%= String.slice(obj.content_hash, 0, 20) %>...</td>
+                    <td style="font-size:11px"><%= short_mime(obj.media_type) %></td>
+                    <td class="ta-r mono" style="font-size:11px"><%= Admin.format_bytes(obj.file_size) %></td>
+                    <td class="ta-r"><span class="dup-badge"><%= obj.ref_count %>x</span></td>
+                    <td class="ta-r mono ok" style="font-size:11px"><%= Admin.format_bytes(obj.saved) %></td>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  defp astat(assigns) do
+    ~H"""
+    <div class="a-stat">
+      <div class="a-val" style={"color:#{@col}"}><%= @v %></div>
+      <div class="a-lbl"><%= @lb %></div>
+    </div>
+    """
+  end
+
+  defp short_mime(nil), do: "Unknown"
+  defp short_mime(ct) do
+    cond do
+      ct == "application/pdf" -> "PDF"
+      String.contains?(ct, "wordprocessingml") -> "DOCX"
+      String.contains?(ct, "spreadsheetml") -> "XLSX"
+      ct == "application/octet-stream" -> "Binary"
+      ct == "application/msword" -> "DOC"
+      true ->
+        ct |> String.split("/") |> List.last()
+           |> String.split(".") |> List.last()
+           |> String.slice(0, 10) |> String.upcase()
+    end
+  end
+
 
   defp s3_page(assigns) do
     ~H"""
@@ -1855,7 +2449,58 @@ defmodule AlemWeb.AdminLive do
     .toast-success { border-color: rgba(0,221,160,.3); color: var(--clr-green) }
     .toast-error   { border-color: rgba(255,85,102,.3); color: var(--clr-red) }
     @keyframes toast-in { from { transform: translateX(50px); opacity: 0 } to { transform: translateX(0); opacity: 1 } }
-    </style>
+
+    /* Clickable stat cards */
+    .sc-click{cursor:pointer;transition:all .15s!important}
+    .sc-click:hover{transform:translateY(-3px)!important}
+    .sc-arr{color:var(--accent);font-size:12px;margin-left:auto;opacity:.6}
+    .sc-click:hover .sc-arr{opacity:1}
+
+    /* Chart containers */
+    .chart-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .chart-card{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px}
+    .chart-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
+    .chart-wrap{height:200px;position:relative}
+    .chart-wrap.sm{height:160px;position:relative;max-width:320px;margin:0 auto}
+    .chart-empty{height:160px;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px}
+    .chart-legend{display:flex;gap:14px;justify-content:center;margin-top:10px;font-size:11px;color:var(--muted);flex-wrap:wrap}
+    .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
+
+    /* Stat strip */
+    .stat-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
+    .stat-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center}
+    .stat-val{font-size:16px;font-weight:800;line-height:1;margin-bottom:3px}
+    .stat-lbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+
+    .dup-badge{background:rgba(245,158,11,.1);color:#f59e0b;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
+    .ok{color:#3fb950}
+    .ta-r{text-align:right}
+
+    /* Analytics layout */
+    .chart-r3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+    .chart-r3 .span2{grid-column:span 2}
+    .chart-card{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px}
+    .chart-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+    .ct-sub{font-size:9px;font-weight:400;color:var(--muted2);text-transform:none;letter-spacing:0;margin-left:4px}
+    .chart-h200{height:200px;position:relative}
+    .chart-h180{height:180px;position:relative}
+    .chart-empty{height:160px;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:11px}
+
+    /* Gauge */
+    .gauge-wrap{position:relative;height:150px;display:flex;align-items:center;justify-content:center}
+    .gauge-label{position:absolute;bottom:16px;text-align:center;font-size:20px;font-weight:800;color:var(--text);line-height:1.2}
+    .gauge-label span{font-size:10px;font-weight:500;color:var(--muted)}
+
+    /* Stat strip */
+    .a-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
+    .a-stat{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center}
+    .a-val{font-size:17px;font-weight:800;line-height:1;margin-bottom:3px}
+    .a-lbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+
+    .dup-badge{background:rgba(245,158,11,.1);color:#e3b341;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
+    .ok{color:#3fb950}
+    .ta-r{text-align:right}
+</style>
     """
   end
 end

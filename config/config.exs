@@ -49,8 +49,6 @@ config :alem, AlemWeb.Endpoint,
 #     {:versions, [:"tlsv1.2"]}
 #   ]
 
-
-
 # ExAws S3 Configuration
 # NOTE: access_key_id and secret_access_key use list syntax [{:system, ...}]
 # This is required by ex_aws to support multiple credential providers.
