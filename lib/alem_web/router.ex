@@ -41,15 +41,14 @@ defmodule AlemWeb.Router do
     get    "/login",  AdminSessionController, :new
     post   "/login",  AdminSessionController, :create
     delete "/logout", AdminSessionController, :delete
+    # Fallback: browser GET /admin/logout (direct URL navigation, expired session)
+    get    "/logout", AdminSessionController, :delete
   end
 
   # ── Admin Panel (LiveView — protected) ────────────────────────────────────
   scope "/admin", AlemWeb do
     pipe_through [:browser, :admin_auth, :admin_layout]
-    live "/",         AdminLive, :index
-    live "/users",    AdminLive, :users
-    live "/vault",    AdminLive, :vault
-    live "/dupes",    AdminLive, :duplicates
+    live "/", AdminLive, :index
   end
 
   # ── API v1 ────────────────────────────────────────────────────────────────

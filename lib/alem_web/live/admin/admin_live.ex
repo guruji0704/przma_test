@@ -36,6 +36,10 @@ defmodule AlemWeb.AdminLive do
       |> assign(:s3_error,         nil)
       |> assign(:s3_presigned,     nil)
       |> assign(:s3_roots,         [])
+      |> assign(:analytics_users,    nil)
+      |> assign(:analytics_storage,  nil)
+      |> assign(:analytics_cas,      nil)
+      |> assign(:nav_history,        [])
       |> assign(:quota_data,       nil)
       |> assign(:audit_log,        [])
 
@@ -57,11 +61,36 @@ defmodule AlemWeb.AdminLive do
 
   # ── Navigation ───────────────────────────────────────────────────────────
 
+  # ── Navigation ────────────────────────────────────────────────────────────
+
+  # Back button - pops navigation history
+  def handle_event("nav_back", _, socket) do
+    case socket.assigns.nav_history do
+      [prev | rest] ->
+        socket = socket
+          |> assign(:page, prev)
+          |> assign(:nav_history, rest)
+          |> assign(:user_detail, nil)
+          |> assign(:permissions, nil)
+          |> assign(:flash_msg, nil)
+        socket = reload_page(socket, prev)
+        {:noreply, socket}
+      [] ->
+        {:noreply, assign(socket, :page, :dashboard)}
+    end
+  end
+
   @impl true
   def handle_event("nav", %{"page" => page}, socket) do
     page_atom = String.to_existing_atom(page)
-    socket    = socket |> assign(:page, page_atom) |> assign(:user_detail, nil)
-                       |> assign(:permissions, nil) |> assign(:flash_msg, nil)
+    # Push current page to history (max 10 deep)
+    history = [socket.assigns.page | socket.assigns.nav_history] |> Enum.take(10)
+    socket    = socket
+      |> assign(:page, page_atom)
+      |> assign(:nav_history, history)
+      |> assign(:user_detail, nil)
+      |> assign(:permissions, nil)
+      |> assign(:flash_msg, nil)
 
     socket =
       case page_atom do
@@ -70,11 +99,29 @@ defmodule AlemWeb.AdminLive do
         :duplicates -> assign(socket, :duplicates, Admin.duplicate_analysis())
         :monitoring -> assign(socket, :monitoring, Admin.monitoring_stats())
         :s3         -> socket |> assign(:s3_roots, Admin.s3_root_folders()) |> assign(:s3_result, nil) |> assign(:s3_prefix, "")
-        :dashboard  -> socket |> assign(:stats, Admin.dashboard_stats()) |> assign(:audit_log, Admin.get_audit_log(20))
-        _           -> socket
+        :dashboard          -> socket |> assign(:stats, Admin.dashboard_stats()) |> assign(:audit_log, Admin.get_audit_log(20))
+        :users_analytics    -> assign(socket, :analytics_users,   Admin.users_analytics())
+        :storage_analytics  -> assign(socket, :analytics_storage, Admin.storage_analytics())
+        :cas_analytics      -> assign(socket, :analytics_cas,     Admin.cas_analytics())
+        _                   -> socket
       end
 
     {:noreply, socket}
+  end
+
+  defp reload_page(socket, page) do
+    case page do
+      :users              -> assign(socket, :users, Admin.list_users(%{search: socket.assigns.search, filter: socket.assigns.user_filter, sort: socket.assigns.user_sort}))
+      :monitoring         -> assign(socket, :monitoring, Admin.monitoring_stats())
+      :vault              -> socket |> assign(:cas_objects, Admin.list_cas_objects(%{})) |> assign(:s3_tree, Admin.s3_folder_tree())
+      :duplicates         -> assign(socket, :duplicates, Admin.duplicate_analysis())
+      :s3                 -> socket |> assign(:s3_roots, Admin.s3_root_folders()) |> assign(:s3_result, nil) |> assign(:s3_prefix, "")
+      :dashboard          -> socket |> assign(:stats, Admin.dashboard_stats()) |> assign(:audit_log, Admin.get_audit_log(20))
+      :users_analytics    -> assign(socket, :analytics_users, Admin.users_analytics())
+      :storage_analytics  -> assign(socket, :analytics_storage, Admin.storage_analytics())
+      :cas_analytics      -> assign(socket, :analytics_cas, Admin.cas_analytics())
+      _                   -> socket
+    end
   end
 
   # ── Users ─────────────────────────────────────────────────────────────────
@@ -103,9 +150,6 @@ defmodule AlemWeb.AdminLive do
     {:noreply, socket |> assign(:user_detail, Admin.get_user_detail(id)) |> assign(:page, :user_detail)}
   end
 
-  def handle_event("back_to_users", _, socket) do
-    {:noreply, socket |> assign(:page, :users) |> assign(:user_detail, nil)}
-  end
 
   # ── Permissions ───────────────────────────────────────────────────────────
 
@@ -113,9 +157,6 @@ defmodule AlemWeb.AdminLive do
     {:noreply, socket |> assign(:permissions, Admin.get_user_permissions(id)) |> assign(:page, :permissions)}
   end
 
-  def handle_event("back_from_permissions", _, socket) do
-    {:noreply, socket |> assign(:page, :users) |> assign(:permissions, nil)}
-  end
 
   def handle_event("perm_action", %{"action" => action, "user_id" => uid}, socket) do
     result =
@@ -393,10 +434,14 @@ defmodule AlemWeb.AdminLive do
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           <% end %>
         </button>
-        <a href="/admin/logout" class="logout-btn">
+        <a href="#" class="logout-btn" onclick="document.getElementById('logout-form').submit();return false;">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           Logout
         </a>
+        <form id="logout-form" method="post" action="/admin/logout" style="display:none">
+          <input type="hidden" name="_method" value="delete"/>
+          <input type="hidden" name="_csrf_token" value={Plug.CSRFProtection.get_csrf_token()}/>
+        </form>
       </div>
     </header>
     """
@@ -423,14 +468,14 @@ defmodule AlemWeb.AdminLive do
     <div class="dash">
       <!-- Stat Cards -->
       <div class="sg">
-        <.sc lb="Total Users"   v={@stats.total_users}     ic="users"    cl="blue" />
-        <.sc lb="Verified"      v={@stats.verified_users}  ic="check"    cl="green" />
-        <.sc lb="Blocked"       v={@stats.blocked_users}   ic="ban"      cl="red" />
-        <.sc lb="Admins"        v={@stats.admin_users}     ic="star"     cl="amber" />
-        <.sc lb="Total Files"   v={@stats.total_files}     ic="file"     cl="purple" />
-        <.sc lb="CAS Objects"   v={@stats.total_cas}       ic="db"       cl="blue" />
-        <.sc lb="Sessions"      v={@stats.active_sessions} ic="zap"      cl="green" />
-        <.sc lb="New This Week" v={@stats.new_this_week}   ic="trending" cl="amber" />
+        <.sc lb="Total Users"    v={@stats.total_users}     ic="users"    cl="blue"   nav="users_analytics"   tt="User analytics" />
+        <.sc lb="Verified"       v={@stats.verified_users}  ic="check"    cl="green"  nav="users_analytics"   tt="Verification stats" />
+        <.sc lb="Blocked"        v={@stats.blocked_users}   ic="ban"      cl="red"    nav="users"             tt="Manage blocked users" />
+        <.sc lb="Admins"         v={@stats.admin_users}     ic="star"     cl="amber"  nav="users"             tt="Manage admins" />
+        <.sc lb="Total Files"    v={@stats.total_files}     ic="file"     cl="purple" nav="storage_analytics" tt="Storage analytics" />
+        <.sc lb="CAS Objects"    v={@stats.total_cas}       ic="db"       cl="blue"   nav="cas_analytics"     tt="CAS analytics" />
+        <.sc lb="Sessions"       v={@stats.active_sessions} ic="zap"      cl="green"  nav="permissions"       tt="Manage sessions" />
+        <.sc lb="New This Week"  v={@stats.new_this_week}   ic="trending" cl="amber"  nav="users_analytics"   tt="Signup trends" />
       </div>
 
       <div class="dash-grid">
@@ -564,7 +609,9 @@ defmodule AlemWeb.AdminLive do
     end
     assigns = assign(assigns, :icon_svg, icon_svg)
     ~H"""
-    <div class={"sc sc-#{@cl}"}>
+    <div class={["sc", "sc-#{@cl}", assigns[:nav] && "sc-click"]}
+         phx-click={assigns[:nav] && "nav"} phx-value-page={assigns[:nav]}
+         title={assigns[:tt] || ""}>
       <div class="sc-ic">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><%= raw(@icon_svg) %></svg>
       </div>
@@ -572,6 +619,7 @@ defmodule AlemWeb.AdminLive do
         <div class="sc-v"><%= @v %></div>
         <div class="sc-l"><%= @lb %></div>
       </div>
+      <%= if assigns[:nav] do %><div class="sc-arr">&#8594;</div><% end %>
     </div>
     """
   end
@@ -655,7 +703,7 @@ defmodule AlemWeb.AdminLive do
   defp user_detail_page(assigns) do
     ~H"""
     <div>
-      <button class="back-btn" phx-click="back_to_users">
+      <button class="back-btn" phx-click="nav_back">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         Back to Users
       </button>
@@ -759,7 +807,7 @@ defmodule AlemWeb.AdminLive do
   defp permissions_page(%{permissions: nil} = assigns) do
     ~H"""
     <div>
-      <button class="back-btn" phx-click="back_from_permissions">
+      <button class="back-btn" phx-click="nav_back">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         Back to Users
       </button>
@@ -789,7 +837,7 @@ defmodule AlemWeb.AdminLive do
     assigns = assign(assigns, :p, p) |> assign(:u, u)
     ~H"""
     <div>
-      <button class="back-btn" phx-click="back_from_permissions">
+      <button class="back-btn" phx-click="nav_back">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         Back
       </button>
@@ -1100,7 +1148,7 @@ defmodule AlemWeb.AdminLive do
   defp back_to_dash(assigns) do
     ~H"""
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
-      <button class="btn-sm" phx-click="nav" phx-value-page="dashboard">&larr; Dashboard</button>
+      <button class="btn-sm" phx-click="nav_back">&larr; Back</button>
       <span class="section-label" style="margin:0">Drill-down Analytics</span>
     </div>
     """
@@ -2500,6 +2548,31 @@ defmodule AlemWeb.AdminLive do
     .dup-badge{background:rgba(245,158,11,.1);color:#e3b341;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
     .ok{color:#3fb950}
     .ta-r{text-align:right}
+
+    /* Clickable stat cards */
+    .sc-click{cursor:pointer !important}
+    .sc-click:hover{transform:translateY(-2px) !important;border-color:var(--accent) !important;box-shadow:0 4px 16px rgba(0,0,0,.2)}
+    .sc-arr{margin-left:auto;font-size:13px;color:var(--accent);opacity:0;transition:opacity .15s}
+    .sc-click:hover .sc-arr{opacity:1}
+
+    /* Analytics layout */
+    .chart-r3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+    .chart-r3 .span2{grid-column:span 2}
+    .chart-card{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px}
+    .chart-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+    .ct-sub{font-size:9px;font-weight:400;color:var(--muted2);text-transform:none;letter-spacing:0;margin-left:4px}
+    .chart-h200{height:200px;position:relative}
+    .chart-h180{height:180px;position:relative}
+    .chart-empty{height:150px;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:11px}
+    .gauge-wrap{position:relative;height:150px;display:flex;align-items:center;justify-content:center}
+    .gauge-label{position:absolute;bottom:16px;text-align:center;font-size:20px;font-weight:800;color:var(--text);line-height:1.2}
+    .gauge-label span{font-size:10px;font-weight:500;color:var(--muted)}
+    .a-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
+    .a-stat{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center}
+    .a-val{font-size:17px;font-weight:800;line-height:1;margin-bottom:3px}
+    .a-lbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+    .dup-badge{background:rgba(245,158,11,.1);color:#e3b341;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
+    .ok{color:#3fb950}.ta-r{text-align:right}
 </style>
     """
   end
