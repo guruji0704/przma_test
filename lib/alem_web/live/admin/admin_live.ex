@@ -4,9 +4,11 @@ defmodule AlemWeb.AdminLive do
   require Logger
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    current_admin_id = Map.get(session, "admin_user_id")
     socket =
       socket
+      |> assign(:current_admin_id,  current_admin_id)
       |> assign(:page,             :dashboard)
       |> assign(:theme,            :dark)
       |> assign(:stats,            Admin.dashboard_stats())
@@ -204,7 +206,7 @@ defmodule AlemWeb.AdminLive do
       case action do
         "block"       -> {Admin.block_user(uid),       "User blocked"}
         "unblock"     -> {Admin.unblock_user(uid),     "User unblocked"}
-        "promote"     -> {Admin.promote_admin(uid),    "Promoted to admin"}
+        "promote"     -> {Admin.promote_admin(socket.assigns.current_admin_id, uid), "Promoted to admin"}
         "demote"      -> {Admin.demote_admin(uid),     "Admin role removed"}
         "soft_delete" -> {Admin.soft_delete_user(uid), "User soft deleted"}
         "hard_delete" -> {Admin.hard_delete_user(uid), "User permanently deleted"}
@@ -214,7 +216,7 @@ defmodule AlemWeb.AdminLive do
     socket =
       case result do
         {:ok, _} ->
-          Admin.log_audit("admin", action, uid)
+          Admin.log_audit(socket.assigns.current_admin_id, action, uid)
           socket
           |> assign(:confirm_action, nil)
           |> assign(:flash_msg, {:success, msg})
@@ -2573,7 +2575,7 @@ defmodule AlemWeb.AdminLive do
     .a-lbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
     .dup-badge{background:rgba(245,158,11,.1);color:#e3b341;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
     .ok{color:#3fb950}.ta-r{text-align:right}
-</style>
+    </style>
     """
   end
 end

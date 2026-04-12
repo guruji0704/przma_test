@@ -823,7 +823,156 @@ defmodule Alem.Admin do
     }
   end
 
-  defp to_int(%Decimal{} = d), do: Decimal.to_integer(d)
-  defp to_int(i) when is_integer(i), do: i
-  defp to_int(_), do: 0
+
+  # ── User Activity Analytics ────────────────────────────────────────────────
+  # Security: filenames are NEVER returned. Only CAS identifiers.
+
+  def user_activity(user_id) do
+    twelve_ago = DateTime.add(DateTime.utc_now(), -365, :day) |> DateTime.to_naive()
+    six_ago    = DateTime.add(DateTime.utc_now(), -180, :day) |> DateTime.to_naive()
+
+    files_by_month =
+      from(d in Document,
+        where: d.user_id == ^user_id and d.inserted_at >= ^twelve_ago,
+        group_by: fragment("to_char(?, \'YYYY-MM\')", d.inserted_at),
+        select: {fragment("to_char(?, \'YYYY-MM\')", d.inserted_at), count(d.id)},
+        order_by: [asc: fragment("to_char(?, \'YYYY-MM\')", d.inserted_at)])
+      |> Repo.all()
+      |> Enum.map(fn {m, c} -> %{month: m, count: c} end)
+
+    logins_by_month =
+      from(s in Alem.Session,
+        where: s.user_id == ^user_id and s.inserted_at >= ^six_ago,
+        group_by: fragment("to_char(?, \'YYYY-MM\')", s.inserted_at),
+        select: {fragment("to_char(?, \'YYYY-MM\')", s.inserted_at), count(s.id)},
+        order_by: [asc: fragment("to_char(?, \'YYYY-MM\')", s.inserted_at)])
+      |> Repo.all()
+      |> Enum.map(fn {m, c} -> %{month: m, count: c} end)
+
+    type_counts =
+      from(d in Document,
+        where: d.user_id == ^user_id,
+        group_by: d.content_type,
+        select: %{type: d.content_type, count: count(d.id), bytes: coalesce(sum(0), 0)},
+        order_by: [desc: count(d.id)])
+      |> Repo.all()
+
+    storage_by_month =
+      from(d in Document,
+        join: c in CasObject, on: c.content_hash == d.content_hash,
+        where: d.user_id == ^user_id and d.inserted_at >= ^twelve_ago,
+        group_by: fragment("to_char(?, \'YYYY-MM\')", d.inserted_at),
+        select: {fragment("to_char(?, \'YYYY-MM\')", d.inserted_at), coalesce(sum(c.file_size), 0)},
+        order_by: [asc: fragment("to_char(?, \'YYYY-MM\')", d.inserted_at)])
+      |> Repo.all()
+      |> Enum.map(fn {m, b} -> %{month: m, mb: Float.round(to_int(b) / 1_048_576, 2)} end)
+
+    device_counts =
+      from(s in Alem.Session,
+        where: s.user_id == ^user_id,
+        group_by: s.device,
+        select: %{device: s.device, count: count(s.id)})
+      |> Repo.all()
+
+    # Security: filenames NOT exposed — only CAS hash + file type shown
+    recent_uploads =
+      from(d in Document,
+        where: d.user_id == ^user_id,
+        order_by: [desc: d.inserted_at],
+        limit: 5,
+        select: %{
+          kind:       "upload",
+          cas_hash:   fragment("left(?, 20)", d.content_hash),
+          file_type:  d.content_type,
+          device:     nil,
+          ip_address: nil,
+          at:         d.inserted_at
+        })
+      |> Repo.all()
+
+    recent_logins =
+      from(s in Alem.Session,
+        where: s.user_id == ^user_id,
+        order_by: [desc: s.inserted_at],
+        limit: 5,
+        select: %{
+          kind:       "login",
+          cas_hash:   nil,
+          file_type:  nil,
+          device:     s.device,
+          ip_address: s.ip_address,
+          at:         s.inserted_at
+        })
+      |> Repo.all()
+
+    activity_log =
+      (recent_uploads ++ recent_logins)
+      |> Enum.sort_by(& &1.at, {:desc, NaiveDateTime})
+      |> Enum.take(10)
+
+    services    = services_used(user_id)
+    total_files = Repo.aggregate(from(d in Document, where: d.user_id == ^user_id), :count, :id)
+    total_sessions = Repo.aggregate(from(s in Alem.Session, where: s.user_id == ^user_id), :count, :id)
+    total_bytes = to_int(
+      from(d in Document,
+        join: c in CasObject, on: c.content_hash == d.content_hash,
+        where: d.user_id == ^user_id,
+        select: coalesce(sum(c.file_size), 0))
+      |> Repo.one() || 0)
+    active_tokens = Repo.aggregate(
+      from(t in Alem.Pleroma.Web.OAuth.Token,
+        where: t.user_id == ^user_id and is_nil(t.revoked_at) and t.valid_until > ^DateTime.utc_now()),
+      :count, :id)
+
+    %{
+      files_by_month:   files_by_month,
+      logins_by_month:  logins_by_month,
+      storage_by_month: storage_by_month,
+      type_counts:      type_counts,
+      device_counts:    device_counts,
+      activity_log:     activity_log,
+      services:         services,
+      total_files:      total_files,
+      total_sessions:   total_sessions,
+      total_bytes:      total_bytes,
+      active_tokens:    active_tokens,
+    }
+  end
+
+  defp services_used(user_id) do
+    has_files  = Repo.aggregate(from(d in Document, where: d.user_id == ^user_id), :count, :id) > 0
+    has_tokens = Repo.aggregate(
+                   from(t in Alem.Pleroma.Web.OAuth.Token,
+                     where: t.user_id == ^user_id and is_nil(t.revoked_at)),
+                   :count, :id) > 0
+    has_cas    = from(d in Document,
+                   join: c in CasObject, on: c.content_hash == d.content_hash,
+                   where: d.user_id == ^user_id) |> Repo.exists?()
+    user       = Repo.get(User, user_id)
+    has_did    = !is_nil(user && user.did_id)
+    ns_key     = if has_did, do: Alem.DID.namespace_key(user.did_id), else: nil
+    has_ns     = if ns_key, do: Repo.exists?(from n in Alem.Schemas.Namespace, where: n.id == ^ns_key), else: false
+
+    ns_services =
+      if ns_key do
+        case Repo.one(from n in Alem.Schemas.Namespace, where: n.id == ^ns_key, select: n.config) do
+          %{"services" => svcs} when is_map(svcs) -> svcs
+          _ -> %{}
+        end
+      else
+        %{}
+      end
+
+    # Add new services here as the platform grows
+    %{
+      "Document Storage"    => %{icon: "F", enabled: has_files,   description: "Upload & manage documents",           usage: "#{Repo.aggregate(from(d in Document, where: d.user_id == ^user_id), :count, :id)} files"},
+      "CAS Deduplication"   => %{icon: "C", enabled: has_cas,     description: "Content-addressable dedup storage",   usage: if(has_cas, do: "Active", else: "No files")},
+      "API Access (OAuth)"  => %{icon: "A", enabled: has_tokens,  description: "REST API via OAuth2 tokens",          usage: if(has_tokens, do: "Has tokens", else: "No tokens")},
+      "Decentralized ID"    => %{icon: "D", enabled: has_did,     description: "Cryptographic DID identity",         usage: if(has_did, do: String.slice(user.did_id, 0, 22) <> "...", else: "Not assigned")},
+      "Namespace (PRZMA)"   => %{icon: "N", enabled: has_ns,      description: "Private Horde GenServer namespace",   usage: if(has_ns, do: "Active: #{ns_key}", else: "Not provisioned")},
+      "Sync Engine"         => %{icon: "S", enabled: Map.get(ns_services, "sync", false),      description: "Real-time CRDT document sync",   usage: if(Map.get(ns_services, "sync", false), do: "Enabled", else: "Disabled")},
+      "Analytics Pipeline"  => %{icon: "P", enabled: Map.get(ns_services, "analytics", false), description: "Usage analytics & reporting",     usage: if(Map.get(ns_services, "analytics", false), do: "Enabled", else: "Disabled")},
+    }
+  end
+
 end
