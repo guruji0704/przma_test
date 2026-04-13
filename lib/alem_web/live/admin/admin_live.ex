@@ -36,12 +36,9 @@ defmodule AlemWeb.AdminLive do
       |> assign(:s3_error,         nil)
       |> assign(:s3_presigned,     nil)
       |> assign(:s3_roots,         [])
-      |> assign(:analytics_users,    nil)
-      |> assign(:analytics_storage,  nil)
-      |> assign(:analytics_cas,      nil)
       |> assign(:nav_history,        [])
       |> assign(:quota_data,       nil)
-      |> assign(:audit_log,        [])
+      |> assign(:audit_log,        Admin.get_audit_log(20))
 
     if connected?(socket), do: :timer.send_interval(30_000, self(), :refresh_stats)
     {:ok, socket}
@@ -59,22 +56,36 @@ defmodule AlemWeb.AdminLive do
     {:noreply, assign(socket, :theme, theme)}
   end
 
-  # ── Navigation ───────────────────────────────────────────────────────────
-
   # ── Navigation ────────────────────────────────────────────────────────────
 
   # Back button - pops navigation history
   def handle_event("nav_back", _, socket) do
     case socket.assigns.nav_history do
-      [prev | rest] ->
-        socket = socket
+      [{prev, filter} | rest] ->
+        socket =
+          socket
           |> assign(:page, prev)
           |> assign(:nav_history, rest)
           |> assign(:user_detail, nil)
           |> assign(:permissions, nil)
           |> assign(:flash_msg, nil)
-        socket = reload_page(socket, prev)
+          |> then(fn s ->
+            if filter != nil, do: assign(s, :user_filter, filter), else: s
+          end)
+          |> reload_page(prev)
         {:noreply, socket}
+
+      [prev | rest] ->
+        socket =
+          socket
+          |> assign(:page, prev)
+          |> assign(:nav_history, rest)
+          |> assign(:user_detail, nil)
+          |> assign(:permissions, nil)
+          |> assign(:flash_msg, nil)
+          |> reload_page(prev)
+        {:noreply, socket}
+
       [] ->
         {:noreply, assign(socket, :page, :dashboard)}
     end
@@ -83,46 +94,75 @@ defmodule AlemWeb.AdminLive do
   @impl true
   def handle_event("nav", %{"page" => page}, socket) do
     page_atom = String.to_existing_atom(page)
-    # Push current page to history (max 10 deep)
-    history = [socket.assigns.page | socket.assigns.nav_history] |> Enum.take(10)
-    socket    = socket
+    history   = [{socket.assigns.page, nil} | socket.assigns.nav_history] |> Enum.take(10)
+
+    socket =
+      socket
       |> assign(:page, page_atom)
       |> assign(:nav_history, history)
       |> assign(:user_detail, nil)
       |> assign(:permissions, nil)
       |> assign(:flash_msg, nil)
-
-    socket =
-      case page_atom do
-        :users      -> assign(socket, :users, Admin.list_users(%{search: socket.assigns.search, filter: socket.assigns.user_filter, sort: socket.assigns.user_sort}))
-        :vault      -> socket |> assign(:cas_objects, Admin.list_cas_objects(%{})) |> assign(:s3_tree, Admin.s3_folder_tree())
-        :duplicates -> assign(socket, :duplicates, Admin.duplicate_analysis())
-        :monitoring -> assign(socket, :monitoring, Admin.monitoring_stats())
-        :s3         -> socket |> assign(:s3_roots, Admin.s3_root_folders()) |> assign(:s3_result, nil) |> assign(:s3_prefix, "")
-        :dashboard          -> socket |> assign(:stats, Admin.dashboard_stats()) |> assign(:audit_log, Admin.get_audit_log(20))
-        :users_analytics    -> assign(socket, :analytics_users,   Admin.users_analytics())
-        :storage_analytics  -> assign(socket, :analytics_storage, Admin.storage_analytics())
-        :cas_analytics      -> assign(socket, :analytics_cas,     Admin.cas_analytics())
-        _                   -> socket
-      end
+      |> load_page_data(page_atom)
 
     {:noreply, socket}
   end
 
-  defp reload_page(socket, page) do
-    case page do
-      :users              -> assign(socket, :users, Admin.list_users(%{search: socket.assigns.search, filter: socket.assigns.user_filter, sort: socket.assigns.user_sort}))
-      :monitoring         -> assign(socket, :monitoring, Admin.monitoring_stats())
-      :vault              -> socket |> assign(:cas_objects, Admin.list_cas_objects(%{})) |> assign(:s3_tree, Admin.s3_folder_tree())
-      :duplicates         -> assign(socket, :duplicates, Admin.duplicate_analysis())
-      :s3                 -> socket |> assign(:s3_roots, Admin.s3_root_folders()) |> assign(:s3_result, nil) |> assign(:s3_prefix, "")
-      :dashboard          -> socket |> assign(:stats, Admin.dashboard_stats()) |> assign(:audit_log, Admin.get_audit_log(20))
-      :users_analytics    -> assign(socket, :analytics_users, Admin.users_analytics())
+  # Navigate to a page AND apply a filter at the same time (e.g. dashboard → users/blocked)
+  def handle_event("nav_filtered", %{"page" => page, "filter" => filter}, socket) do
+    page_atom = String.to_existing_atom(page)
+    history   = [{socket.assigns.page, socket.assigns.user_filter} | socket.assigns.nav_history] |> Enum.take(10)
+
+    socket =
+      socket
+      |> assign(:page, page_atom)
+      |> assign(:nav_history, history)
+      |> assign(:user_filter, filter)
+      |> assign(:user_detail, nil)
+      |> assign(:permissions, nil)
+      |> assign(:flash_msg, nil)
+      |> load_page_data(page_atom)
+
+    {:noreply, socket}
+  end
+
+  defp load_page_data(socket, page_atom) do
+    case page_atom do
+      :users ->
+        users = Admin.list_users(%{
+          search: socket.assigns.search,
+          filter: socket.assigns.user_filter,
+          sort:   socket.assigns.user_sort
+        })
+        assign(socket, :users, users)
+
+      :vault ->
+        socket
+        |> assign(:cas_objects, Admin.list_cas_objects(%{}))
+        |> assign(:s3_tree, Admin.s3_folder_tree())
+
+      :duplicates -> assign(socket, :duplicates, Admin.duplicate_analysis())
+      :monitoring -> assign(socket, :monitoring, Admin.monitoring_stats())
+
+      :s3 ->
+        socket
+        |> assign(:s3_roots, Admin.s3_root_folders())
+        |> assign(:s3_result, nil)
+        |> assign(:s3_prefix, "")
+
+      :dashboard ->
+        socket
+        |> assign(:stats, Admin.dashboard_stats())
+        |> assign(:audit_log, Admin.get_audit_log(20))
+
+      :users_analytics    -> assign(socket, :analytics_users,   Admin.users_analytics())
       :storage_analytics  -> assign(socket, :analytics_storage, Admin.storage_analytics())
-      :cas_analytics      -> assign(socket, :analytics_cas, Admin.cas_analytics())
+      :cas_analytics      -> assign(socket, :analytics_cas,     Admin.cas_analytics())
       _                   -> socket
     end
   end
+
+  defp reload_page(socket, page), do: load_page_data(socket, page)
 
   # ── Users ─────────────────────────────────────────────────────────────────
 
@@ -142,39 +182,55 @@ defmodule AlemWeb.AdminLive do
   end
 
   def handle_event("user_page", %{"page" => p}, socket) do
-    users = Admin.list_users(%{search: socket.assigns.search, filter: socket.assigns.user_filter, sort: socket.assigns.user_sort, page: String.to_integer(p)})
+    users = Admin.list_users(%{
+      search: socket.assigns.search,
+      filter: socket.assigns.user_filter,
+      sort:   socket.assigns.user_sort,
+      page:   String.to_integer(p)
+    })
     {:noreply, assign(socket, :users, users)}
   end
 
   def handle_event("view_user", %{"id" => id}, socket) do
-    {:noreply, socket |> assign(:user_detail, Admin.get_user_detail(id)) |> assign(:page, :user_detail)}
+    history = [{socket.assigns.page, socket.assigns.user_filter} | socket.assigns.nav_history] |> Enum.take(10)
+    {:noreply,
+      socket
+      |> assign(:user_detail, Admin.get_user_detail(id))
+      |> assign(:page, :user_detail)
+      |> assign(:nav_history, history)
+      |> assign(:flash_msg, nil)}
   end
-
 
   # ── Permissions ───────────────────────────────────────────────────────────
 
   def handle_event("view_permissions", %{"id" => id}, socket) do
-    {:noreply, socket |> assign(:permissions, Admin.get_user_permissions(id)) |> assign(:page, :permissions)}
+    history = [{socket.assigns.page, socket.assigns.user_filter} | socket.assigns.nav_history] |> Enum.take(10)
+    {:noreply,
+      socket
+      |> assign(:permissions, Admin.get_user_permissions(id))
+      |> assign(:page, :permissions)
+      |> assign(:nav_history, history)
+      |> assign(:flash_msg, nil)}
   end
-
 
   def handle_event("perm_action", %{"action" => action, "user_id" => uid}, socket) do
     result =
       case action do
-        "revoke_tokens"   -> Admin.revoke_all_tokens(uid)   ; {:ok, "All API tokens revoked"}
-        "revoke_sessions" -> Admin.revoke_all_sessions(uid) ; {:ok, "All sessions terminated"}
-        "make_moderator"  -> Admin.set_moderator(uid, true)  |> ok_msg("Made moderator")
-        "remove_moderator"-> Admin.set_moderator(uid, false) |> ok_msg("Moderator role removed")
-        "block"           -> Admin.block_user(uid)           |> ok_msg("User blocked")
-        "unblock"         -> Admin.unblock_user(uid)         |> ok_msg("User unblocked")
-        _                 -> {:error, "Unknown action"}
+        "revoke_tokens"    -> Admin.revoke_all_tokens(uid);   {:ok, "All API tokens revoked"}
+        "revoke_sessions"  -> Admin.revoke_all_sessions(uid); {:ok, "All sessions terminated"}
+        "make_moderator"   -> Admin.set_moderator(uid, true)  |> ok_msg("Made moderator")
+        "remove_moderator" -> Admin.set_moderator(uid, false) |> ok_msg("Moderator role removed")
+        "block"            -> Admin.block_user(uid)           |> ok_msg("User blocked")
+        "unblock"          -> Admin.unblock_user(uid)         |> ok_msg("User unblocked")
+        _                  -> {:error, "Unknown action"}
       end
 
-    {msg_type, msg} = case result do
-      {:ok, m}    -> {:success, m}
-      :ok         -> {:success, "Done"}
-      {:error, e} -> {:error, inspect(e)}
-    end
+    {msg_type, msg} =
+      case result do
+        {:ok, m}    -> {:success, m}
+        :ok         -> {:success, "Done"}
+        {:error, e} -> {:error, inspect(e)}
+      end
 
     socket =
       socket
@@ -200,6 +256,7 @@ defmodule AlemWeb.AdminLive do
 
   def handle_event("execute_confirm", _, socket) do
     %{action: action, user_id: uid} = socket.assigns.confirm_action
+
     {result, msg} =
       case action do
         "block"       -> {Admin.block_user(uid),       "User blocked"}
@@ -222,13 +279,22 @@ defmodule AlemWeb.AdminLive do
           |> assign(:audit_log, Admin.get_audit_log(20))
           |> then(fn s ->
             case s.assigns.page do
-              :users       -> assign(s, :users, Admin.list_users(%{search: s.assigns.search, filter: s.assigns.user_filter, sort: s.assigns.user_sort}))
+              :users ->
+                assign(s, :users, Admin.list_users(%{
+                  search: s.assigns.search,
+                  filter: s.assigns.user_filter,
+                  sort:   s.assigns.user_sort
+                }))
               :user_detail -> assign(s, :user_detail, Admin.get_user_detail(uid))
-              _            -> s
+              :permissions -> assign(s, :permissions, Admin.get_user_permissions(uid))
+              _ -> s
             end
           end)
+
         {:error, r} ->
-          socket |> assign(:confirm_action, nil) |> assign(:flash_msg, {:error, "Failed: #{inspect(r)}"})
+          socket
+          |> assign(:confirm_action, nil)
+          |> assign(:flash_msg, {:error, "Failed: #{inspect(r)}"})
       end
 
     {:noreply, socket}
@@ -247,7 +313,11 @@ defmodule AlemWeb.AdminLive do
   end
 
   def handle_event("cas_page", %{"page" => p}, socket) do
-    cas = Admin.list_cas_objects(%{filter: socket.assigns.cas_filter, search: socket.assigns.cas_search, page: String.to_integer(p)})
+    cas = Admin.list_cas_objects(%{
+      filter: socket.assigns.cas_filter,
+      search: socket.assigns.cas_search,
+      page:   String.to_integer(p)
+    })
     {:noreply, assign(socket, :cas_objects, cas)}
   end
 
@@ -256,7 +326,6 @@ defmodule AlemWeb.AdminLive do
   def handle_event("sql_input", %{"sql" => q}, socket) do
     {:noreply, socket |> assign(:sql_query, q) |> assign(:sql_error, nil)}
   end
-
   def handle_event("sql_input", _params, socket), do: {:noreply, socket}
 
   def handle_event("sql_run", _, socket) do
@@ -286,7 +355,9 @@ defmodule AlemWeb.AdminLive do
     parts  = socket.assigns.s3_prefix |> String.trim_trailing("/") |> String.split("/")
     parent = parts |> Enum.drop(-1) |> Enum.join("/")
     prefix = if parent != "", do: parent <> "/", else: ""
-    socket = if prefix == "", do: socket |> assign(:s3_result, nil) |> assign(:s3_prefix, ""), else: load_s3(socket, prefix)
+    socket = if prefix == "",
+      do: socket |> assign(:s3_result, nil) |> assign(:s3_prefix, ""),
+      else: load_s3(socket, prefix)
     {:noreply, socket}
   end
 
@@ -353,7 +424,10 @@ defmodule AlemWeb.AdminLive do
       <div class="sb-top">
         <div class="sb-logo">
           <div class="lm">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1L13 4V10L7 13L1 10V4L7 1Z" stroke="white" stroke-width="1.5" fill="none"/><circle cx="7" cy="7" r="2" fill="white"/></svg>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M7 1L13 4V10L7 13L1 10V4L7 1Z" stroke="white" stroke-width="1.5" fill="none"/>
+              <circle cx="7" cy="7" r="2" fill="white"/>
+            </svg>
           </div>
           <span class="lt">PRZMA</span>
         </div>
@@ -362,11 +436,16 @@ defmodule AlemWeb.AdminLive do
 
       <nav class="sb-nav">
         <div class="nsl">Platform</div>
-        <.ni page={:dashboard}  cur={@page} ic="grid" lb="Dashboard" />
+        <.ni page={:dashboard}  cur={@page} ic="grid"     lb="Dashboard" />
         <.ni page={:monitoring} cur={@page} ic="activity" lb="Monitoring" />
 
+        <div class="nsl">Analytics</div>
+        <.ni page={:users_analytics}   cur={@page} ic="trending" lb="Users" />
+        <.ni page={:storage_analytics} cur={@page} ic="trending" lb="Storage" />
+        <.ni page={:cas_analytics}     cur={@page} ic="trending" lb="CAS" />
+
         <div class="nsl">Users</div>
-        <.ni page={:users}       cur={@page} ic="users" lb="All Users"   bd={@stats.total_users} />
+        <.ni page={:users}       cur={@page} ic="users"  lb="All Users"   bd={@stats.total_users} />
         <.ni page={:permissions} cur={@page} ic="shield" lb="Permissions" />
 
         <div class="nsl">Storage</div>
@@ -375,7 +454,7 @@ defmodule AlemWeb.AdminLive do
         <.ni page={:s3}         cur={@page} ic="cloud"    lb="S3 Browser" />
 
         <div class="nsl">Developer</div>
-        <.ni page={:sql}        cur={@page} ic="terminal" lb="SQL Console" />
+        <.ni page={:sql} cur={@page} ic="terminal" lb="SQL Console" />
       </nav>
 
       <div class="sb-ft">
@@ -397,49 +476,96 @@ defmodule AlemWeb.AdminLive do
       "copy"     => ~s(<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>),
       "cloud"    => ~s(<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>),
       "terminal" => ~s(<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>),
+      "trending" => ~s(<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>),
     }
     svg = Map.get(icons, assigns.ic, "")
     assigns = assign(assigns, :svg, svg)
     ~H"""
     <button class={["ni", @page == @cur && "active"]} phx-click="nav" phx-value-page={@page}>
       <span class="ni-ic">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><%= raw(@svg) %></svg>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <%= raw(@svg) %>
+        </svg>
       </span>
       <span class="ni-lb"><%= @lb %></span>
-      <%= if assigns[:bd] && assigns.bd > 0 do %><span class="ni-bd"><%= @bd %></span><% end %>
+      <%= if assigns[:bd] && assigns.bd > 0 do %>
+        <span class="ni-bd"><%= @bd %></span>
+      <% end %>
     </button>
     """
   end
 
   defp topbar(assigns) do
-    titles = %{dashboard: "Dashboard", users: "Users", user_detail: "User Profile",
-               permissions: "Permissions", monitoring: "Monitoring",
-               vault: "CAS Vault", duplicates: "Duplicates", sql: "SQL Console",
-               s3: "S3 Browser", catalog: "File Catalog",
-               users_analytics: "Users Analytics", storage_analytics: "Storage Analytics",
-               cas_analytics: "CAS Analytics"}
+    titles = %{
+      dashboard:         "Dashboard",
+      users:             "Users",
+      user_detail:       "User Profile",
+      permissions:       "Permissions",
+      monitoring:        "Monitoring",
+      vault:             "CAS Vault",
+      duplicates:        "Duplicates",
+      sql:               "SQL Console",
+      s3:                "S3 Browser",
+      users_analytics:   "Users Analytics",
+      storage_analytics: "Storage Analytics",
+      cas_analytics:     "CAS Analytics"
+    }
     assigns = assign(assigns, :page_title, Map.get(titles, assigns.page, "Admin"))
     ~H"""
     <header class="tb">
       <div class="tb-left">
-        <div class="tb-t"><%= @page_title %></div>
-        <div class="tb-bc"><%= breadcrumb(@page) %></div>
+        <%= if length(@nav_history) > 0 do %>
+          <button class="tb-back-btn" phx-click="nav_back" title="Go back">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="19" y1="12" x2="5" y2="12"/>
+              <polyline points="12 19 5 12 12 5"/>
+            </svg>
+          </button>
+        <% end %>
+        <div>
+          <div class="tb-t"><%= @page_title %></div>
+          <div class="tb-bc"><%= full_breadcrumb(@nav_history, @page) %></div>
+        </div>
       </div>
       <div class="tb-r">
         <div class="tb-chips">
-          <span class="chip chip-users"><%= @stats.total_users %> users</span>
-          <span class="chip chip-sessions"><%= @stats.active_sessions %> sessions</span>
+          <span class="chip chip-users" title="Total users"><%= @stats.total_users %> users</span>
+          <button class="chip chip-sessions chip-btn"
+                  phx-click="nav" phx-value-page="monitoring"
+                  title="View active sessions">
+            <%= @stats.active_sessions %> sessions
+          </button>
+          <%= if @stats.blocked_users > 0 do %>
+            <button class="chip chip-blocked chip-btn"
+                    phx-click="nav_filtered" phx-value-page="users" phx-value-filter="blocked"
+                    title="View blocked users">
+              <%= @stats.blocked_users %> blocked
+            </button>
+          <% end %>
           <span class="chip chip-brand">PRZMA</span>
         </div>
         <button class="theme-btn" phx-click="toggle_theme" title="Toggle theme">
           <%= if @theme == :dark do %>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5"/>
+              <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+              <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
           <% else %>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
           <% end %>
         </button>
         <a href="#" class="logout-btn" onclick="document.getElementById('logout-form').submit();return false;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
           Logout
         </a>
         <form id="logout-form" method="post" action="/admin/logout" style="display:none">
@@ -451,46 +577,90 @@ defmodule AlemWeb.AdminLive do
     """
   end
 
-  defp breadcrumb(:users_analytics),    do: "Analytics - Users"
-  defp breadcrumb(:storage_analytics),  do: "Analytics - Storage"
-  defp breadcrumb(:cas_analytics),      do: "Analytics - CAS"
-  defp breadcrumb(:dashboard),   do: "Overview → Dashboard"
-  defp breadcrumb(:users),       do: "Users → All Users"
-  defp breadcrumb(:user_detail), do: "Users → Profile"
-  defp breadcrumb(:permissions), do: "Users → Permissions"
-  defp breadcrumb(:monitoring),  do: "Platform → Monitoring"
-  defp breadcrumb(:vault),       do: "Storage → CAS Vault"
-  defp breadcrumb(:duplicates),  do: "Storage → Duplicates"
-  defp breadcrumb(:s3),          do: "Storage → S3 Browser"
-  defp breadcrumb(:sql),         do: "Developer → SQL Console"
-  defp breadcrumb(_),            do: ""
+  # Build a full breadcrumb trail from history + current page
+  defp full_breadcrumb(history, current_page) do
+    history_labels =
+      history
+      |> Enum.reverse()
+      |> Enum.map(fn
+        {page, _filter} -> page_label(page)
+        page            -> page_label(page)
+      end)
+    crumbs = history_labels ++ [page_label(current_page)]
+    Enum.join(crumbs, " → ")
+  end
+
+  defp page_label(:dashboard),         do: "Dashboard"
+  defp page_label(:users),             do: "All Users"
+  defp page_label(:user_detail),       do: "User Profile"
+  defp page_label(:permissions),       do: "Permissions"
+  defp page_label(:monitoring),        do: "Monitoring"
+  defp page_label(:vault),             do: "CAS Vault"
+  defp page_label(:duplicates),        do: "Duplicates"
+  defp page_label(:s3),                do: "S3 Browser"
+  defp page_label(:sql),               do: "SQL Console"
+  defp page_label(:users_analytics),   do: "Users Analytics"
+  defp page_label(:storage_analytics), do: "Storage Analytics"
+  defp page_label(:cas_analytics),     do: "CAS Analytics"
+  defp page_label(_),                  do: "Admin"
+
+  # ── Back Button Component ─────────────────────────────────────────────────
+
+  defp back_button(assigns) do
+    label =
+      case assigns.nav_history do
+        [{prev, _} | _] -> "← Back to #{page_label(prev)}"
+        [prev | _]      -> "← Back to #{page_label(prev)}"
+        []              -> "← Back to Dashboard"
+      end
+    assigns = assign(assigns, :label, label)
+    ~H"""
+    <button class="back-btn" phx-click="nav_back">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="19" y1="12" x2="5" y2="12"/>
+        <polyline points="12 19 5 12 12 5"/>
+      </svg>
+      <%= @label %>
+    </button>
+    """
+  end
 
   # ── Dashboard ─────────────────────────────────────────────────────────────
 
   defp dashboard_page(assigns) do
     ~H"""
     <div class="dash">
-      <!-- Stat Cards -->
+      <!-- Stat Cards — clicking filters properly -->
       <div class="sg">
-        <.sc lb="Total Users"    v={@stats.total_users}     ic="users"    cl="blue"   nav="users_analytics"   tt="User analytics" />
-        <.sc lb="Verified"       v={@stats.verified_users}  ic="check"    cl="green"  nav="users_analytics"   tt="Verification stats" />
-        <.sc lb="Blocked"        v={@stats.blocked_users}   ic="ban"      cl="red"    nav="users"             tt="Manage blocked users" />
-        <.sc lb="Admins"         v={@stats.admin_users}     ic="star"     cl="amber"  nav="users"             tt="Manage admins" />
-        <.sc lb="Total Files"    v={@stats.total_files}     ic="file"     cl="purple" nav="storage_analytics" tt="Storage analytics" />
-        <.sc lb="CAS Objects"    v={@stats.total_cas}       ic="db"       cl="blue"   nav="cas_analytics"     tt="CAS analytics" />
-        <.sc lb="Sessions"       v={@stats.active_sessions} ic="zap"      cl="green"  nav="permissions"       tt="Manage sessions" />
-        <.sc lb="New This Week"  v={@stats.new_this_week}   ic="trending" cl="amber"  nav="users_analytics"   tt="Signup trends" />
+        <.sc lb="Total Users"   v={@stats.total_users}     ic="users"    cl="blue"
+             nav="users"    nav_filter="all"       tt="View all users" />
+        <.sc lb="Verified"      v={@stats.verified_users}  ic="check"    cl="green"
+             nav="users"    nav_filter="verified"  tt="View verified users" />
+        <.sc lb="Blocked"       v={@stats.blocked_users}   ic="ban"      cl="red"
+             nav="users"    nav_filter="blocked"   tt="View blocked users" />
+        <.sc lb="Admins"        v={@stats.admin_users}     ic="star"     cl="amber"
+             nav="users"    nav_filter="admin"     tt="View admins" />
+        <.sc lb="Total Files"   v={@stats.total_files}     ic="file"     cl="purple"
+             nav="storage_analytics" nav_filter="" tt="Storage analytics" />
+        <.sc lb="CAS Objects"   v={@stats.total_cas}       ic="db"       cl="blue"
+             nav="cas_analytics"     nav_filter="" tt="CAS analytics" />
+        <.sc lb="Sessions"      v={@stats.active_sessions} ic="zap"      cl="green"
+             nav="monitoring" nav_filter=""         tt="Monitoring" />
+        <.sc lb="New This Week" v={@stats.new_this_week}   ic="trending" cl="amber"
+             nav="users_analytics"   nav_filter="" tt="Signup trends" />
       </div>
 
       <div class="dash-grid">
         <!-- Storage Health -->
         <div class="card">
-          <div class="card-head"><span class="card-title">Storage Health</span></div>
+          <div class="card-head">
+            <span class="card-title">Storage Health</span>
+            <button class="card-link-btn" phx-click="nav" phx-value-page="storage_analytics">Details →</button>
+          </div>
           <div class="card-body">
             <.storage_bar label="Total Stored"    value={@stats.total_bytes}  max={@stats.total_bytes}  color="blue"  fmt={Admin.format_bytes(@stats.total_bytes)} />
             <.storage_bar label="Dedup Savings"   value={@stats.saved_bytes}  max={@stats.total_bytes}  color="green" fmt={Admin.format_bytes(@stats.saved_bytes)} />
             <.storage_bar label="Duplicate Files" value={@stats.duplicate_cas} max={@stats.total_cas}   color="red"   fmt={"#{@stats.duplicate_cas} objects"} />
-
             <div class="divider"></div>
             <div class="data-plane-title">Data Plane</div>
             <div class="kv-row"><span>Documents</span><strong><%= @stats.total_files %></strong></div>
@@ -504,10 +674,10 @@ defmodule AlemWeb.AdminLive do
         <div class="card">
           <div class="card-head"><span class="card-title">Services</span></div>
           <div class="card-body">
-            <.svc_row name="PostgreSQL"          status="online" />
+            <.svc_row name="PostgreSQL"           status="online" />
             <.svc_row name="Linode S3 (in-maa-1)" status="online" />
-            <.svc_row name="Horde Registry"     status="online" />
-            <.svc_row name="CAS Engine"         status="online" />
+            <.svc_row name="Horde Registry"       status="online" />
+            <.svc_row name="CAS Engine"           status="online" />
             <div class="svc-tokens">
               <div class="svc-dot blue"></div>
               <span>OAuth Tokens</span>
@@ -518,19 +688,28 @@ defmodule AlemWeb.AdminLive do
             <div class="card-title" style="margin-bottom:10px">Quick Actions</div>
             <div class="quick-grid">
               <button class="quick-btn" phx-click="nav" phx-value-page="users">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-                Users
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                </svg>
+                All Users
               </button>
-              <button class="quick-btn" phx-click="nav" phx-value-page="monitoring">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                Monitor
+              <button class="quick-btn" phx-click="nav_filtered" phx-value-page="users" phx-value-filter="blocked">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                </svg>
+                Blocked
               </button>
               <button class="quick-btn" phx-click="nav" phx-value-page="vault">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                </svg>
                 CAS Vault
               </button>
               <button class="quick-btn" phx-click="nav" phx-value-page="sql">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+                </svg>
                 SQL
               </button>
             </div>
@@ -539,7 +718,10 @@ defmodule AlemWeb.AdminLive do
 
         <!-- Audit Log -->
         <div class="card">
-          <div class="card-head"><span class="card-title">Audit Log</span><span class="card-meta">Recent actions</span></div>
+          <div class="card-head">
+            <span class="card-title">Audit Log</span>
+            <span class="card-meta">Recent actions</span>
+          </div>
           <div class="card-body" style="padding:0">
             <%= if @audit_log == [] do %>
               <div class="empty-state" style="padding:28px">No admin actions yet</div>
@@ -549,7 +731,9 @@ defmodule AlemWeb.AdminLive do
                 <div class="audit-dot"></div>
                 <div class="audit-info">
                   <span class="audit-action"><%= entry.action %></span>
-                  <%= if entry.target do %><span class="audit-target"><%= String.slice(entry.target, 0, 10) %>…</span><% end %>
+                  <%= if entry.target do %>
+                    <span class="audit-target"><%= String.slice(entry.target, 0, 10) %>…</span>
+                  <% end %>
                 </div>
                 <span class="audit-time"><%= Calendar.strftime(entry.at, "%H:%M:%S") %></span>
               </div>
@@ -564,7 +748,7 @@ defmodule AlemWeb.AdminLive do
   defp storage_bar(assigns) do
     b = to_int_safe(assigns.value)
     m = max(to_int_safe(assigns.max), 1)
-    pct = if m > 0, do: min(100, round(b/m*100)), else: 0
+    pct = if m > 0, do: min(100, round(b / m * 100)), else: 0
     assigns = assign(assigns, :pct, pct)
     ~H"""
     <div class="storage-row">
@@ -589,41 +773,44 @@ defmodule AlemWeb.AdminLive do
     """
   end
 
-  defp compute_pct(val, max) do
-    b = to_int_safe(val)
-    m = max(to_int_safe(max), 1)
-    if m > 0, do: min(100, round(b/m*100)), else: 0
-  end
-
   defp to_int_safe(%Decimal{} = d), do: Decimal.to_integer(d)
   defp to_int_safe(i) when is_integer(i), do: i
   defp to_int_safe(_), do: 0
 
+  # Stat card — supports nav_filter for filtered navigation
   defp sc(assigns) do
-    icon_svg = case assigns.ic do
-      "users"    -> ~s(<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>)
-      "check"    -> ~s(<polyline points="20 6 9 17 4 12"/>)
-      "ban"      -> ~s(<circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>)
-      "star"     -> ~s(<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>)
-      "file"     -> ~s(<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>)
-      "db"       -> ~s(<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>)
-      "zap"      -> ~s(<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>)
-      "trending" -> ~s(<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>)
-      _          -> ~s(<circle cx="12" cy="12" r="4"/>)
-    end
+    icon_svg =
+      case assigns.ic do
+        "users"    -> ~s(<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>)
+        "check"    -> ~s(<polyline points="20 6 9 17 4 12"/>)
+        "ban"      -> ~s(<circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>)
+        "star"     -> ~s(<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>)
+        "file"     -> ~s(<path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/>)
+        "db"       -> ~s(<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>)
+        "zap"      -> ~s(<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>)
+        "trending" -> ~s(<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>)
+        _          -> ~s(<circle cx="12" cy="12" r="4"/>)
+      end
     assigns = assign(assigns, :icon_svg, icon_svg)
     ~H"""
-    <div class={["sc", "sc-#{@cl}", assigns[:nav] && "sc-click"]}
-         phx-click={assigns[:nav] && "nav"} phx-value-page={assigns[:nav]}
-         title={assigns[:tt] || ""}>
+    <div
+      class={["sc", "sc-#{@cl}", "sc-click"]}
+      phx-click={if assigns[:nav_filter] && assigns.nav_filter != "", do: "nav_filtered", else: "nav"}
+      phx-value-page={assigns[:nav]}
+      phx-value-filter={assigns[:nav_filter]}
+      title={assigns[:tt] || ""}
+    >
       <div class="sc-ic">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><%= raw(@icon_svg) %></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <%= raw(@icon_svg) %>
+        </svg>
       </div>
       <div class="sc-body">
         <div class="sc-v"><%= @v %></div>
         <div class="sc-l"><%= @lb %></div>
       </div>
-      <%= if assigns[:nav] do %><div class="sc-arr">&#8594;</div><% end %>
+      <div class="sc-arr">→</div>
     </div>
     """
   end
@@ -631,16 +818,62 @@ defmodule AlemWeb.AdminLive do
   # ── Users Page ────────────────────────────────────────────────────────────
 
   defp users_page(assigns) do
+    filter_label =
+      case assigns.user_filter do
+        "all"        -> "All Users"
+        "active"     -> "Active Users"
+        "blocked"    -> "Blocked Users"
+        "verified"   -> "Verified Users"
+        "unverified" -> "Unverified Users"
+        "admin"      -> "Admins"
+        "moderator"  -> "Moderators"
+        _            -> "Users"
+      end
+    assigns = assign(assigns, :filter_label, filter_label)
     ~H"""
     <div>
+      <!-- Page header with context -->
+      <div class="page-header">
+        <div>
+          <div class="page-title-row">
+            <h2 class="page-heading"><%= @filter_label %></h2>
+            <span class="page-count-badge"><%= @users.total %> total</span>
+          </div>
+          <div class="page-sub">
+            <%= if @user_filter != "all" do %>
+              Filtered: <strong><%= @filter_label %></strong> ·
+              <button class="inline-link" phx-click="filter_users" phx-value-filter="all">Clear filter</button>
+            <% else %>
+              All registered users on the platform
+            <% end %>
+          </div>
+        </div>
+        <!-- Filter quick-jump pills at top -->
+        <div class="filter-shortcuts">
+          <%= for {v,l,col} <- [{"blocked","Blocked","red"},{"admin","Admins","amber"},{"verified","Verified","green"},{"unverified","Unverified","gray"}] do %>
+            <button class={["fsc fsc-#{col}", @user_filter == v && "active"]}
+                    phx-click="filter_users" phx-value-filter={v}>
+              <%= l %>
+            </button>
+          <% end %>
+        </div>
+      </div>
+
       <div class="toolbar">
         <div class="search-box">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input class="search-input" placeholder="Search users…" value={@search} phx-keyup="search_users" phx-debounce="300" name="search" phx-value-search={@search}/>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input class="search-input" placeholder="Search by name, email or ID…"
+                 value={@search} phx-keyup="search_users" phx-debounce="300"
+                 name="search" phx-value-search={@search}/>
         </div>
         <div class="filter-pills">
-          <%= for {v,l} <- [{"all","All"},{"active","Active"},{"blocked","Blocked"},{"verified","Verified"},{"unverified","Unverified"},{"admin","Admins"},{"moderator","Mods"}] do %>
-            <button class={["pill", @user_filter == v && "active"]} phx-click="filter_users" phx-value-filter={v}><%= l %></button>
+          <%= for {v,l} <- [{"all","All"},{"active","Active"},{"blocked","Blocked"},
+                             {"verified","Verified"},{"unverified","Unverified"},
+                             {"admin","Admins"},{"moderator","Mods"}] do %>
+            <button class={["pill", @user_filter == v && "active"]}
+                    phx-click="filter_users" phx-value-filter={v}><%= l %></button>
           <% end %>
         </div>
         <select class="select-box" phx-change="sort_users" name="sort">
@@ -650,52 +883,89 @@ defmodule AlemWeb.AdminLive do
         </select>
       </div>
 
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>User</th><th>Email</th><th>Status</th><th>Files</th><th>Joined</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <%= for u <- @users.users do %>
-              <tr class="data-row" phx-click="view_user" phx-value-id={u.id} style="cursor:pointer">
-                <td>
-                  <div class="user-cell">
-                    <div class="user-avatar"><%= String.first(u.nickname || "?") |> String.upcase() %></div>
-                    <div>
-                      <div class="user-name"><%= u.nickname %></div>
-                      <div class="user-id mono"><%= String.slice(u.id, 0, 10) %>…</div>
-                    </div>
-                  </div>
-                </td>
-                <td class="cell-sm mono"><%= u.email %></td>
-                <td><div class="badge-row"><.user_badges u={u}/></div></td>
-                <td class="cell-num"><%= u.file_count %></td>
-                <td class="cell-sm"><%= fd(u.inserted_at) %></td>
-                <td>
-                  <div class="action-btns" phx-click="" style="pointer-events:all">
-                    <button class="btn-sm" phx-click="view_user" phx-value-id={u.id}>Profile</button>
-                    <button class="btn-sm accent" phx-click="view_permissions" phx-value-id={u.id}>Perms</button>
-                  </div>
-                </td>
+      <%= if @users.users == [] && @user_filter != "all" do %>
+        <div class="empty-filtered-state">
+          <div class="ef-icon">
+            <%= case @user_filter do %>
+              <% "blocked" -> %> 🚫
+              <% "admin"   -> %> ⭐
+              <% "verified"-> %> ✅
+              <% _         -> %> 👤
+            <% end %>
+          </div>
+          <div class="ef-title">
+            No <%= String.downcase(@filter_label) %>
+          </div>
+          <div class="ef-sub">
+            <%= case @user_filter do %>
+              <% "blocked"    -> %> Great news! No users are currently blocked.
+              <% "admin"      -> %> No admin users found. Promote a user to grant admin access.
+              <% "verified"   -> %> No verified users yet. Users verify via email confirmation.
+              <% "unverified" -> %> All users are verified — the platform is clean!
+              <% "moderator"  -> %> No moderators assigned yet.
+              <% _            -> %> No users match this filter.
+            <% end %>
+          </div>
+          <button class="ef-btn" phx-click="filter_users" phx-value-filter="all">View all users</button>
+        </div>
+      <% else %>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>User</th><th>Email</th><th>Status</th><th>Files</th><th>Joined</th><th>Actions</th>
               </tr>
-            <% end %>
-            <%= if @users.users == [] do %>
-              <tr><td colspan="6" class="empty-row">No users found</td></tr>
-            <% end %>
-          </tbody>
-        </table>
-      </div>
-      <.pagination d={@users} e="user_page"/>
+            </thead>
+            <tbody>
+              <%= for u <- @users.users do %>
+                <tr class="data-row" phx-click="view_user" phx-value-id={u.id} style="cursor:pointer">
+                  <td>
+                    <div class="user-cell">
+                      <div class="user-avatar">
+                        <%= String.first(u.nickname || "?") |> String.upcase() %>
+                      </div>
+                      <div>
+                        <div class="user-name"><%= u.nickname %></div>
+                        <div class="user-id mono"><%= String.slice(u.id, 0, 10) %>…</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="cell-sm mono"><%= u.email %></td>
+                  <td><div class="badge-row"><.user_badges u={u}/></div></td>
+                  <td class="cell-num"><%= u.file_count %></td>
+                  <td class="cell-sm"><%= fd(u.inserted_at) %></td>
+                  <td>
+                    <div class="action-btns" phx-click="" style="pointer-events:all">
+                      <button class="btn-sm" phx-click="view_user" phx-value-id={u.id}>Profile</button>
+                      <button class="btn-sm accent" phx-click="view_permissions" phx-value-id={u.id}>Perms</button>
+                    </div>
+                  </td>
+                </tr>
+              <% end %>
+              <%= if @users.users == [] do %>
+                <tr><td colspan="6" class="empty-row">No users found</td></tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+        <.pagination d={@users} e="user_page"/>
+      <% end %>
     </div>
     """
   end
 
   defp user_badges(assigns) do
     ~H"""
-    <%= if !@u.is_active do %><span class="badge red">Blocked</span><% else %><span class="badge green">Active</span><% end %>
-    <%= if @u.is_verified do %><span class="badge blue">Verified</span><% else %><span class="badge gray">Unverified</span><% end %>
+    <%= if !@u.is_active do %>
+      <span class="badge red">Blocked</span>
+    <% else %>
+      <span class="badge green">Active</span>
+    <% end %>
+    <%= if @u.is_verified do %>
+      <span class="badge blue">Verified</span>
+    <% else %>
+      <span class="badge gray">Unverified</span>
+    <% end %>
     <%= if @u.is_admin do %><span class="badge amber">Admin</span><% end %>
     <%= if Map.get(@u, :is_moderator) do %><span class="badge purple">Mod</span><% end %>
     """
@@ -703,29 +973,26 @@ defmodule AlemWeb.AdminLive do
 
   # ── User Detail ───────────────────────────────────────────────────────────
 
-  # ── User Detail / Profile ────────────────────────────────────────────────
-
   defp user_detail_page(%{user_detail: nil} = assigns) do
     ~H"""
-    <div class="empty-state">User not found</div>
+    <div>
+      <.back_button nav_history={@nav_history} />
+      <div class="empty-state">User not found or has been deleted.</div>
+    </div>
     """
   end
 
   defp user_detail_page(assigns) do
-    # Load user activity data for charts
     ua = Admin.user_activity(assigns.user_detail.user.id)
 
-    # Chart: files per month (bar)
-    fm_labels = Enum.map(ua.files_by_month, & &1.month)
-    fm_data   = Enum.map(ua.files_by_month, & &1.count)
-    files_chart = cj_bar(fm_labels, fm_data, "Files", "rgba(88,166,255,.75)")
+    fm_labels    = Enum.map(ua.files_by_month, & &1.month)
+    fm_data      = Enum.map(ua.files_by_month, & &1.count)
+    files_chart  = cj_bar(fm_labels, fm_data, "Files", "rgba(88,166,255,.75)")
 
-    # Chart: logins per month (bar)
-    lm_labels = Enum.map(ua.logins_by_month, & &1.month)
-    lm_data   = Enum.map(ua.logins_by_month, & &1.count)
+    lm_labels    = Enum.map(ua.logins_by_month, & &1.month)
+    lm_data      = Enum.map(ua.logins_by_month, & &1.count)
     logins_chart = cj_bar(lm_labels, lm_data, "Logins", "rgba(63,185,80,.75)")
 
-    # Chart: storage growth per month (area line)
     sm_labels = Enum.map(ua.storage_by_month, & &1.month)
     sm_data   = Enum.map(ua.storage_by_month, & &1.mb)
     storage_chart = cj_line(sm_labels, [%{
@@ -734,7 +1001,6 @@ defmodule AlemWeb.AdminLive do
       fill: true, tension: 0.4, pointRadius: 3
     }])
 
-    # Chart: file types pie
     t8 = Enum.take(ua.type_counts, 6)
     type_colors = ~w(#58a6ff #3fb950 #e3b341 #f85149 #bc8cff #06b6d4)
     types_chart = cj_pie(
@@ -743,7 +1009,6 @@ defmodule AlemWeb.AdminLive do
       type_colors
     )
 
-    # Chart: device breakdown (doughnut)
     dev_colors = ~w(#58a6ff #3fb950 #e3b341 #bc8cff #f85149)
     devices_chart = cj_doughnut(
       Enum.map(ua.device_counts, & String.capitalize(&1.device || "unknown")),
@@ -751,25 +1016,24 @@ defmodule AlemWeb.AdminLive do
       dev_colors
     )
 
-    assigns = assigns
+    assigns =
+      assigns
       |> assign(:ua, ua)
-      |> assign(:files_chart,   files_chart)
-      |> assign(:logins_chart,  logins_chart)
+      |> assign(:files_chart, files_chart)
+      |> assign(:logins_chart, logins_chart)
       |> assign(:storage_chart, storage_chart)
-      |> assign(:types_chart,   types_chart)
+      |> assign(:types_chart, types_chart)
       |> assign(:devices_chart, devices_chart)
 
     ~H"""
     <div>
-      <!-- Back + Header -->
-      <button class="back-btn" phx-click="nav_back">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-        Back to Users
-      </button>
+      <.back_button nav_history={@nav_history} />
 
       <!-- Profile card -->
       <div class="profile-card">
-        <div class="profile-avatar-lg"><%= String.first(@user_detail.user.nickname || "?") |> String.upcase() %></div>
+        <div class="profile-avatar-lg">
+          <%= String.first(@user_detail.user.nickname || "?") |> String.upcase() %>
+        </div>
         <div class="profile-info">
           <div class="profile-name"><%= @user_detail.user.nickname %></div>
           <div class="profile-email"><%= @user_detail.user.email %></div>
@@ -778,18 +1042,52 @@ defmodule AlemWeb.AdminLive do
           <div class="profile-join">Joined <%= fd(@user_detail.user.inserted_at) %></div>
         </div>
         <div class="profile-actions">
-          <button class="action-btn purple" phx-click="view_permissions" phx-value-id={@user_detail.user.id}>Permissions</button>
+          <button class="action-btn purple"
+                  phx-click="view_permissions"
+                  phx-value-id={@user_detail.user.id}>
+            🔐 Permissions
+          </button>
           <%= if @user_detail.user.is_active do %>
-            <button class="action-btn red" phx-click="confirm_action" phx-value-action="block" phx-value-user_id={@user_detail.user.id} phx-value-label={"Block #{@user_detail.user.nickname}?"}>Block</button>
+            <button class="action-btn red"
+                    phx-click="confirm_action"
+                    phx-value-action="block"
+                    phx-value-user_id={@user_detail.user.id}
+                    phx-value-label={"Block #{@user_detail.user.nickname}?"}>
+              Block User
+            </button>
           <% else %>
-            <button class="action-btn green" phx-click="confirm_action" phx-value-action="unblock" phx-value-user_id={@user_detail.user.id} phx-value-label={"Unblock #{@user_detail.user.nickname}?"}>Unblock</button>
+            <button class="action-btn green"
+                    phx-click="confirm_action"
+                    phx-value-action="unblock"
+                    phx-value-user_id={@user_detail.user.id}
+                    phx-value-label={"Unblock #{@user_detail.user.nickname}?"}>
+              Unblock User
+            </button>
           <% end %>
           <%= if @user_detail.user.is_admin do %>
-            <button class="action-btn gray" phx-click="confirm_action" phx-value-action="demote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Remove admin from #{@user_detail.user.nickname}?"}>Remove Admin</button>
+            <button class="action-btn gray"
+                    phx-click="confirm_action"
+                    phx-value-action="demote"
+                    phx-value-user_id={@user_detail.user.id}
+                    phx-value-label={"Remove admin from #{@user_detail.user.nickname}?"}>
+              Remove Admin
+            </button>
           <% else %>
-            <button class="action-btn amber" phx-click="confirm_action" phx-value-action="promote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Make #{@user_detail.user.nickname} admin?"}>Make Admin</button>
+            <button class="action-btn amber"
+                    phx-click="confirm_action"
+                    phx-value-action="promote"
+                    phx-value-user_id={@user_detail.user.id}
+                    phx-value-label={"Make #{@user_detail.user.nickname} admin?"}>
+              Make Admin
+            </button>
           <% end %>
-          <button class="action-btn orange" phx-click="confirm_action" phx-value-action="soft_delete" phx-value-user_id={@user_detail.user.id} phx-value-label={"Soft delete #{@user_detail.user.nickname}?"}>Soft Delete</button>
+          <button class="action-btn orange"
+                  phx-click="confirm_action"
+                  phx-value-action="soft_delete"
+                  phx-value-user_id={@user_detail.user.id}
+                  phx-value-label={"Soft delete #{@user_detail.user.nickname}?"}>
+            Soft Delete
+          </button>
         </div>
       </div>
 
@@ -854,8 +1152,6 @@ defmodule AlemWeb.AdminLive do
 
       <!-- ROW 3: Services + Activity log -->
       <div class="chart-grid-2" style="margin-bottom:14px">
-
-        <!-- Services grid -->
         <div class="card">
           <div class="card-head">
             <span class="card-title">Platform Services</span>
@@ -878,7 +1174,6 @@ defmodule AlemWeb.AdminLive do
           </div>
         </div>
 
-        <!-- Activity log -->
         <div class="card">
           <div class="card-head">
             <span class="card-title">Recent Activity</span>
@@ -932,7 +1227,9 @@ defmodule AlemWeb.AdminLive do
                 </div>
               </div>
             <% end %>
-            <%= if @user_detail.file_count == 0 do %><div class="empty-state">No files</div><% end %>
+            <%= if @user_detail.file_count == 0 do %>
+              <div class="empty-state">No files uploaded yet</div>
+            <% end %>
           </div>
         </div>
       </div>
@@ -940,7 +1237,6 @@ defmodule AlemWeb.AdminLive do
     """
   end
 
-  # Short date for activity log (e.g. "Apr 11")
   defp fd_short(nil), do: "—"
   defp fd_short(%NaiveDateTime{} = d) do
     month = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] |> Enum.at(d.month - 1)
@@ -948,29 +1244,70 @@ defmodule AlemWeb.AdminLive do
   end
   defp fd_short(_), do: "—"
 
+  # ── Permissions ────────────────────────────────────────────────────────────
+
   defp permissions_page(%{permissions: nil} = assigns) do
     ~H"""
     <div>
-      <button class="back-btn" phx-click="nav_back">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-        Back to Users
-      </button>
-      <div class="empty-state" style="margin-bottom:20px">Select a user to manage permissions</div>
+      <.back_button nav_history={@nav_history} />
+
+      <div class="page-header" style="margin-bottom:16px">
+        <div>
+          <h2 class="page-heading">Permissions</h2>
+          <div class="page-sub">Select a user below to manage their access and roles</div>
+        </div>
+        <div class="filter-shortcuts">
+          <button class="fsc fsc-amber" phx-click="nav_filtered" phx-value-page="users" phx-value-filter="admin">
+            ⭐ View Admins
+          </button>
+          <button class="fsc fsc-red" phx-click="nav_filtered" phx-value-page="users" phx-value-filter="blocked">
+            🚫 View Blocked
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick-access users table -->
       <div class="table-wrap">
         <table class="data-table">
-          <thead><tr><th>User</th><th>Email</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead>
+            <tr><th>User</th><th>Email</th><th>Status</th><th>Roles</th><th>Actions</th></tr>
+          </thead>
           <tbody>
             <%= for u <- @users.users do %>
               <tr class="data-row">
-                <td><div class="user-cell"><div class="user-avatar"><%= String.first(u.nickname || "?") |> String.upcase() %></div><div class="user-name"><%= u.nickname %></div></div></td>
+                <td>
+                  <div class="user-cell">
+                    <div class="user-avatar"><%= String.first(u.nickname || "?") |> String.upcase() %></div>
+                    <div>
+                      <div class="user-name"><%= u.nickname %></div>
+                      <div class="user-id mono"><%= String.slice(u.id, 0, 8) %>…</div>
+                    </div>
+                  </div>
+                </td>
                 <td class="cell-sm mono"><%= u.email %></td>
+                <td>
+                  <%= if u.is_active do %>
+                    <span class="badge green">Active</span>
+                  <% else %>
+                    <span class="badge red">Blocked</span>
+                  <% end %>
+                </td>
                 <td><div class="badge-row"><.user_badges u={u}/></div></td>
-                <td><button class="btn-sm accent" phx-click="view_permissions" phx-value-id={u.id}>Manage</button></td>
+                <td>
+                  <div class="action-btns">
+                    <button class="btn-sm" phx-click="view_user" phx-value-id={u.id}>Profile</button>
+                    <button class="btn-sm accent" phx-click="view_permissions" phx-value-id={u.id}>Manage Perms</button>
+                  </div>
+                </td>
               </tr>
+            <% end %>
+            <%= if @users.users == [] do %>
+              <tr><td colspan="5" class="empty-row">No users found</td></tr>
             <% end %>
           </tbody>
         </table>
       </div>
+      <.pagination d={@users} e="user_page"/>
     </div>
     """
   end
@@ -981,10 +1318,7 @@ defmodule AlemWeb.AdminLive do
     assigns = assign(assigns, :p, p) |> assign(:u, u)
     ~H"""
     <div>
-      <button class="back-btn" phx-click="nav_back">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-        Back
-      </button>
+      <.back_button nav_history={@nav_history} />
 
       <div class="profile-card" style="margin-bottom:16px">
         <div class="profile-avatar-lg"><%= String.first(@u.nickname || "?") |> String.upcase() %></div>
@@ -994,6 +1328,9 @@ defmodule AlemWeb.AdminLive do
           <div class="profile-id mono"><%= @u.id %></div>
           <div class="badge-row"><.user_badges u={@u}/></div>
         </div>
+        <div class="profile-actions">
+          <button class="action-btn gray" phx-click="view_user" phx-value-id={@u.id}>View Profile</button>
+        </div>
       </div>
 
       <div class="perm-grid">
@@ -1001,31 +1338,68 @@ defmodule AlemWeb.AdminLive do
           <div class="card-head"><span class="card-title">🔐 Access Control</span></div>
           <div class="card-body" style="padding:0">
             <div class="perm-row">
-              <div><div class="perm-name">Account Active</div><div class="perm-desc">User can log in and use the platform</div></div>
+              <div>
+                <div class="perm-name">Account Active</div>
+                <div class="perm-desc">User can log in and use the platform</div>
+              </div>
               <div class="perm-ctrl">
-                <span class={"perm-badge #{if @p.can_login, do: "on", else: "off"}"}><%= if @p.can_login, do: "ENABLED", else: "DISABLED" %></span>
-                <%= if @p.can_login do %><button class="perm-btn red" phx-click="perm_action" phx-value-action="block" phx-value-user_id={@u.id}>Block</button>
-                <% else %><button class="perm-btn green" phx-click="perm_action" phx-value-action="unblock" phx-value-user_id={@u.id}>Unblock</button><% end %>
+                <span class={"perm-badge #{if @p.can_login, do: "on", else: "off"}"}>
+                  <%= if @p.can_login, do: "ENABLED", else: "DISABLED" %>
+                </span>
+                <%= if @p.can_login do %>
+                  <button class="perm-btn red" phx-click="perm_action" phx-value-action="block" phx-value-user_id={@u.id}>Block</button>
+                <% else %>
+                  <button class="perm-btn green" phx-click="perm_action" phx-value-action="unblock" phx-value-user_id={@u.id}>Unblock</button>
+                <% end %>
               </div>
             </div>
             <div class="perm-row">
-              <div><div class="perm-name">Email Verified</div><div class="perm-desc">Email address has been confirmed</div></div>
-              <span class={"perm-badge #{if @p.is_verified, do: "on", else: "off"}"}><%= if @p.is_verified, do: "VERIFIED", else: "UNVERIFIED" %></span>
+              <div>
+                <div class="perm-name">Email Verified</div>
+                <div class="perm-desc">Email address has been confirmed</div>
+              </div>
+              <span class={"perm-badge #{if @p.is_verified, do: "on", else: "off"}"}>
+                <%= if @p.is_verified, do: "VERIFIED", else: "UNVERIFIED" %>
+              </span>
             </div>
             <div class="perm-row">
-              <div><div class="perm-name">Admin Role</div><div class="perm-desc">Full platform administration access</div></div>
+              <div>
+                <div class="perm-name">Admin Role</div>
+                <div class="perm-desc">Full platform administration access</div>
+              </div>
               <div class="perm-ctrl">
-                <span class={"perm-badge #{if @p.is_admin, do: "on", else: "off"}"}><%= if @p.is_admin, do: "ADMIN", else: "USER" %></span>
-                <%= if @p.is_admin do %><button class="perm-btn gray" phx-click="confirm_action" phx-value-action="demote" phx-value-user_id={@u.id} phx-value-label={"Remove admin from #{@u.nickname}?"}>Remove</button>
-                <% else %><button class="perm-btn amber" phx-click="confirm_action" phx-value-action="promote" phx-value-user_id={@u.id} phx-value-label={"Make #{@u.nickname} an admin?"}>Grant</button><% end %>
+                <span class={"perm-badge #{if @p.is_admin, do: "on", else: "off"}"}>
+                  <%= if @p.is_admin, do: "ADMIN", else: "USER" %>
+                </span>
+                <%= if @p.is_admin do %>
+                  <button class="perm-btn gray"
+                          phx-click="confirm_action"
+                          phx-value-action="demote"
+                          phx-value-user_id={@u.id}
+                          phx-value-label={"Remove admin from #{@u.nickname}?"}>Remove</button>
+                <% else %>
+                  <button class="perm-btn amber"
+                          phx-click="confirm_action"
+                          phx-value-action="promote"
+                          phx-value-user_id={@u.id}
+                          phx-value-label={"Make #{@u.nickname} an admin?"}>Grant</button>
+                <% end %>
               </div>
             </div>
             <div class="perm-row">
-              <div><div class="perm-name">Moderator Role</div><div class="perm-desc">Content moderation privileges</div></div>
+              <div>
+                <div class="perm-name">Moderator Role</div>
+                <div class="perm-desc">Content moderation privileges</div>
+              </div>
               <div class="perm-ctrl">
-                <span class={"perm-badge #{if @p.is_admin || @u.is_moderator, do: "on", else: "off"}"}><%= if @p.is_admin || @u.is_moderator, do: "ENABLED", else: "NONE" %></span>
-                <%= if @u.is_moderator do %><button class="perm-btn gray" phx-click="perm_action" phx-value-action="remove_moderator" phx-value-user_id={@u.id}>Revoke</button>
-                <% else %><button class="perm-btn purple" phx-click="perm_action" phx-value-action="make_moderator" phx-value-user_id={@u.id}>Grant</button><% end %>
+                <span class={"perm-badge #{if @p.is_admin || @u.is_moderator, do: "on", else: "off"}"}>
+                  <%= if @p.is_admin || @u.is_moderator, do: "ENABLED", else: "NONE" %>
+                </span>
+                <%= if @u.is_moderator do %>
+                  <button class="perm-btn gray" phx-click="perm_action" phx-value-action="remove_moderator" phx-value-user_id={@u.id}>Revoke</button>
+                <% else %>
+                  <button class="perm-btn purple" phx-click="perm_action" phx-value-action="make_moderator" phx-value-user_id={@u.id}>Grant</button>
+                <% end %>
               </div>
             </div>
           </div>
@@ -1035,17 +1409,31 @@ defmodule AlemWeb.AdminLive do
           <div class="card-head"><span class="card-title">🔑 API & Sessions</span></div>
           <div class="card-body" style="padding:0">
             <div class="perm-row">
-              <div><div class="perm-name">Active API Tokens</div><div class="perm-desc">OAuth tokens granting API access</div></div>
+              <div>
+                <div class="perm-name">Active API Tokens</div>
+                <div class="perm-desc">OAuth tokens granting API access</div>
+              </div>
               <div class="perm-ctrl">
-                <span class={"perm-badge #{if @p.active_tokens > 0, do: "on", else: "off"}"}><%= @p.active_tokens %> active</span>
-                <%= if @p.active_tokens > 0 do %><button class="perm-btn red" phx-click="perm_action" phx-value-action="revoke_tokens" phx-value-user_id={@u.id}>Revoke All</button><% end %>
+                <span class={"perm-badge #{if @p.active_tokens > 0, do: "on", else: "off"}"}>
+                  <%= @p.active_tokens %> active
+                </span>
+                <%= if @p.active_tokens > 0 do %>
+                  <button class="perm-btn red" phx-click="perm_action" phx-value-action="revoke_tokens" phx-value-user_id={@u.id}>Revoke All</button>
+                <% end %>
               </div>
             </div>
             <div class="perm-row">
-              <div><div class="perm-name">Active Sessions</div><div class="perm-desc">Browser/device sessions currently active</div></div>
+              <div>
+                <div class="perm-name">Active Sessions</div>
+                <div class="perm-desc">Browser/device sessions currently active</div>
+              </div>
               <div class="perm-ctrl">
-                <span class={"perm-badge #{if @p.active_sessions > 0, do: "on", else: "off"}"}><%= @p.active_sessions %> active</span>
-                <%= if @p.active_sessions > 0 do %><button class="perm-btn red" phx-click="perm_action" phx-value-action="revoke_sessions" phx-value-user_id={@u.id}>Kill All</button><% end %>
+                <span class={"perm-badge #{if @p.active_sessions > 0, do: "on", else: "off"}"}>
+                  <%= @p.active_sessions %> active
+                </span>
+                <%= if @p.active_sessions > 0 do %>
+                  <button class="perm-btn red" phx-click="perm_action" phx-value-action="revoke_sessions" phx-value-user_id={@u.id}>Kill All</button>
+                <% end %>
               </div>
             </div>
           </div>
@@ -1055,12 +1443,22 @@ defmodule AlemWeb.AdminLive do
           <div class="card-head"><span class="card-title">🌐 Identity</span></div>
           <div class="card-body" style="padding:0">
             <div class="perm-row">
-              <div><div class="perm-name">Decentralized ID</div><div class="perm-desc mono" style="font-size:10px"><%= @u.did_id || "Not assigned" %></div></div>
-              <span class={"perm-badge #{if @u.did_id, do: "on", else: "off"}"}><%= if @u.did_id, do: "ASSIGNED", else: "NONE" %></span>
+              <div>
+                <div class="perm-name">Decentralized ID</div>
+                <div class="perm-desc mono" style="font-size:10px"><%= @u.did_id || "Not assigned" %></div>
+              </div>
+              <span class={"perm-badge #{if @u.did_id, do: "on", else: "off"}"}>
+                <%= if @u.did_id, do: "ASSIGNED", else: "NONE" %>
+              </span>
             </div>
             <div class="perm-row">
-              <div><div class="perm-name">API Access</div><div class="perm-desc">Can authenticate via OAuth2</div></div>
-              <span class={"perm-badge #{if @p.api_access, do: "on", else: "off"}"}><%= if @p.api_access, do: "GRANTED", else: "NO TOKENS" %></span>
+              <div>
+                <div class="perm-name">API Access</div>
+                <div class="perm-desc">Can authenticate via OAuth2</div>
+              </div>
+              <span class={"perm-badge #{if @p.api_access, do: "on", else: "off"}"}>
+                <%= if @p.api_access, do: "GRANTED", else: "NO TOKENS" %>
+              </span>
             </div>
           </div>
         </div>
@@ -1071,30 +1469,49 @@ defmodule AlemWeb.AdminLive do
 
   # ── Monitoring Page ───────────────────────────────────────────────────────
 
-  defp monitoring_page(%{monitoring: nil} = assigns), do: ~H"<div class='empty-state'>Loading monitoring data…</div>"
+  defp monitoring_page(%{monitoring: nil} = assigns), do: ~H"""
+  <div>
+    <.back_button nav_history={@nav_history} />
+    <div class="loading-state">
+      <div class="loading-spinner"></div>
+      <div>Loading monitoring data…</div>
+    </div>
+  </div>
+  """
+
   defp monitoring_page(assigns) do
     ~H"""
     <div>
+      <.back_button nav_history={@nav_history} />
+
       <div class="card" style="margin-bottom:16px">
         <div class="card-head"><span class="card-title">Storage by File Type</span></div>
         <div class="card-body">
           <%= for t <- Enum.take(@monitoring.storage_by_type, 8) do %>
-            <.storage_bar label={"#{ctic(t.type)} #{sct(t.type)}"} value={t.bytes} max={@stats.total_bytes} color="blue" fmt={Admin.format_bytes(t.bytes)} />
+            <.storage_bar label={"#{ctic(t.type)} #{sct(t.type)}"} value={t.bytes}
+                          max={@stats.total_bytes} color="blue" fmt={Admin.format_bytes(t.bytes)} />
           <% end %>
-          <%= if @monitoring.storage_by_type == [] do %><div class="empty-state">No data yet</div><% end %>
+          <%= if @monitoring.storage_by_type == [] do %>
+            <div class="empty-state">No data yet</div>
+          <% end %>
         </div>
       </div>
 
       <div class="table-wrap">
         <table class="data-table">
-          <thead><tr><th>User</th><th>Status</th><th>Files</th><th>Storage</th><th>Sessions</th><th>Last Active</th><th>Joined</th><th></th></tr></thead>
+          <thead>
+            <tr><th>User</th><th>Status</th><th>Files</th><th>Storage</th><th>Sessions</th><th>Last Active</th><th>Joined</th><th></th></tr>
+          </thead>
           <tbody>
             <%= for u <- @monitoring.users do %>
               <tr class="data-row">
                 <td>
                   <div class="user-cell">
                     <div class="user-avatar"><%= String.first(u.nickname || "?") |> String.upcase() %></div>
-                    <div><div class="user-name"><%= u.nickname %></div><div class="user-id mono"><%= String.slice(u.user_id, 0, 8) %>…</div></div>
+                    <div>
+                      <div class="user-name"><%= u.nickname %></div>
+                      <div class="user-id mono"><%= String.slice(u.user_id, 0, 8) %>…</div>
+                    </div>
                   </div>
                 </td>
                 <td>
@@ -1116,7 +1533,9 @@ defmodule AlemWeb.AdminLive do
                 </td>
               </tr>
             <% end %>
-            <%= if @monitoring.users == [] do %><tr><td colspan="8" class="empty-row">No users yet</td></tr><% end %>
+            <%= if @monitoring.users == [] do %>
+              <tr><td colspan="8" class="empty-row">No users yet</td></tr>
+            <% end %>
           </tbody>
         </table>
       </div>
@@ -1128,48 +1547,60 @@ defmodule AlemWeb.AdminLive do
 
   defp vault_page(assigns) do
     ~H"""
-    <div class="vault-layout">
-      <div class="vault-sidebar">
-        <div class="card-head"><span class="card-title">Namespaces</span></div>
-        <button class="vault-all-btn" phx-click="filter_cas" phx-value-filter="all">◈ All Objects</button>
-        <%= for ns <- @s3_tree do %>
-          <div class="vault-ns">
-            <div class="mono cell-sm"><%= String.slice(ns.namespace_key || "—", 0, 14) %></div>
-            <div class="row-meta"><%= ns.file_count %> · <%= Admin.format_bytes(ns.total_bytes) %></div>
-          </div>
-        <% end %>
-      </div>
-      <div>
-        <div class="toolbar" style="margin-bottom:12px">
-          <div class="search-box">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input class="search-input" placeholder="Hash, path, type…" phx-keyup="search_cas" phx-debounce="300" name="search" phx-value-search={@cas_search} value={@cas_search}/>
-          </div>
-          <div class="filter-pills">
-            <%= for {v,l} <- [{"all","All"},{"duplicates","Dupes"},{"large",">10MB"},{"images","Images"},{"docs","Docs"}] do %>
-              <button class={["pill", @cas_filter == v && "active"]} phx-click="filter_cas" phx-value-filter={v}><%= l %></button>
-            <% end %>
-          </div>
+    <div>
+      <.back_button nav_history={@nav_history} />
+      <div class="vault-layout">
+        <div class="vault-sidebar">
+          <div class="card-head"><span class="card-title">Namespaces</span></div>
+          <button class="vault-all-btn" phx-click="filter_cas" phx-value-filter="all">◈ All Objects</button>
+          <%= for ns <- @s3_tree do %>
+            <div class="vault-ns">
+              <div class="mono cell-sm"><%= String.slice(ns.namespace_key || "—", 0, 14) %></div>
+              <div class="row-meta"><%= ns.file_count %> · <%= Admin.format_bytes(ns.total_bytes) %></div>
+            </div>
+          <% end %>
         </div>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead><tr><th>Hash</th><th>Type</th><th>Size</th><th>Refs</th><th>Namespace</th><th>Stored</th></tr></thead>
-            <tbody>
-              <%= for obj <- @cas_objects.items do %>
-                <tr class="data-row">
-                  <td class="mono cell-sm"><%= String.slice(obj.content_hash, 0, 16) %>…</td>
-                  <td><%= ctic(obj.media_type) %> <%= sct(obj.media_type) %></td>
-                  <td class="cell-num"><%= Admin.format_bytes(obj.file_size) %></td>
-                  <td><span class={"ref-badge #{if obj.ref_count > 1, do: "dup", else: ""}"}><%= obj.ref_count %></span></td>
-                  <td class="mono cell-sm"><%= String.slice(obj.namespace_key || "—", 0, 12) %></td>
-                  <td class="cell-sm"><%= fd(obj.inserted_at) %></td>
-                </tr>
+        <div>
+          <div class="toolbar" style="margin-bottom:12px">
+            <div class="search-box">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input class="search-input" placeholder="Hash, path, type…"
+                     phx-keyup="search_cas" phx-debounce="300"
+                     name="search" phx-value-search={@cas_search} value={@cas_search}/>
+            </div>
+            <div class="filter-pills">
+              <%= for {v,l} <- [{"all","All"},{"duplicates","Dupes"},{"large",">10MB"},{"images","Images"},{"docs","Docs"}] do %>
+                <button class={["pill", @cas_filter == v && "active"]}
+                        phx-click="filter_cas" phx-value-filter={v}><%= l %></button>
               <% end %>
-              <%= if @cas_objects.items == [] do %><tr><td colspan="6" class="empty-row">No objects</td></tr><% end %>
-            </tbody>
-          </table>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr><th>Hash</th><th>Type</th><th>Size</th><th>Refs</th><th>Namespace</th><th>Stored</th></tr>
+              </thead>
+              <tbody>
+                <%= for obj <- @cas_objects.items do %>
+                  <tr class="data-row">
+                    <td class="mono cell-sm"><%= String.slice(obj.content_hash, 0, 16) %>…</td>
+                    <td><%= ctic(obj.media_type) %> <%= sct(obj.media_type) %></td>
+                    <td class="cell-num"><%= Admin.format_bytes(obj.file_size) %></td>
+                    <td><span class={"ref-badge #{if obj.ref_count > 1, do: "dup", else: ""}"}><%= obj.ref_count %></span></td>
+                    <td class="mono cell-sm"><%= String.slice(obj.namespace_key || "—", 0, 12) %></td>
+                    <td class="cell-sm"><%= fd(obj.inserted_at) %></td>
+                  </tr>
+                <% end %>
+                <%= if @cas_objects.items == [] do %>
+                  <tr><td colspan="6" class="empty-row">No objects</td></tr>
+                <% end %>
+              </tbody>
+            </table>
+          </div>
+          <.pagination d={@cas_objects} e="cas_page"/>
         </div>
-        <.pagination d={@cas_objects} e="cas_page"/>
       </div>
     </div>
     """
@@ -1180,13 +1611,22 @@ defmodule AlemWeb.AdminLive do
   defp duplicates_page(assigns) do
     ~H"""
     <div>
+      <.back_button nav_history={@nav_history} />
       <div class="stat-strip" style="margin-bottom:16px">
-        <div class="strip-stat"><div class="strip-val"><%= length(@duplicates.duplicates) %></div><div class="strip-lbl">Duplicate Objects</div></div>
-        <div class="strip-stat green"><div class="strip-val"><%= Admin.format_bytes(@duplicates.total_wasted) %></div><div class="strip-lbl">Saved by Dedup</div></div>
+        <div class="strip-stat">
+          <div class="strip-val"><%= length(@duplicates.duplicates) %></div>
+          <div class="strip-lbl">Duplicate Objects</div>
+        </div>
+        <div class="strip-stat green">
+          <div class="strip-val"><%= Admin.format_bytes(@duplicates.total_wasted) %></div>
+          <div class="strip-lbl">Saved by Dedup</div>
+        </div>
       </div>
       <div class="table-wrap">
         <table class="data-table">
-          <thead><tr><th>Hash</th><th>Type</th><th>Size</th><th>Refs</th><th>Saved</th><th>Namespace</th></tr></thead>
+          <thead>
+            <tr><th>Hash</th><th>Type</th><th>Size</th><th>Refs</th><th>Saved</th><th>Namespace</th></tr>
+          </thead>
           <tbody>
             <%= for obj <- @duplicates.duplicates do %>
               <tr class="data-row">
@@ -1194,11 +1634,19 @@ defmodule AlemWeb.AdminLive do
                 <td><%= ctic(obj.media_type) %> <%= sct(obj.media_type) %></td>
                 <td class="cell-num"><%= Admin.format_bytes(obj.file_size) %></td>
                 <td><span class="ref-badge dup"><%= obj.ref_count %>×</span></td>
-                <td class="cell-num" style="color:var(--clr-green)"><%= Admin.format_bytes(obj.file_size * (obj.ref_count - 1)) %></td>
+                <td class="cell-num" style="color:var(--clr-green)">
+                  <%= Admin.format_bytes(obj.file_size * (obj.ref_count - 1)) %>
+                </td>
                 <td class="mono cell-sm"><%= String.slice(obj.namespace_key || "—", 0, 12) %></td>
               </tr>
             <% end %>
-            <%= if @duplicates.duplicates == [] do %><tr><td colspan="6" class="empty-row">No duplicates — CAS is clean! ✓</td></tr><% end %>
+            <%= if @duplicates.duplicates == [] do %>
+              <tr>
+                <td colspan="6" class="empty-row">
+                  No duplicates — CAS is perfectly deduplicated ✓
+                </td>
+              </tr>
+            <% end %>
           </tbody>
         </table>
       </div>
@@ -1241,7 +1689,8 @@ defmodule AlemWeb.AdminLive do
             <span class="card-title">SQL Editor</span>
             <span class="card-meta">SELECT only</span>
           </div>
-          <textarea class="sql-editor" phx-change="sql_input" phx-debounce="80" name="sql" rows="9" placeholder="SELECT ..."><%= @sql_query %></textarea>
+          <textarea class="sql-editor" phx-change="sql_input" phx-debounce="80"
+                    name="sql" rows="9" placeholder="SELECT ..."><%= @sql_query %></textarea>
           <div class="sql-toolbar">
             <button class="btn-run" phx-click="sql_run">▶ Run Query</button>
             <button class="btn-clear" phx-click="sql_clear">✕ Clear</button>
@@ -1264,12 +1713,18 @@ defmodule AlemWeb.AdminLive do
             </div>
             <div class="sql-scroll">
               <table class="data-table">
-                <thead><tr><%= for col <- @sql_result.columns do %><th><%= col %></th><% end %></tr></thead>
+                <thead>
+                  <tr><%= for col <- @sql_result.columns do %><th><%= col %></th><% end %></tr>
+                </thead>
                 <tbody>
                   <%= for row <- @sql_result.rows do %>
-                    <tr class="data-row"><%= for cell <- row do %><td class="sql-cell"><%= fmt_cell(cell) %></td><% end %></tr>
+                    <tr class="data-row">
+                      <%= for cell <- row do %><td class="sql-cell"><%= fmt_cell(cell) %></td><% end %>
+                    </tr>
                   <% end %>
-                  <%= if @sql_result.rows == [] do %><tr><td colspan={length(@sql_result.columns)} class="empty-row">0 rows returned</td></tr><% end %>
+                  <%= if @sql_result.rows == [] do %>
+                    <tr><td colspan={length(@sql_result.columns)} class="empty-row">0 rows returned</td></tr>
+                  <% end %>
                 </tbody>
               </table>
             </div>
@@ -1277,7 +1732,9 @@ defmodule AlemWeb.AdminLive do
         <% end %>
         <%= if !@sql_result && !@sql_error do %>
           <div class="sql-placeholder">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity=".3"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity=".3">
+              <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
             <div style="margin-top:12px">Pick a preset or write a query</div>
           </div>
         <% end %>
@@ -1286,13 +1743,12 @@ defmodule AlemWeb.AdminLive do
     """
   end
 
-
-  # ── Analytics Pages ───────────────────────────────────────────────────────
+  # ── Analytics back-button helper ──────────────────────────────────────────
 
   defp back_to_dash(assigns) do
     ~H"""
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
-      <button class="btn-sm" phx-click="nav_back">&larr; Back</button>
+      <button class="btn-sm" phx-click="nav_back">← Back</button>
       <span class="section-label" style="margin:0">Drill-down Analytics</span>
     </div>
     """
@@ -1300,9 +1756,7 @@ defmodule AlemWeb.AdminLive do
 
   # ── Chart JSON builders ───────────────────────────────────────────────────
 
-  # Line / Area
-  defp cj_line(labels, datasets, opts \\ []) do
-    fill = Keyword.get(opts, :fill, false)
+  defp cj_line(labels, datasets, _opts \\ []) do
     Jason.encode!(%{
       type: "line",
       data: %{labels: labels, datasets: datasets},
@@ -1316,9 +1770,7 @@ defmodule AlemWeb.AdminLive do
     })
   end
 
-  # Vertical bar (Column)
-  defp cj_bar(labels, data, label, color, opts \\ []) do
-    stacked = Keyword.get(opts, :stacked, false)
+  defp cj_bar(labels, data, label, color, _opts \\ []) do
     Jason.encode!(%{
       type: "bar",
       data: %{labels: labels, datasets: [%{label: label, data: data,
@@ -1326,14 +1778,13 @@ defmodule AlemWeb.AdminLive do
       options: %{responsive: true, maintainAspectRatio: false,
         plugins: %{legend: %{display: false}},
         scales: %{
-          x: %{stacked: stacked, grid: %{display: false}, ticks: %{color: "#6e7681", font: %{size: 10}, maxRotation: 45}},
-          y: %{stacked: stacked, grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", font: %{size: 10}}, beginAtZero: true}
+          x: %{grid: %{display: false}, ticks: %{color: "#6e7681", font: %{size: 10}, maxRotation: 45}},
+          y: %{grid: %{color: "rgba(255,255,255,.04)"}, ticks: %{color: "#6e7681", font: %{size: 10}}, beginAtZero: true}
         }
       }
     })
   end
 
-  # Stacked bar (multi-dataset)
   defp cj_stacked(labels, datasets) do
     Jason.encode!(%{
       type: "bar",
@@ -1348,7 +1799,6 @@ defmodule AlemWeb.AdminLive do
     })
   end
 
-  # Horizontal bar
   defp cj_hbar(labels, data, label, color) do
     Jason.encode!(%{
       type: "bar",
@@ -1364,7 +1814,6 @@ defmodule AlemWeb.AdminLive do
     })
   end
 
-  # Doughnut
   defp cj_doughnut(labels, data, colors, cutout \\ "65%") do
     Jason.encode!(%{
       type: "doughnut",
@@ -1375,7 +1824,6 @@ defmodule AlemWeb.AdminLive do
     })
   end
 
-  # Pie
   defp cj_pie(labels, data, colors) do
     Jason.encode!(%{
       type: "pie",
@@ -1386,7 +1834,6 @@ defmodule AlemWeb.AdminLive do
     })
   end
 
-  # Radar / Spider
   defp cj_radar(labels, datasets) do
     Jason.encode!(%{
       type: "radar",
@@ -1403,7 +1850,6 @@ defmodule AlemWeb.AdminLive do
     })
   end
 
-  # Scatter
   defp cj_scatter(datasets) do
     Jason.encode!(%{
       type: "scatter",
@@ -1418,7 +1864,6 @@ defmodule AlemWeb.AdminLive do
     })
   end
 
-  # Gauge (simulated with doughnut)
   defp cj_gauge(pct, color) do
     remaining = 100 - pct
     Jason.encode!(%{
@@ -1435,86 +1880,66 @@ defmodule AlemWeb.AdminLive do
 
   # ── USERS ANALYTICS ───────────────────────────────────────────────────────
 
-  defp users_analytics_page(%{analytics_users: nil} = assigns) do
-    ~H"""
-    <div class="empty-page">Loading user analytics...</div>
-    """
-  end
+  defp users_analytics_page(%{analytics_users: nil} = assigns), do: ~H"""
+  <div>
+    <.back_button nav_history={@nav_history} />
+    <div class="loading-state"><div class="loading-spinner"></div><div>Loading user analytics…</div></div>
+  </div>
+  """
 
   defp users_analytics_page(assigns) do
     a = assigns.analytics_users
 
-    # Area chart: signups per day
-    su_labels = Enum.map(a.daily_signups, & &1.date)
-    su_data   = Enum.map(a.daily_signups, & &1.count)
+    su_labels  = Enum.map(a.daily_signups, & &1.date)
+    su_data    = Enum.map(a.daily_signups, & &1.count)
     area_chart = cj_line(su_labels, [%{
       label: "Signups", data: su_data,
       borderColor: "#58a6ff", backgroundColor: "rgba(88,166,255,.15)",
       fill: true, tension: 0.4, pointRadius: 4, pointBackgroundColor: "#58a6ff"
     }])
 
-    # Pie: verified vs unverified
-    pie_chart = cj_pie(
-      ["Verified", "Unverified"],
-      [a.verified, a.unverified],
-      ["#3fb950", "#484f58"]
-    )
+    pie_chart = cj_pie(["Verified","Unverified"], [a.verified, a.unverified], ["#3fb950","#484f58"])
 
-    # Doughnut: active vs blocked
     donut_chart = cj_doughnut(
-      ["Active", "Blocked", "Admin"],
+      ["Active","Blocked","Admin"],
       [a.active - a.admins, a.blocked, a.admins],
-      ["#58a6ff", "#f85149", "#e3b341"]
+      ["#58a6ff","#f85149","#e3b341"]
     )
 
-    # Horizontal bar: files per user
     hbar_labels = Enum.map(a.top_users, & &1.nickname)
     hbar_data   = Enum.map(a.top_users, & &1.files)
     hbar_chart  = cj_hbar(hbar_labels, hbar_data, "Files", "rgba(188,140,255,.7)")
 
-    # Radar: user activity profile
     radar_chart = cj_radar(
-      ["Total", "Verified", "Active", "Admins", "W/ Files"],
+      ["Total","Verified","Active","Admins","W/ Files"],
       [%{
         label: "Platform Users",
-        data: [
-          a.total,
-          a.verified,
-          a.active,
-          a.admins,
-          Enum.count(a.top_users, & &1.files > 0)
-        ],
-        backgroundColor: "rgba(88,166,255,.2)",
-        borderColor: "#58a6ff",
-        pointBackgroundColor: "#58a6ff",
-        pointRadius: 4
+        data: [a.total, a.verified, a.active, a.admins, Enum.count(a.top_users, & &1.files > 0)],
+        backgroundColor: "rgba(88,166,255,.2)", borderColor: "#58a6ff",
+        pointBackgroundColor: "#58a6ff", pointRadius: 4
       }]
     )
 
-    # Gauge: verification rate
-    vrate = if a.total > 0, do: round(a.verified / a.total * 100), else: 0
+    vrate       = if a.total > 0, do: round(a.verified / a.total * 100), else: 0
     gauge_chart = cj_gauge(vrate, "#3fb950")
 
-    assigns = assigns
-      |> assign(:area_chart,  area_chart)
-      |> assign(:pie_chart,   pie_chart)
-      |> assign(:donut_chart, donut_chart)
-      |> assign(:hbar_chart,  hbar_chart)
-      |> assign(:radar_chart, radar_chart)
-      |> assign(:gauge_chart, gauge_chart)
-      |> assign(:vrate, vrate)
-      |> assign(:a, a)
+    assigns =
+      assigns
+      |> assign(:area_chart, area_chart) |> assign(:pie_chart, pie_chart)
+      |> assign(:donut_chart, donut_chart) |> assign(:hbar_chart, hbar_chart)
+      |> assign(:radar_chart, radar_chart) |> assign(:gauge_chart, gauge_chart)
+      |> assign(:vrate, vrate) |> assign(:a, a)
 
     ~H"""
     <div>
       <%= back_to_dash(assigns) %>
       <div class="a-strip">
-        <.astat v={@a.total}    lb="Total Users"  col="#58a6ff" />
-        <.astat v={@a.verified} lb="Verified"     col="#3fb950" />
-        <.astat v={@a.unverified} lb="Unverified" col="#484f58" />
-        <.astat v={@a.active}   lb="Active"       col="#58a6ff" />
-        <.astat v={@a.blocked}  lb="Blocked"      col="#f85149" />
-        <.astat v={@a.admins}   lb="Admins"       col="#e3b341" />
+        <.astat v={@a.total}      lb="Total Users"  col="#58a6ff" />
+        <.astat v={@a.verified}   lb="Verified"     col="#3fb950" />
+        <.astat v={@a.unverified} lb="Unverified"   col="#484f58" />
+        <.astat v={@a.active}     lb="Active"       col="#58a6ff" />
+        <.astat v={@a.blocked}    lb="Blocked"      col="#f85149" />
+        <.astat v={@a.admins}     lb="Admins"       col="#e3b341" />
       </div>
 
       <div class="chart-r3" style="margin-bottom:12px">
@@ -1564,77 +1989,64 @@ defmodule AlemWeb.AdminLive do
 
   # ── STORAGE ANALYTICS ─────────────────────────────────────────────────────
 
-  defp storage_analytics_page(%{analytics_storage: nil} = assigns) do
-    ~H"""
-    <div class="empty-page">Loading storage analytics...</div>
-    """
-  end
+  defp storage_analytics_page(%{analytics_storage: nil} = assigns), do: ~H"""
+  <div>
+    <.back_button nav_history={@nav_history} />
+    <div class="loading-state"><div class="loading-spinner"></div><div>Loading storage analytics…</div></div>
+  </div>
+  """
 
   defp storage_analytics_page(assigns) do
     a = assigns.analytics_storage
 
-    # Area: uploads per day
-    up_labels = Enum.map(a.daily_uploads, & &1.date)
-    up_data   = Enum.map(a.daily_uploads, & &1.count)
+    up_labels  = Enum.map(a.daily_uploads, & &1.date)
+    up_data    = Enum.map(a.daily_uploads, & &1.count)
     area_chart = cj_line(up_labels, [%{
       label: "Uploads", data: up_data,
       borderColor: "#bc8cff", backgroundColor: "rgba(188,140,255,.15)",
       fill: true, tension: 0.4, pointRadius: 4, pointBackgroundColor: "#bc8cff"
     }])
 
-    # Pie: file type distribution by count
-    top8 = Enum.take(a.type_breakdown, 8)
+    top8   = Enum.take(a.type_breakdown, 8)
     colors = ~w(#58a6ff #3fb950 #e3b341 #f85149 #bc8cff #06b6d4 #f97316 #8b5cf6)
-    pie_chart = cj_pie(
-      Enum.map(top8, & short_mime(&1.type)),
-      Enum.map(top8, & &1.count),
-      colors
-    )
 
-    # Doughnut: actual vs saved storage
+    pie_chart = cj_pie(Enum.map(top8, & short_mime(&1.type)), Enum.map(top8, & &1.count), colors)
+
     donut_chart = cj_doughnut(
-      ["Used", "Saved by Dedup"],
+      ["Used","Saved by Dedup"],
       [max(a.total_bytes - a.saved_bytes, 0), a.saved_bytes],
-      ["#58a6ff", "#3fb950"]
+      ["#58a6ff","#3fb950"]
     )
 
-    # Column: storage in MB by type
     bar_labels = Enum.map(top8, & short_mime(&1.type))
     bar_data   = Enum.map(top8, fn t -> Float.round(t.bytes / 1_048_576, 1) end)
     col_chart  = cj_bar(bar_labels, bar_data, "MB", colors)
 
-    # Stacked bar: count vs size ratio per type
     stack_chart = cj_stacked(bar_labels, [
-      %{label: "File Count", data: Enum.map(top8, & &1.count),
-        backgroundColor: "rgba(88,166,255,.7)", borderRadius: 3},
-      %{label: "Size (MB)", data: bar_data,
-        backgroundColor: "rgba(63,185,80,.7)", borderRadius: 3}
+      %{label: "File Count", data: Enum.map(top8, & &1.count), backgroundColor: "rgba(88,166,255,.7)", borderRadius: 3},
+      %{label: "Size (MB)",  data: bar_data, backgroundColor: "rgba(63,185,80,.7)", borderRadius: 3}
     ])
 
-    # Gauge: dedup efficiency
-    eff_pct = if a.total_bytes > 0, do: round(a.saved_bytes / a.total_bytes * 100), else: 0
+    eff_pct     = if a.total_bytes > 0, do: round(a.saved_bytes / a.total_bytes * 100), else: 0
     gauge_chart = cj_gauge(eff_pct, "#3fb950")
 
-    assigns = assigns
-      |> assign(:area_chart,  area_chart)
-      |> assign(:pie_chart,   pie_chart)
-      |> assign(:donut_chart, donut_chart)
-      |> assign(:col_chart,   col_chart)
-      |> assign(:stack_chart, stack_chart)
-      |> assign(:gauge_chart, gauge_chart)
-      |> assign(:eff_pct, eff_pct)
-      |> assign(:a, a)
+    assigns =
+      assigns
+      |> assign(:area_chart, area_chart) |> assign(:pie_chart, pie_chart)
+      |> assign(:donut_chart, donut_chart) |> assign(:col_chart, col_chart)
+      |> assign(:stack_chart, stack_chart) |> assign(:gauge_chart, gauge_chart)
+      |> assign(:eff_pct, eff_pct) |> assign(:a, a)
 
     ~H"""
     <div>
       <%= back_to_dash(assigns) %>
       <div class="a-strip">
-        <.astat v={@a.total_files}               lb="Documents"    col="#bc8cff" />
-        <.astat v={@a.total_cas}                 lb="CAS Objects"  col="#58a6ff" />
+        <.astat v={@a.total_files}                    lb="Documents"    col="#bc8cff" />
+        <.astat v={@a.total_cas}                      lb="CAS Objects"  col="#58a6ff" />
         <.astat v={Admin.format_bytes(@a.total_bytes)} lb="Total Stored" col="#3fb950" />
         <.astat v={Admin.format_bytes(@a.saved_bytes)} lb="Dedup Saved"  col="#3fb950" />
-        <.astat v={length(@a.type_breakdown)}    lb="File Types"   col="#e3b341" />
-        <.astat v={"#{@eff_pct}%"}              lb="Dedup Rate"   col="#bc8cff" />
+        <.astat v={length(@a.type_breakdown)}          lb="File Types"   col="#e3b341" />
+        <.astat v={"#{@eff_pct}%"}                    lb="Dedup Rate"   col="#bc8cff" />
       </div>
 
       <div class="chart-r3" style="margin-bottom:12px">
@@ -1696,46 +2108,36 @@ defmodule AlemWeb.AdminLive do
 
   # ── CAS ANALYTICS ─────────────────────────────────────────────────────────
 
-  defp cas_analytics_page(%{analytics_cas: nil} = assigns) do
-    ~H"""
-    <div class="empty-page">Loading CAS analytics...</div>
-    """
-  end
+  defp cas_analytics_page(%{analytics_cas: nil} = assigns), do: ~H"""
+  <div>
+    <.back_button nav_history={@nav_history} />
+    <div class="loading-state"><div class="loading-spinner"></div><div>Loading CAS analytics…</div></div>
+  </div>
+  """
 
   defp cas_analytics_page(assigns) do
     a = assigns.analytics_cas
 
-    # Column: ref_count distribution
-    ref_labels = Enum.map(a.ref_dist, fn r -> "#{r.ref_count}x" end)
-    ref_data   = Enum.map(a.ref_dist, fn r -> r.count end)
-    col_chart  = cj_bar(ref_labels, ref_data, "Objects",
+    col_chart = cj_bar(
+      Enum.map(a.ref_dist, fn r -> "#{r.ref_count}x" end),
+      Enum.map(a.ref_dist, fn r -> r.count end),
+      "Objects",
       Enum.map(a.ref_dist, fn r ->
         if r.ref_count == 1, do: "rgba(88,166,255,.7)", else: "rgba(245,158,11,.7)"
-      end))
-
-    # Doughnut: unique vs duplicate
-    donut_chart = cj_doughnut(
-      ["Unique", "Duplicates"],
-      [a.total_cas - a.dupes, a.dupes],
-      ["#3fb950", "#e3b341"]
+      end)
     )
 
-    # Pie: storage breakdown
-    waste = a.saved_bytes
-    actual = max(a.total_bytes - waste, 0)
-    pie_chart = cj_pie(
-      ["Actual Storage", "Wasted (dupes)"],
-      [actual, waste],
-      ["#58a6ff", "#f85149"]
-    )
+    donut_chart = cj_doughnut(["Unique","Duplicates"], [a.total_cas - a.dupes, a.dupes], ["#3fb950","#e3b341"])
 
-    # Gauge: dedup %
+    waste   = a.saved_bytes
+    actual  = max(a.total_bytes - waste, 0)
+    pie_chart = cj_pie(["Actual Storage","Wasted (dupes)"], [actual, waste], ["#58a6ff","#f85149"])
+
     gauge_chart = cj_gauge(a.dedup_pct, "#e3b341")
 
-    # Radar: CAS health profile
-    total_safe = max(a.total_cas, 1)
+    total_safe  = max(a.total_cas, 1)
     radar_chart = cj_radar(
-      ["Unique", "Dedup Rate", "Space Saved", "Verified", "Multi-ref"],
+      ["Unique","Dedup Rate","Space Saved","Verified","Multi-ref"],
       [%{
         label: "CAS Health",
         data: [
@@ -1745,14 +2147,11 @@ defmodule AlemWeb.AdminLive do
           90,
           round(a.dupes / total_safe * 100)
         ],
-        backgroundColor: "rgba(227,179,65,.2)",
-        borderColor: "#e3b341",
-        pointBackgroundColor: "#e3b341",
-        pointRadius: 4
+        backgroundColor: "rgba(227,179,65,.2)", borderColor: "#e3b341",
+        pointBackgroundColor: "#e3b341", pointRadius: 4
       }]
     )
 
-    # Scatter: file_size vs ref_count for top dupes
     scatter_data = Enum.map(a.top_dupes, fn d ->
       %{x: Float.round(d.file_size / 1_048_576, 2), y: d.ref_count}
     end)
@@ -1760,29 +2159,26 @@ defmodule AlemWeb.AdminLive do
       label: "File size (MB) vs Ref count",
       data: scatter_data,
       backgroundColor: "rgba(245,158,11,.7)",
-      pointRadius: 6,
-      pointHoverRadius: 8
+      pointRadius: 6, pointHoverRadius: 8
     }])
 
-    assigns = assigns
-      |> assign(:col_chart,    col_chart)
-      |> assign(:donut_chart,  donut_chart)
-      |> assign(:pie_chart,    pie_chart)
-      |> assign(:gauge_chart,  gauge_chart)
-      |> assign(:radar_chart,  radar_chart)
-      |> assign(:scatter_chart, scatter_chart)
+    assigns =
+      assigns
+      |> assign(:col_chart, col_chart) |> assign(:donut_chart, donut_chart)
+      |> assign(:pie_chart, pie_chart) |> assign(:gauge_chart, gauge_chart)
+      |> assign(:radar_chart, radar_chart) |> assign(:scatter_chart, scatter_chart)
       |> assign(:a, a)
 
     ~H"""
     <div>
       <%= back_to_dash(assigns) %>
       <div class="a-strip">
-        <.astat v={@a.total_cas}                    lb="CAS Objects"   col="#58a6ff" />
-        <.astat v={@a.total_cas - @a.dupes}         lb="Unique"        col="#3fb950" />
-        <.astat v={@a.dupes}                        lb="Duplicates"    col="#e3b341" />
-        <.astat v={Admin.format_bytes(@a.saved_bytes)}   lb="Space Saved"   col="#3fb950" />
-        <.astat v={Admin.format_bytes(@a.total_bytes)}   lb="Total Size"    col="#58a6ff" />
-        <.astat v={"#{@a.dedup_pct}%"}              lb="Dedup Rate"    col="#bc8cff" />
+        <.astat v={@a.total_cas}                      lb="CAS Objects"  col="#58a6ff" />
+        <.astat v={@a.total_cas - @a.dupes}           lb="Unique"       col="#3fb950" />
+        <.astat v={@a.dupes}                          lb="Duplicates"   col="#e3b341" />
+        <.astat v={Admin.format_bytes(@a.saved_bytes)} lb="Space Saved"  col="#3fb950" />
+        <.astat v={Admin.format_bytes(@a.total_bytes)} lb="Total Size"   col="#58a6ff" />
+        <.astat v={"#{@a.dedup_pct}%"}               lb="Dedup Rate"   col="#bc8cff" />
       </div>
 
       <div class="chart-r3" style="margin-bottom:12px">
@@ -1828,7 +2224,9 @@ defmodule AlemWeb.AdminLive do
           <div class="card-head"><span class="card-title">Top Duplicated Objects</span></div>
           <div class="tbl-wrap" style="border:none;border-radius:0">
             <table class="data-table">
-              <thead><tr><th>Hash</th><th>Type</th><th class="ta-r">Size</th><th class="ta-r">Refs</th><th class="ta-r">Space Saved</th></tr></thead>
+              <thead>
+                <tr><th>Hash</th><th>Type</th><th class="ta-r">Size</th><th class="ta-r">Refs</th><th class="ta-r">Space Saved</th></tr>
+              </thead>
               <tbody>
                 <%= for obj <- @a.top_dupes do %>
                   <tr class="data-row">
@@ -1860,11 +2258,11 @@ defmodule AlemWeb.AdminLive do
   defp short_mime(nil), do: "Unknown"
   defp short_mime(ct) do
     cond do
-      ct == "application/pdf" -> "PDF"
-      String.contains?(ct, "wordprocessingml") -> "DOCX"
-      String.contains?(ct, "spreadsheetml") -> "XLSX"
-      ct == "application/octet-stream" -> "Binary"
-      ct == "application/msword" -> "DOC"
+      ct == "application/pdf"                       -> "PDF"
+      String.contains?(ct, "wordprocessingml")      -> "DOCX"
+      String.contains?(ct, "spreadsheetml")         -> "XLSX"
+      ct == "application/octet-stream"              -> "Binary"
+      ct == "application/msword"                    -> "DOC"
       true ->
         ct |> String.split("/") |> List.last()
            |> String.split(".") |> List.last()
@@ -1872,10 +2270,12 @@ defmodule AlemWeb.AdminLive do
     end
   end
 
+  # ── S3 Browser ────────────────────────────────────────────────────────────
 
   defp s3_page(assigns) do
     ~H"""
     <div>
+      <.back_button nav_history={@nav_history} />
       <%= if @s3_prefix == "" do %>
         <div class="section-label" style="margin-bottom:16px">Scoped to platform storage paths</div>
         <div class="s3-root-grid">
@@ -1897,7 +2297,10 @@ defmodule AlemWeb.AdminLive do
         </div>
 
         <%= if @s3_error do %>
-          <div class="error-block"><div class="error-title">S3 Error</div><pre class="error-body"><%= @s3_error %></pre></div>
+          <div class="error-block">
+            <div class="error-title">S3 Error</div>
+            <pre class="error-body"><%= @s3_error %></pre>
+          </div>
         <% end %>
 
         <%= if @s3_result do %>
@@ -1907,7 +2310,9 @@ defmodule AlemWeb.AdminLive do
               <%= for pfx <- @s3_result.prefixes, is_map(pfx), Map.has_key?(pfx, :prefix) do %>
                 <button class="s3-folder" phx-click="s3_browse" phx-value-prefix={pfx.prefix}>
                   <span style="color:var(--clr-blue)">▸</span>
-                  <span class="mono" style="font-size:12px"><%= pfx.prefix |> String.replace_prefix(@s3_prefix, "") |> String.trim_trailing("/") %></span>
+                  <span class="mono" style="font-size:12px">
+                    <%= pfx.prefix |> String.replace_prefix(@s3_prefix, "") |> String.trim_trailing("/") %>
+                  </span>
                 </button>
               <% end %>
             </div>
@@ -1984,9 +2389,15 @@ defmodule AlemWeb.AdminLive do
   defp pagination(%{d: %{pages: p}} = assigns) when p > 1 do
     ~H"""
     <div class="pagination">
-      <%= if @d.page > 1 do %><button class="page-btn" phx-click={@e} phx-value-page={@d.page - 1}>‹ Prev</button><% end %>
+      <%= if @d.page > 1 do %>
+        <button class="page-btn" phx-click={@e} phx-value-page={1}>«</button>
+        <button class="page-btn" phx-click={@e} phx-value-page={@d.page - 1}>‹ Prev</button>
+      <% end %>
       <span class="page-info">Page <%= @d.page %> of <%= @d.pages %> · <%= @d.total %> total</span>
-      <%= if @d.page < @d.pages do %><button class="page-btn" phx-click={@e} phx-value-page={@d.page + 1}>Next ›</button><% end %>
+      <%= if @d.page < @d.pages do %>
+        <button class="page-btn" phx-click={@e} phx-value-page={@d.page + 1}>Next ›</button>
+        <button class="page-btn" phx-click={@e} phx-value-page={@d.pages}>»</button>
+      <% end %>
     </div>
     """
   end
@@ -2002,15 +2413,15 @@ defmodule AlemWeb.AdminLive do
   defp ctic(nil), do: "◈"
   defp ctic(ct) do
     cond do
-      String.starts_with?(ct, "image/")  -> "🖼"
-      ct == "application/pdf"            -> "📄"
-      String.contains?(ct, "word")       -> "📝"
-      String.contains?(ct, "sheet")      -> "📊"
-      String.starts_with?(ct, "video/") -> "🎬"
-      String.starts_with?(ct, "audio/") -> "🎵"
-      String.starts_with?(ct, "text/")  -> "📃"
-      String.contains?(ct, "zip")        -> "🗜"
-      true                               -> "◈"
+      String.starts_with?(ct, "image/")   -> "🖼"
+      ct == "application/pdf"             -> "📄"
+      String.contains?(ct, "word")        -> "📝"
+      String.contains?(ct, "sheet")       -> "📊"
+      String.starts_with?(ct, "video/")  -> "🎬"
+      String.starts_with?(ct, "audio/")  -> "🎵"
+      String.starts_with?(ct, "text/")   -> "📃"
+      String.contains?(ct, "zip")         -> "🗜"
+      true                                -> "◈"
     end
   end
 
@@ -2027,9 +2438,9 @@ defmodule AlemWeb.AdminLive do
   defp fmt_cell(%DateTime{} = v),      do: DateTime.to_string(v)
   defp fmt_cell(v),                    do: inspect(v)
 
-  defp parse_size(s) when is_binary(s), do: String.to_integer(s)
+  defp parse_size(s) when is_binary(s),  do: String.to_integer(s)
   defp parse_size(i) when is_integer(i), do: i
-  defp parse_size(%Decimal{} = d), do: Decimal.to_integer(d)
+  defp parse_size(%Decimal{} = d),       do: Decimal.to_integer(d)
   defp parse_size(_), do: 0
 
   # ── CSS ────────────────────────────────────────────────────────────────────
@@ -2087,58 +2498,41 @@ defmodule AlemWeb.AdminLive do
 
     /* ── BASE ──────────────────────────────────────────────────── */
     #adm {
-      height: 100vh;
-      background: var(--bg);
-      color: var(--tx);
+      height: 100vh; background: var(--bg); color: var(--tx);
       font-family: 'Syne', -apple-system, sans-serif;
-      overflow: hidden;
-      transition: background .2s, color .2s;
+      overflow: hidden; transition: background .2s, color .2s;
     }
     .al { display: grid; grid-template-columns: 220px 1fr; height: 100vh }
     .mono { font-family: 'IBM Plex Mono', 'SF Mono', monospace }
 
     /* ── SIDEBAR ────────────────────────────────────────────────── */
     .sb {
-      background: var(--bg2);
-      border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
+      background: var(--bg2); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden;
     }
-    .sb-top {
-      padding: 16px 14px 10px;
-      border-bottom: 1px solid var(--border);
-    }
+    .sb-top { padding: 16px 14px 10px; border-bottom: 1px solid var(--border) }
     .sb-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 3px }
     .lm {
       width: 30px; height: 30px;
       background: linear-gradient(135deg, var(--clr-blue), var(--clr-purple));
-      border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0;
+      border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
     }
     .lt {
       font-size: 15px; font-weight: 800; letter-spacing: 3px;
       background: linear-gradient(135deg, var(--clr-blue), var(--clr-purple));
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-      background-clip: text;
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
     .sb-sub { font-size: 9px; color: var(--tx3); letter-spacing: 1.8px; text-transform: uppercase; padding-left: 40px }
     .sb-nav { flex: 1; padding: 8px; overflow-y: auto }
     .nsl {
       font-size: 9px; font-weight: 700; color: var(--tx3);
-      letter-spacing: 1.5px; text-transform: uppercase;
-      padding: 12px 8px 4px;
+      letter-spacing: 1.5px; text-transform: uppercase; padding: 12px 8px 4px;
     }
     .ni {
       display: flex; align-items: center; gap: 9px;
-      padding: 7px 9px; border-radius: 7px;
-      border: none; background: none;
-      color: var(--tx2); cursor: pointer;
-      width: 100%; text-align: left;
-      font-size: 12px; font-weight: 600;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      padding: 7px 9px; border-radius: 7px; border: none; background: none;
+      color: var(--tx2); cursor: pointer; width: 100%; text-align: left;
+      font-size: 12px; font-weight: 600; font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .ni:hover { background: var(--bg3); color: var(--tx) }
     .ni.active { background: rgba(91,158,255,.1); color: var(--clr-blue) }
@@ -2146,9 +2540,8 @@ defmodule AlemWeb.AdminLive do
     .ni-ic { width: 16px; text-align: center; flex-shrink: 0; display: flex; align-items: center; justify-content: center }
     .ni-lb { flex: 1 }
     .ni-bd {
-      background: var(--bg4); color: var(--tx3);
-      font-size: 10px; padding: 1px 6px; border-radius: 8px;
-      font-family: 'IBM Plex Mono', monospace;
+      background: var(--bg4); color: var(--tx3); font-size: 10px;
+      padding: 1px 6px; border-radius: 8px; font-family: 'IBM Plex Mono', monospace;
     }
     .ni.active .ni-bd { background: rgba(91,158,255,.15); color: var(--clr-blue) }
     .sb-ft { padding: 12px; border-top: 1px solid var(--border); font-size: 11px }
@@ -2162,116 +2555,175 @@ defmodule AlemWeb.AdminLive do
     /* ── TOPBAR ─────────────────────────────────────────────────── */
     .am { display: flex; flex-direction: column; overflow: hidden }
     .tb {
-      height: 52px; background: var(--bg2);
-      border-bottom: 1px solid var(--border);
-      display: flex; align-items: center;
-      justify-content: space-between;
-      padding: 0 20px; flex-shrink: 0;
+      height: 52px; background: var(--bg2); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0;
     }
-    .tb-left { display: flex; flex-direction: column; gap: 1px }
+    .tb-left { display: flex; align-items: center; gap: 10px }
+    .tb-back-btn {
+      width: 30px; height: 30px; border-radius: 7px;
+      border: 1px solid var(--border2); background: var(--bg3);
+      color: var(--tx2); cursor: pointer; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: all .15s;
+    }
+    .tb-back-btn:hover { background: var(--bg4); color: var(--tx) }
     .tb-t { font-size: 14px; font-weight: 700 }
-    .tb-bc { font-size: 10px; color: var(--tx3); font-family: 'IBM Plex Mono', monospace }
+    .tb-bc { font-size: 10px; color: var(--tx3); font-family: 'IBM Plex Mono', monospace; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
     .tb-r { display: flex; align-items: center; gap: 10px }
-    .tb-chips { display: flex; gap: 6px }
+    .tb-chips { display: flex; gap: 6px; align-items: center }
     .chip {
       font-size: 10px; padding: 3px 9px; border-radius: 20px;
       font-weight: 600; font-family: 'IBM Plex Mono', monospace;
     }
+    .chip-btn {
+      cursor: pointer; border: none; transition: opacity .15s;
+    }
+    .chip-btn:hover { opacity: .75 }
     .chip-users    { background: rgba(91,158,255,.1);  color: var(--clr-blue);   border: 1px solid rgba(91,158,255,.2) }
     .chip-sessions { background: rgba(0,221,160,.1);   color: var(--clr-green);  border: 1px solid rgba(0,221,160,.2) }
+    .chip-blocked  { background: rgba(255,85,102,.1);  color: var(--clr-red);    border: 1px solid rgba(255,85,102,.2) }
     .chip-brand    { background: var(--bg4);            color: var(--tx3);         border: 1px solid var(--border) }
     .theme-btn {
-      width: 32px; height: 32px; border-radius: 8px;
-      border: 1px solid var(--border2);
-      background: var(--bg3);
-      color: var(--tx2); cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: all .15s;
+      width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border2);
+      background: var(--bg3); color: var(--tx2); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; transition: all .15s;
     }
     .theme-btn:hover { background: var(--bg4); color: var(--tx) }
     .logout-btn {
-      display: flex; align-items: center; gap: 6px;
-      font-size: 11px; font-weight: 600;
-      color: var(--tx3); text-decoration: none;
-      padding: 6px 10px; border-radius: 7px;
-      border: 1px solid var(--border);
-      background: var(--bg3);
-      transition: all .15s;
-      font-family: 'Syne', sans-serif;
+      display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600;
+      color: var(--tx3); text-decoration: none; padding: 6px 10px; border-radius: 7px;
+      border: 1px solid var(--border); background: var(--bg3);
+      transition: all .15s; font-family: 'Syne', sans-serif;
     }
     .logout-btn:hover { color: var(--clr-red); border-color: rgba(255,85,102,.3) }
     .ac { flex: 1; overflow-y: auto; padding: 20px }
 
+    /* ── PAGE HEADER ─────────────────────────────────────────────── */
+    .page-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      margin-bottom: 16px; gap: 16px; flex-wrap: wrap;
+    }
+    .page-heading { font-size: 18px; font-weight: 800; margin-bottom: 3px }
+    .page-title-row { display: flex; align-items: center; gap: 10px }
+    .page-count-badge {
+      background: var(--bg4); color: var(--tx3); font-size: 10px;
+      padding: 2px 8px; border-radius: 20px; font-family: 'IBM Plex Mono', monospace;
+      font-weight: 600;
+    }
+    .page-sub { font-size: 11px; color: var(--tx3) }
+    .inline-link {
+      background: none; border: none; cursor: pointer; color: var(--clr-blue);
+      font-size: 11px; font-family: 'Syne', sans-serif; padding: 0; text-decoration: underline;
+    }
+    .filter-shortcuts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center }
+    .fsc {
+      font-size: 10px; font-weight: 700; padding: 4px 11px; border-radius: 20px;
+      border: 1px solid var(--border); background: var(--bg3); cursor: pointer;
+      font-family: 'Syne', sans-serif; transition: all .15s; color: var(--tx2);
+    }
+    .fsc:hover { border-color: var(--border2); color: var(--tx) }
+    .fsc.active, .fsc:hover { transform: translateY(-1px) }
+    .fsc-red    { color: var(--clr-red);    border-color: rgba(255,85,102,.2);  background: rgba(255,85,102,.06) }
+    .fsc-amber  { color: var(--clr-amber);  border-color: rgba(255,187,0,.2);   background: rgba(255,187,0,.06) }
+    .fsc-green  { color: var(--clr-green);  border-color: rgba(0,221,160,.2);   background: rgba(0,221,160,.06) }
+    .fsc-gray   { color: var(--tx3);        border-color: var(--border); }
+    .fsc.active { box-shadow: 0 2px 8px rgba(0,0,0,.15) }
+
+    /* ── EMPTY FILTERED STATE ─────────────────────────────────────── */
+    .empty-filtered-state {
+      text-align: center; padding: 60px 20px;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+    }
+    .ef-icon { font-size: 48px; margin-bottom: 14px; opacity: .8 }
+    .ef-title { font-size: 18px; font-weight: 800; margin-bottom: 8px }
+    .ef-sub { font-size: 13px; color: var(--tx2); margin-bottom: 20px; line-height: 1.5 }
+    .ef-btn {
+      background: var(--bg3); border: 1px solid var(--border2);
+      border-radius: 8px; padding: 8px 18px; color: var(--tx);
+      cursor: pointer; font-size: 12px; font-weight: 700;
+      font-family: 'Syne', sans-serif; transition: all .15s;
+    }
+    .ef-btn:hover { background: var(--bg4) }
+
+    /* ── LOADING STATE ─────────────────────────────────────────────── */
+    .loading-state {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; padding: 60px; color: var(--tx3); font-size: 13px; gap: 16px;
+    }
+    .loading-spinner {
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 2px solid var(--border2); border-top-color: var(--clr-blue);
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg) } }
+
     /* ── CARDS ──────────────────────────────────────────────────── */
     .card {
-      background: var(--bg2);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      overflow: hidden;
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden;
     }
     .card-head {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 11px 14px;
-      border-bottom: 1px solid var(--border);
-      background: var(--bg3);
+      padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--bg3);
     }
     .card-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; color: var(--tx2) }
     .card-meta  { font-size: 10px; color: var(--tx3); font-family: 'IBM Plex Mono', monospace }
     .card-body  { padding: 14px }
+    .card-link-btn {
+      background: none; border: none; cursor: pointer; color: var(--clr-blue);
+      font-size: 10px; font-weight: 700; font-family: 'Syne', sans-serif;
+      padding: 0; transition: opacity .15s;
+    }
+    .card-link-btn:hover { opacity: .7 }
 
     /* ── STAT CARDS ─────────────────────────────────────────────── */
     .sg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px }
     .sc {
-      background: var(--bg2); border: 1px solid var(--border);
-      border-radius: 12px; padding: 14px 16px;
-      display: flex; align-items: center; gap: 12px;
-      transition: all .15s; cursor: default;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px 16px; display: flex; align-items: center; gap: 12px; transition: all .15s;
     }
-    .sc:hover { border-color: var(--border2); transform: translateY(-1px); box-shadow: var(--shadow) }
+    .sc-click { cursor: pointer }
+    .sc-click:hover { border-color: var(--border2); transform: translateY(-2px); box-shadow: var(--shadow) }
     .sc-ic {
       width: 36px; height: 36px; border-radius: 9px;
-      display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
     }
-    .sc-blue   .sc-ic { background: rgba(91,158,255,.12); color: var(--clr-blue) }
-    .sc-green  .sc-ic { background: rgba(0,221,160,.12);  color: var(--clr-green) }
-    .sc-red    .sc-ic { background: rgba(255,85,102,.12); color: var(--clr-red) }
-    .sc-amber  .sc-ic { background: rgba(255,187,0,.12);  color: var(--clr-amber) }
-    .sc-purple .sc-ic { background: rgba(167,139,250,.12);color: var(--clr-purple) }
+    .sc-blue   .sc-ic { background: rgba(91,158,255,.12);  color: var(--clr-blue) }
+    .sc-green  .sc-ic { background: rgba(0,221,160,.12);   color: var(--clr-green) }
+    .sc-red    .sc-ic { background: rgba(255,85,102,.12);  color: var(--clr-red) }
+    .sc-amber  .sc-ic { background: rgba(255,187,0,.12);   color: var(--clr-amber) }
+    .sc-purple .sc-ic { background: rgba(167,139,250,.12); color: var(--clr-purple) }
+    .sc-body { flex: 1 }
     .sc-v { font-size: 22px; font-weight: 800; line-height: 1; font-family: 'IBM Plex Mono', monospace }
     .sc-l { font-size: 10px; color: var(--tx3); margin-top: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px }
+    .sc-arr { font-size: 14px; color: var(--tx3); opacity: 0; transition: opacity .15s }
+    .sc-click:hover .sc-arr { opacity: 1; color: var(--clr-blue) }
 
     /* ── DASHBOARD GRID ─────────────────────────────────────────── */
     .dash-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 12px }
     .storage-row {
       display: grid; grid-template-columns: 100px 1fr 80px;
-      gap: 10px; align-items: center; margin-bottom: 12px;
-      font-size: 11px;
+      gap: 10px; align-items: center; margin-bottom: 12px; font-size: 11px;
     }
     .storage-label { color: var(--tx2) }
-    .storage-bar-wrap { }
     .storage-bar-track { height: 4px; background: var(--bg4); border-radius: 2px; overflow: hidden }
     .storage-bar-fill {
-      height: 100%; border-radius: 2px;
-      transition: width .6s cubic-bezier(.4,0,.2,1);
+      height: 100%; border-radius: 2px; transition: width .6s cubic-bezier(.4,0,.2,1);
     }
-    .storage-bar-fill.blue   { background: var(--clr-blue) }
-    .storage-bar-fill.green  { background: var(--clr-green) }
-    .storage-bar-fill.red    { background: var(--clr-red) }
+    .storage-bar-fill.blue  { background: var(--clr-blue) }
+    .storage-bar-fill.green { background: var(--clr-green) }
+    .storage-bar-fill.red   { background: var(--clr-red) }
     .storage-val { text-align: right; font-weight: 600; font-size: 11px; font-family: 'IBM Plex Mono', monospace }
     .divider { border: none; border-top: 1px solid var(--border); margin: 12px 0 }
     .data-plane-title { font-size: 9px; font-weight: 700; color: var(--tx3); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px }
     .kv-row {
       display: flex; justify-content: space-between; align-items: center;
-      padding: 6px 14px; font-size: 12px;
-      border-bottom: 1px solid var(--border);
+      padding: 6px 14px; font-size: 12px; border-bottom: 1px solid var(--border);
     }
     .kv-row:last-child { border-bottom: none }
     .kv-row span { color: var(--tx2) }
     .kv-row strong { font-family: 'IBM Plex Mono', monospace; font-size: 11px }
     .svc-row {
-      display: flex; align-items: center; gap: 8px;
-      padding: 7px 0; font-size: 12px;
+      display: flex; align-items: center; gap: 8px; padding: 7px 0; font-size: 12px;
       border-bottom: 1px solid var(--border);
     }
     .svc-row:last-child { border-bottom: none }
@@ -2286,20 +2738,15 @@ defmodule AlemWeb.AdminLive do
     .token-badge { background: rgba(91,158,255,.1); color: var(--clr-blue); font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 700 }
     .quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px }
     .quick-btn {
-      display: flex; align-items: center; gap: 7px;
-      background: var(--bg3); border: 1px solid var(--border);
-      border-radius: 8px; padding: 8px 10px;
-      color: var(--tx2); cursor: pointer;
-      font-size: 11px; font-weight: 600;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      display: flex; align-items: center; gap: 7px; background: var(--bg3);
+      border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+      color: var(--tx2); cursor: pointer; font-size: 11px; font-weight: 600;
+      font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .quick-btn:hover { background: var(--bg4); color: var(--tx); border-color: var(--border2) }
     .audit-row {
-      display: flex; align-items: center; gap: 10px;
-      padding: 9px 14px; font-size: 11px;
-      border-bottom: 1px solid var(--border);
-      transition: background .1s;
+      display: flex; align-items: center; gap: 10px; padding: 9px 14px; font-size: 11px;
+      border-bottom: 1px solid var(--border); transition: background .1s;
     }
     .audit-row:last-child { border-bottom: none }
     .audit-row:hover { background: var(--bg3) }
@@ -2313,35 +2760,27 @@ defmodule AlemWeb.AdminLive do
     .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px }
     .search-box {
       display: flex; align-items: center; gap: 8px;
-      background: var(--bg2); border: 1px solid var(--border);
-      border-radius: 8px; padding: 7px 11px;
-      flex: 1; min-width: 160px; color: var(--tx2);
-      transition: border-color .15s;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 11px; flex: 1; min-width: 160px; color: var(--tx2); transition: border-color .15s;
     }
     .search-box:focus-within { border-color: var(--clr-blue) }
     .search-input {
-      background: none; border: none; outline: none;
-      color: var(--tx); font-size: 12px; width: 100%;
-      font-family: 'Syne', sans-serif;
+      background: none; border: none; outline: none; color: var(--tx);
+      font-size: 12px; width: 100%; font-family: 'Syne', sans-serif;
     }
     .search-input::placeholder { color: var(--tx3) }
     .filter-pills { display: flex; gap: 5px; flex-wrap: wrap }
     .pill {
-      background: var(--bg3); border: 1px solid var(--border);
-      border-radius: 20px; padding: 4px 11px;
-      color: var(--tx2); cursor: pointer;
-      font-size: 11px; font-weight: 600;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      background: var(--bg3); border: 1px solid var(--border); border-radius: 20px;
+      padding: 4px 11px; color: var(--tx2); cursor: pointer;
+      font-size: 11px; font-weight: 600; font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .pill:hover { border-color: var(--border2); color: var(--tx) }
     .pill.active { background: rgba(91,158,255,.1); border-color: rgba(91,158,255,.3); color: var(--clr-blue) }
     .theme-light .pill.active { background: rgba(37,99,235,.08); border-color: rgba(37,99,235,.25) }
     .select-box {
-      background: var(--bg2); border: 1px solid var(--border);
-      border-radius: 8px; padding: 7px 10px;
-      color: var(--tx); font-size: 12px;
-      font-family: 'Syne', sans-serif;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 10px; color: var(--tx); font-size: 12px; font-family: 'Syne', sans-serif;
       cursor: pointer; outline: none;
     }
 
@@ -2349,9 +2788,8 @@ defmodule AlemWeb.AdminLive do
     .table-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden }
     .data-table { width: 100%; border-collapse: collapse }
     .data-table thead th {
-      background: var(--bg3); padding: 9px 13px;
-      font-size: 10px; font-weight: 700; color: var(--tx2);
-      text-align: left; letter-spacing: .7px; text-transform: uppercase;
+      background: var(--bg3); padding: 9px 13px; font-size: 10px; font-weight: 700;
+      color: var(--tx2); text-align: left; letter-spacing: .7px; text-transform: uppercase;
       border-bottom: 1px solid var(--border);
     }
     .data-table tbody tr { border-bottom: 1px solid var(--border); transition: background .1s }
@@ -2365,12 +2803,9 @@ defmodule AlemWeb.AdminLive do
 
     /* ── BUTTONS ────────────────────────────────────────────────── */
     .btn-sm {
-      background: var(--bg4); border: 1px solid var(--border);
-      border-radius: 6px; padding: 4px 10px;
-      color: var(--tx2); cursor: pointer;
-      font-size: 10px; font-weight: 700;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      background: var(--bg4); border: 1px solid var(--border); border-radius: 6px;
+      padding: 4px 10px; color: var(--tx2); cursor: pointer; font-size: 10px; font-weight: 700;
+      font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .btn-sm:hover { background: var(--bg5); color: var(--tx) }
     .btn-sm.accent { color: var(--clr-purple); border-color: rgba(167,139,250,.3); background: rgba(167,139,250,.08) }
@@ -2389,33 +2824,25 @@ defmodule AlemWeb.AdminLive do
     .ref-badge.dup { background: rgba(255,187,0,.1); color: var(--clr-amber); border: 1px solid rgba(255,187,0,.2) }
 
     /* ── PAGINATION ─────────────────────────────────────────────── */
-    .pagination { display: flex; align-items: center; gap: 10px; padding: 12px; justify-content: center }
+    .pagination { display: flex; align-items: center; gap: 6px; padding: 12px; justify-content: center }
     .page-btn {
-      background: var(--bg3); border: 1px solid var(--border);
-      border-radius: 7px; padding: 5px 14px;
-      color: var(--tx2); cursor: pointer;
-      font-size: 12px; font-weight: 600;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      background: var(--bg3); border: 1px solid var(--border); border-radius: 7px;
+      padding: 5px 12px; color: var(--tx2); cursor: pointer; font-size: 12px; font-weight: 600;
+      font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .page-btn:hover { background: var(--bg4); color: var(--tx) }
-    .page-info { font-size: 11px; color: var(--tx3); font-family: 'IBM Plex Mono', monospace }
+    .page-info { font-size: 11px; color: var(--tx3); font-family: 'IBM Plex Mono', monospace; padding: 0 6px }
 
     /* ── USER DETAIL ────────────────────────────────────────────── */
     .back-btn {
-      display: flex; align-items: center; gap: 6px;
-      background: none; border: none; color: var(--tx2);
-      cursor: pointer; font-size: 12px; font-weight: 600;
-      font-family: 'Syne', sans-serif;
-      margin-bottom: 16px; padding: 0;
-      transition: color .15s;
+      display: flex; align-items: center; gap: 6px; background: none; border: none;
+      color: var(--tx2); cursor: pointer; font-size: 12px; font-weight: 600;
+      font-family: 'Syne', sans-serif; margin-bottom: 16px; padding: 0; transition: color .15s;
     }
-    .back-btn:hover { color: var(--tx) }
+    .back-btn:hover { color: var(--clr-blue) }
     .profile-card {
-      background: var(--bg2); border: 1px solid var(--border);
-      border-radius: 14px; padding: 22px;
-      display: flex; align-items: flex-start; gap: 18px;
-      margin-bottom: 14px;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+      padding: 22px; display: flex; align-items: flex-start; gap: 18px; margin-bottom: 14px;
     }
     .profile-avatar-lg {
       width: 56px; height: 56px; border-radius: 14px;
@@ -2430,9 +2857,7 @@ defmodule AlemWeb.AdminLive do
     .profile-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0 }
     .action-btn {
       padding: 6px 14px; border-radius: 7px; border: 1px solid transparent;
-      cursor: pointer; font-size: 11px; font-weight: 700;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      cursor: pointer; font-size: 11px; font-weight: 700; font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .action-btn:hover { transform: translateY(-1px); opacity: .85 }
     .action-btn.purple { background: rgba(167,139,250,.12); color: var(--clr-purple); border-color: rgba(167,139,250,.25) }
@@ -2446,12 +2871,10 @@ defmodule AlemWeb.AdminLive do
     .strip-stat.green .strip-val { color: var(--clr-green) }
     .strip-val { font-size: 15px; font-weight: 800; margin-bottom: 3px; font-family: 'IBM Plex Mono', monospace }
     .strip-lbl { font-size: 10px; color: var(--tx3); font-weight: 600; text-transform: uppercase; letter-spacing: .4px }
-    .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px }
     .scroll-list { max-height: 300px; overflow-y: auto }
     .list-row {
-      display: flex; align-items: center; gap: 9px;
-      padding: 9px 13px; border-bottom: 1px solid var(--border);
-      font-size: 12px; transition: background .1s;
+      display: flex; align-items: center; gap: 9px; padding: 9px 13px;
+      border-bottom: 1px solid var(--border); font-size: 12px; transition: background .1s;
     }
     .list-row:last-child { border-bottom: none }
     .list-row:hover { background: var(--bg3) }
@@ -2459,11 +2882,7 @@ defmodule AlemWeb.AdminLive do
     .row-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
     .row-meta { font-size: 10px; color: var(--tx3) }
     .empty-state { text-align: center; color: var(--tx3); padding: 40px; font-size: 13px }
-    .did-block {
-      background: var(--bg3); padding: 10px 14px;
-      font-size: 10px; color: var(--clr-blue);
-      word-break: break-all; border-bottom: 1px solid var(--border);
-    }
+    .did-block { background: var(--bg3); padding: 10px 14px; font-size: 10px; color: var(--clr-blue); word-break: break-all; border-bottom: 1px solid var(--border) }
     .section-label { font-size: 10px; font-weight: 700; color: var(--tx3); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 8px }
 
     /* ── PERMISSIONS ────────────────────────────────────────────── */
@@ -2477,16 +2896,13 @@ defmodule AlemWeb.AdminLive do
     .perm-desc { font-size: 10px; color: var(--tx3) }
     .perm-ctrl { display: flex; align-items: center; gap: 7px }
     .perm-badge {
-      font-size: 9px; padding: 3px 9px; border-radius: 20px;
-      font-weight: 700; letter-spacing: .3px; white-space: nowrap;
+      font-size: 9px; padding: 3px 9px; border-radius: 20px; font-weight: 700; letter-spacing: .3px; white-space: nowrap;
     }
     .perm-badge.on  { background: rgba(0,221,160,.1);  color: var(--clr-green); border: 1px solid rgba(0,221,160,.2) }
     .perm-badge.off { background: var(--bg4);            color: var(--tx3);        border: 1px solid var(--border) }
     .perm-btn {
-      font-size: 10px; padding: 4px 10px; border-radius: 6px;
-      border: 1px solid transparent; cursor: pointer;
-      font-weight: 700; font-family: 'Syne', sans-serif;
-      transition: all .15s; white-space: nowrap;
+      font-size: 10px; padding: 4px 10px; border-radius: 6px; border: 1px solid transparent;
+      cursor: pointer; font-weight: 700; font-family: 'Syne', sans-serif; transition: all .15s; white-space: nowrap;
     }
     .perm-btn:hover { opacity: .8; transform: translateY(-1px) }
     .perm-btn.red    { background: rgba(255,85,102,.1);  color: var(--clr-red);    border-color: rgba(255,85,102,.25) }
@@ -2499,12 +2915,9 @@ defmodule AlemWeb.AdminLive do
     .vault-layout { display: grid; grid-template-columns: 190px 1fr; gap: 12px }
     .vault-sidebar { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden }
     .vault-all-btn {
-      display: block; width: 100%; text-align: left;
-      padding: 9px 13px; cursor: pointer;
+      display: block; width: 100%; text-align: left; padding: 9px 13px; cursor: pointer;
       background: none; border: none; border-bottom: 1px solid var(--border);
-      font-size: 12px; color: var(--clr-blue); font-weight: 700;
-      font-family: 'Syne', sans-serif;
-      transition: background .1s;
+      font-size: 12px; color: var(--clr-blue); font-weight: 700; font-family: 'Syne', sans-serif; transition: background .1s;
     }
     .vault-all-btn:hover { background: var(--bg3) }
     .vault-ns { padding: 8px 13px; border-bottom: 1px solid var(--border); cursor: pointer }
@@ -2515,42 +2928,33 @@ defmodule AlemWeb.AdminLive do
     .sql-left { display: flex; flex-direction: column; gap: 12px; overflow-y: auto }
     .sql-right { overflow-y: auto }
     .preset-btn {
-      display: block; width: 100%; text-align: left;
-      background: none; border: none; border-bottom: 1px solid var(--border);
-      padding: 9px 14px; color: var(--tx2); cursor: pointer;
-      font-size: 12px; font-weight: 600; font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      display: block; width: 100%; text-align: left; background: none;
+      border: none; border-bottom: 1px solid var(--border); padding: 9px 14px;
+      color: var(--tx2); cursor: pointer; font-size: 12px; font-weight: 600;
+      font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .preset-btn:last-child { border-bottom: none }
     .preset-btn:hover { background: var(--bg3); color: var(--tx) }
     .sql-editor {
-      width: 100%; background: var(--bg3);
-      border: none; border-top: 1px solid var(--border);
-      padding: 12px 14px; color: var(--tx);
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 12px; line-height: 1.7;
-      resize: vertical; outline: none; min-height: 140px;
+      width: 100%; background: var(--bg3); border: none; border-top: 1px solid var(--border);
+      padding: 12px 14px; color: var(--tx); font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px; line-height: 1.7; resize: vertical; outline: none; min-height: 140px;
     }
     .sql-editor:focus { border-top-color: var(--clr-blue) }
     .sql-toolbar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 10px 14px; background: var(--bg3);
-      border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      background: var(--bg3); border-top: 1px solid var(--border);
     }
     .btn-run {
-      background: var(--clr-blue); color: #fff; border: none;
-      border-radius: 7px; padding: 7px 16px;
-      font-size: 12px; font-weight: 700; cursor: pointer;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      background: var(--clr-blue); color: #fff; border: none; border-radius: 7px;
+      padding: 7px 16px; font-size: 12px; font-weight: 700; cursor: pointer;
+      font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .btn-run:hover { opacity: .87 }
     .btn-clear {
-      background: var(--bg4); border: 1px solid var(--border);
-      border-radius: 7px; padding: 7px 12px;
-      color: var(--tx2); cursor: pointer;
-      font-size: 12px; font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      background: var(--bg4); border: 1px solid var(--border); border-radius: 7px;
+      padding: 7px 12px; color: var(--tx2); cursor: pointer; font-size: 12px;
+      font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .btn-clear:hover { background: var(--bg5); color: var(--tx) }
     .sql-hint { font-size: 10px; color: var(--tx3); margin-left: auto; font-family: 'IBM Plex Mono', monospace }
@@ -2564,11 +2968,9 @@ defmodule AlemWeb.AdminLive do
     /* ── S3 ─────────────────────────────────────────────────────── */
     .s3-root-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; max-width: 600px }
     .s3-card {
-      background: var(--bg2); border: 1px solid var(--border2);
-      border-radius: 14px; padding: 24px; cursor: pointer;
-      text-align: left; transition: all .2s;
-      display: flex; flex-direction: column; gap: 6px;
-      position: relative; overflow: hidden;
+      background: var(--bg2); border: 1px solid var(--border2); border-radius: 14px;
+      padding: 24px; cursor: pointer; text-align: left; transition: all .2s;
+      display: flex; flex-direction: column; gap: 6px; position: relative; overflow: hidden;
     }
     .s3-card::before { content:''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--clr-blue), var(--clr-purple)) }
     .s3-card:hover { border-color: rgba(91,158,255,.3); transform: translateY(-2px); box-shadow: var(--shadow-lg) }
@@ -2581,27 +2983,20 @@ defmodule AlemWeb.AdminLive do
     .breadcrumb-path { color: var(--clr-blue); font-family: 'IBM Plex Mono', monospace }
     .s3-folder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 7px }
     .s3-folder {
-      background: var(--bg2); border: 1px solid var(--border);
-      border-radius: 8px; padding: 10px 12px; cursor: pointer;
-      display: flex; align-items: center; gap: 8px;
-      font-size: 12px; color: var(--tx);
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--tx); font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .s3-folder:hover { background: var(--bg3); border-color: var(--border2) }
 
     /* ── MODALS / OVERLAY ───────────────────────────────────────── */
     .overlay {
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,.65);
-      z-index: 1000;
-      display: flex; align-items: center; justify-content: center;
-      backdrop-filter: blur(6px);
+      position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 1000;
+      display: flex; align-items: center; justify-content: center; backdrop-filter: blur(6px);
     }
     .modal {
-      background: var(--bg2); border: 1px solid var(--border2);
-      border-radius: 16px; padding: 28px; width: 350px;
-      text-align: center; box-shadow: var(--shadow-lg);
+      background: var(--bg2); border: 1px solid var(--border2); border-radius: 16px;
+      padding: 28px; width: 350px; text-align: center; box-shadow: var(--shadow-lg);
       animation: modal-in .2s ease;
     }
     @keyframes modal-in { from { transform: scale(.94) translateY(10px); opacity: 0 } to { transform: scale(1) translateY(0); opacity: 1 } }
@@ -2610,144 +3005,87 @@ defmodule AlemWeb.AdminLive do
     .modal-body  { font-size: 13px; color: var(--tx2); margin-bottom: 22px; line-height: 1.5 }
     .modal-btns  { display: flex; gap: 10px; justify-content: center }
     .btn-cancel {
-      background: var(--bg4); border: 1px solid var(--border);
-      border-radius: 7px; padding: 8px 18px;
-      color: var(--tx2); cursor: pointer;
-      font-size: 12px; font-weight: 700;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      background: var(--bg4); border: 1px solid var(--border); border-radius: 7px;
+      padding: 8px 18px; color: var(--tx2); cursor: pointer; font-size: 12px; font-weight: 700;
+      font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .btn-cancel:hover { background: var(--bg5); color: var(--tx) }
     .btn-danger {
-      background: rgba(255,85,102,.15); border: 1px solid rgba(255,85,102,.3);
-      border-radius: 7px; padding: 8px 18px;
-      color: var(--clr-red); cursor: pointer;
-      font-size: 12px; font-weight: 700;
-      font-family: 'Syne', sans-serif;
-      transition: all .15s;
+      background: rgba(255,85,102,.15); border: 1px solid rgba(255,85,102,.3); border-radius: 7px;
+      padding: 8px 18px; color: var(--clr-red); cursor: pointer; font-size: 12px; font-weight: 700;
+      font-family: 'Syne', sans-serif; transition: all .15s;
     }
     .btn-danger:hover { background: rgba(255,85,102,.25) }
 
     /* ── TOAST ──────────────────────────────────────────────────── */
     .toast {
       position: fixed; top: 16px; right: 16px; z-index: 2000;
-      background: var(--bg2); border: 1px solid var(--border2);
-      border-radius: 10px; padding: 11px 16px;
-      display: flex; align-items: center;
-      font-size: 12px; font-weight: 600;
-      box-shadow: var(--shadow-lg);
+      background: var(--bg2); border: 1px solid var(--border2); border-radius: 10px;
+      padding: 11px 16px; display: flex; align-items: center;
+      font-size: 12px; font-weight: 600; box-shadow: var(--shadow-lg);
       animation: toast-in .3s cubic-bezier(.16,1,.3,1);
     }
     .toast-success { border-color: rgba(0,221,160,.3); color: var(--clr-green) }
     .toast-error   { border-color: rgba(255,85,102,.3); color: var(--clr-red) }
     @keyframes toast-in { from { transform: translateX(50px); opacity: 0 } to { transform: translateX(0); opacity: 1 } }
 
-    /* Clickable stat cards */
-    .sc-click{cursor:pointer;transition:all .15s!important}
-    .sc-click:hover{transform:translateY(-3px)!important}
-    .sc-arr{color:var(--accent);font-size:12px;margin-left:auto;opacity:.6}
-    .sc-click:hover .sc-arr{opacity:1}
-
     /* Chart containers */
-    .chart-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-    .chart-card{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:16px}
-    .chart-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px}
-    .chart-wrap{height:200px;position:relative}
-    .chart-wrap.sm{height:160px;position:relative;max-width:320px;margin:0 auto}
-    .chart-empty{height:160px;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px}
-    .chart-legend{display:flex;gap:14px;justify-content:center;margin-top:10px;font-size:11px;color:var(--muted);flex-wrap:wrap}
-    .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}
-
-    /* Stat strip */
-    .stat-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
-    .stat-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center}
-    .stat-val{font-size:16px;font-weight:800;line-height:1;margin-bottom:3px}
-    .stat-lbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
-
-    .dup-badge{background:rgba(245,158,11,.1);color:#f59e0b;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
-    .ok{color:#3fb950}
-    .ta-r{text-align:right}
-
-    /* Analytics layout */
-    .chart-r3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-    .chart-r3 .span2{grid-column:span 2}
-    .chart-card{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px}
-    .chart-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
-    .ct-sub{font-size:9px;font-weight:400;color:var(--muted2);text-transform:none;letter-spacing:0;margin-left:4px}
-    .chart-h200{height:200px;position:relative}
-    .chart-h180{height:180px;position:relative}
-    .chart-empty{height:160px;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:11px}
+    .chart-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:12px }
+    .chart-card { background:var(--bg2); border:1px solid var(--border); border-radius:10px; padding:14px }
+    .chart-title { font-size:10px; font-weight:700; color:var(--tx2); text-transform:uppercase; letter-spacing:.6px; margin-bottom:10px }
+    .ct-sub { font-size:9px; font-weight:400; color:var(--tx3); text-transform:none; letter-spacing:0; margin-left:4px }
+    .chart-h200 { height:200px; position:relative }
+    .chart-h180 { height:180px; position:relative }
+    .chart-empty { height:150px; display:flex; align-items:center; justify-content:center; color:var(--tx3); font-size:11px }
 
     /* Gauge */
-    .gauge-wrap{position:relative;height:150px;display:flex;align-items:center;justify-content:center}
-    .gauge-label{position:absolute;bottom:16px;text-align:center;font-size:20px;font-weight:800;color:var(--text);line-height:1.2}
-    .gauge-label span{font-size:10px;font-weight:500;color:var(--muted)}
+    .gauge-wrap { position:relative; height:150px; display:flex; align-items:center; justify-content:center }
+    .gauge-label { position:absolute; bottom:16px; text-align:center; font-size:20px; font-weight:800; color:var(--tx); line-height:1.2 }
+    .gauge-label span { font-size:10px; font-weight:500; color:var(--tx2) }
 
     /* Stat strip */
-    .a-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
-    .a-stat{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center}
-    .a-val{font-size:17px;font-weight:800;line-height:1;margin-bottom:3px}
-    .a-lbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
-
-    .dup-badge{background:rgba(245,158,11,.1);color:#e3b341;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
-    .ok{color:#3fb950}
-    .ta-r{text-align:right}
-
-    /* Clickable stat cards */
-    .sc-click{cursor:pointer !important}
-    .sc-click:hover{transform:translateY(-2px) !important;border-color:var(--accent) !important;box-shadow:0 4px 16px rgba(0,0,0,.2)}
-    .sc-arr{margin-left:auto;font-size:13px;color:var(--accent);opacity:0;transition:opacity .15s}
-    .sc-click:hover .sc-arr{opacity:1}
+    .a-strip { display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin-bottom:14px }
+    .a-stat { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:12px; text-align:center }
+    .a-val { font-size:17px; font-weight:800; line-height:1; margin-bottom:3px }
+    .a-lbl { font-size:9px; font-weight:600; color:var(--tx2); text-transform:uppercase; letter-spacing:.4px }
 
     /* Analytics layout */
-    .chart-r3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
-    .chart-r3 .span2{grid-column:span 2}
-    .chart-card{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:14px}
-    .chart-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
-    .ct-sub{font-size:9px;font-weight:400;color:var(--muted2);text-transform:none;letter-spacing:0;margin-left:4px}
-    .chart-h200{height:200px;position:relative}
-    .chart-h180{height:180px;position:relative}
-    .chart-empty{height:150px;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:11px}
-    .gauge-wrap{position:relative;height:150px;display:flex;align-items:center;justify-content:center}
-    .gauge-label{position:absolute;bottom:16px;text-align:center;font-size:20px;font-weight:800;color:var(--text);line-height:1.2}
-    .gauge-label span{font-size:10px;font-weight:500;color:var(--muted)}
-    .a-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
-    .a-stat{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center}
-    .a-val{font-size:17px;font-weight:800;line-height:1;margin-bottom:3px}
-    .a-lbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
-    .dup-badge{background:rgba(245,158,11,.1);color:#e3b341;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
-    .ok{color:#3fb950}.ta-r{text-align:right}
+    .chart-r3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px }
+    .chart-r3 .span2 { grid-column:span 2 }
 
-    /* Profile services grid */
-    .svc-grid{display:flex;flex-direction:column;gap:0}
-    .svc-tile{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--border);transition:background .1s}
-    .svc-tile:last-child{border-bottom:none}
-    .svc-tile:hover{background:var(--hover)}
-    .svc-tile-icon{width:26px;height:26px;border-radius:6px;background:var(--bg);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:var(--muted);flex-shrink:0}
-    .svc-on .svc-tile-icon{background:rgba(88,166,255,.1);border-color:rgba(88,166,255,.25);color:var(--clr-blue)}
-    .svc-tile-body{flex:1;min-width:0}
-    .svc-tile-name{font-size:12px;font-weight:600;color:var(--text)}
-    .svc-tile-desc{font-size:10px;color:var(--muted2);margin-top:1px}
-    .svc-tile-usage{font-size:10px;color:var(--muted);margin-top:1px;font-family:monospace}
-    .svc-badge{font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:var(--bg);color:var(--muted2);border:1px solid var(--border);flex-shrink:0}
-    .svc-badge.on{background:rgba(63,185,80,.1);color:var(--clr-green);border-color:rgba(63,185,80,.2)}
+    /* Profile page services grid */
+    .svc-grid { display:flex; flex-direction:column; gap:0 }
+    .svc-tile { display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--border); transition:background .1s }
+    .svc-tile:last-child { border-bottom:none }
+    .svc-tile:hover { background:var(--bg3) }
+    .svc-tile-icon { width:26px; height:26px; border-radius:6px; background:var(--bg4); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; color:var(--tx3); flex-shrink:0 }
+    .svc-on .svc-tile-icon { background:rgba(88,166,255,.1); border-color:rgba(88,166,255,.25); color:var(--clr-blue) }
+    .svc-tile-body { flex:1; min-width:0 }
+    .svc-tile-name { font-size:12px; font-weight:600 }
+    .svc-tile-desc { font-size:10px; color:var(--tx3); margin-top:1px }
+    .svc-tile-usage { font-size:10px; color:var(--tx2); margin-top:1px; font-family:monospace }
+    .svc-badge { font-size:9px; font-weight:700; padding:2px 7px; border-radius:10px; background:var(--bg4); color:var(--tx3); border:1px solid var(--border); flex-shrink:0 }
+    .svc-badge.on { background:rgba(63,185,80,.1); color:var(--clr-green); border-color:rgba(63,185,80,.2) }
 
     /* Activity log */
-    .activity-log{display:flex;flex-direction:column}
-    .activity-row{display:flex;align-items:center;gap:9px;padding:8px 14px;border-bottom:1px solid var(--border)}
-    .activity-row:last-child{border-bottom:none}
-    .activity-dot{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0}
-    .activity-dot.upload{background:rgba(88,166,255,.15);color:var(--clr-blue)}
-    .activity-dot.login{background:rgba(63,185,80,.15);color:var(--clr-green)}
-    .activity-body{flex:1;min-width:0}
-    .activity-label{font-size:12px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .activity-sub{font-size:10px;color:var(--muted2)}
-    .activity-time{font-size:10px;color:var(--muted);white-space:nowrap}
+    .activity-log { display:flex; flex-direction:column }
+    .activity-row { display:flex; align-items:center; gap:9px; padding:8px 14px; border-bottom:1px solid var(--border) }
+    .activity-row:last-child { border-bottom:none }
+    .activity-dot { width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:800; flex-shrink:0 }
+    .activity-dot.upload { background:rgba(88,166,255,.15); color:var(--clr-blue) }
+    .activity-dot.login  { background:rgba(63,185,80,.15);  color:var(--clr-green) }
+    .activity-body { flex:1; min-width:0 }
+    .activity-label { font-size:12px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+    .activity-sub  { font-size:10px; color:var(--tx3) }
+    .activity-time { font-size:10px; color:var(--tx2); white-space:nowrap }
 
-    /* Two col */
-    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-    .profile-join{font-size:10px;color:var(--muted2);margin-top:4px}
-</style>
+    .two-col { display:grid; grid-template-columns:1fr 1fr; gap:12px }
+    .profile-join { font-size:10px; color:var(--tx3); margin-top:4px }
+
+    .dup-badge { background:rgba(245,158,11,.1); color:#e3b341; border:1px solid rgba(245,158,11,.2); border-radius:10px; padding:2px 6px; font-size:9px; font-weight:700 }
+    .ok  { color:#3fb950 }
+    .ta-r { text-align:right }
+    </style>
     """
   end
 end
