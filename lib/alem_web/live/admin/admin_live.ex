@@ -412,13 +412,17 @@ defmodule AlemWeb.AdminLive do
   end
 
   defp topbar(assigns) do
-    t = %{dashboard: "Dashboard", users: "Users", user_detail: "User Profile",
-          permissions: "Permissions", monitoring: "Monitoring",
-          vault: "CAS Vault", duplicates: "Duplicates", sql: "SQL Console", s3: "S3 Browser"}
+    titles = %{dashboard: "Dashboard", users: "Users", user_detail: "User Profile",
+               permissions: "Permissions", monitoring: "Monitoring",
+               vault: "CAS Vault", duplicates: "Duplicates", sql: "SQL Console",
+               s3: "S3 Browser", catalog: "File Catalog",
+               users_analytics: "Users Analytics", storage_analytics: "Storage Analytics",
+               cas_analytics: "CAS Analytics"}
+    assigns = assign(assigns, :page_title, Map.get(titles, assigns.page, "Admin"))
     ~H"""
     <header class="tb">
       <div class="tb-left">
-        <div class="tb-t"><%= Map.get(t, @page, "Admin") %></div>
+        <div class="tb-t"><%= @page_title %></div>
         <div class="tb-bc"><%= breadcrumb(@page) %></div>
       </div>
       <div class="tb-r">
@@ -699,15 +703,71 @@ defmodule AlemWeb.AdminLive do
 
   # ── User Detail ───────────────────────────────────────────────────────────
 
-  defp user_detail_page(%{user_detail: nil} = assigns), do: ~H"<div class='empty-state'>User not found</div>"
+  # ── User Detail / Profile ────────────────────────────────────────────────
+
+  defp user_detail_page(%{user_detail: nil} = assigns) do
+    ~H"""
+    <div class="empty-state">User not found</div>
+    """
+  end
+
   defp user_detail_page(assigns) do
+    # Load user activity data for charts
+    ua = Admin.user_activity(assigns.user_detail.user.id)
+
+    # Chart: files per month (bar)
+    fm_labels = Enum.map(ua.files_by_month, & &1.month)
+    fm_data   = Enum.map(ua.files_by_month, & &1.count)
+    files_chart = cj_bar(fm_labels, fm_data, "Files", "rgba(88,166,255,.75)")
+
+    # Chart: logins per month (bar)
+    lm_labels = Enum.map(ua.logins_by_month, & &1.month)
+    lm_data   = Enum.map(ua.logins_by_month, & &1.count)
+    logins_chart = cj_bar(lm_labels, lm_data, "Logins", "rgba(63,185,80,.75)")
+
+    # Chart: storage growth per month (area line)
+    sm_labels = Enum.map(ua.storage_by_month, & &1.month)
+    sm_data   = Enum.map(ua.storage_by_month, & &1.mb)
+    storage_chart = cj_line(sm_labels, [%{
+      label: "MB", data: sm_data,
+      borderColor: "#bc8cff", backgroundColor: "rgba(188,140,255,.12)",
+      fill: true, tension: 0.4, pointRadius: 3
+    }])
+
+    # Chart: file types pie
+    t8 = Enum.take(ua.type_counts, 6)
+    type_colors = ~w(#58a6ff #3fb950 #e3b341 #f85149 #bc8cff #06b6d4)
+    types_chart = cj_pie(
+      Enum.map(t8, & short_mime(&1.type)),
+      Enum.map(t8, & &1.count),
+      type_colors
+    )
+
+    # Chart: device breakdown (doughnut)
+    dev_colors = ~w(#58a6ff #3fb950 #e3b341 #bc8cff #f85149)
+    devices_chart = cj_doughnut(
+      Enum.map(ua.device_counts, & String.capitalize(&1.device || "unknown")),
+      Enum.map(ua.device_counts, & &1.count),
+      dev_colors
+    )
+
+    assigns = assigns
+      |> assign(:ua, ua)
+      |> assign(:files_chart,   files_chart)
+      |> assign(:logins_chart,  logins_chart)
+      |> assign(:storage_chart, storage_chart)
+      |> assign(:types_chart,   types_chart)
+      |> assign(:devices_chart, devices_chart)
+
     ~H"""
     <div>
+      <!-- Back + Header -->
       <button class="back-btn" phx-click="nav_back">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
         Back to Users
       </button>
 
+      <!-- Profile card -->
       <div class="profile-card">
         <div class="profile-avatar-lg"><%= String.first(@user_detail.user.nickname || "?") |> String.upcase() %></div>
         <div class="profile-info">
@@ -715,9 +775,10 @@ defmodule AlemWeb.AdminLive do
           <div class="profile-email"><%= @user_detail.user.email %></div>
           <div class="profile-id mono"><%= @user_detail.user.id %></div>
           <div class="badge-row"><.user_badges u={@user_detail.user}/></div>
+          <div class="profile-join">Joined <%= fd(@user_detail.user.inserted_at) %></div>
         </div>
         <div class="profile-actions">
-          <button class="action-btn purple" phx-click="view_permissions" phx-value-id={@user_detail.user.id}>🔐 Permissions</button>
+          <button class="action-btn purple" phx-click="view_permissions" phx-value-id={@user_detail.user.id}>Permissions</button>
           <%= if @user_detail.user.is_active do %>
             <button class="action-btn red" phx-click="confirm_action" phx-value-action="block" phx-value-user_id={@user_detail.user.id} phx-value-label={"Block #{@user_detail.user.nickname}?"}>Block</button>
           <% else %>
@@ -729,72 +790,149 @@ defmodule AlemWeb.AdminLive do
             <button class="action-btn amber" phx-click="confirm_action" phx-value-action="promote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Make #{@user_detail.user.nickname} admin?"}>Make Admin</button>
           <% end %>
           <button class="action-btn orange" phx-click="confirm_action" phx-value-action="soft_delete" phx-value-user_id={@user_detail.user.id} phx-value-label={"Soft delete #{@user_detail.user.nickname}?"}>Soft Delete</button>
-          <button class="action-btn red" phx-click="confirm_action" phx-value-action="hard_delete" phx-value-user_id={@user_detail.user.id} phx-value-label={"PERMANENTLY delete #{@user_detail.user.nickname}?"}>Hard Delete ⚠</button>
         </div>
       </div>
 
-      <div class="stat-strip">
-        <div class="strip-stat"><div class="strip-val"><%= @user_detail.file_count %></div><div class="strip-lbl">Files</div></div>
-        <div class="strip-stat"><div class="strip-val"><%= Admin.format_bytes(@user_detail.storage_bytes) %></div><div class="strip-lbl">Storage</div></div>
-        <div class="strip-stat"><div class="strip-val"><%= length(@user_detail.duplicates) %></div><div class="strip-lbl">Duplicates</div></div>
-        <div class="strip-stat"><div class="strip-val"><%= length(@user_detail.sessions) %></div><div class="strip-lbl">Sessions</div></div>
-        <div class="strip-stat"><div class="strip-val"><%= length(@user_detail.tokens) %></div><div class="strip-lbl">API Tokens</div></div>
-        <div class="strip-stat"><div class="strip-val"><%= fd(@user_detail.user.inserted_at) %></div><div class="strip-lbl">Joined</div></div>
+      <!-- KPI strip -->
+      <div class="a-strip" style="grid-template-columns:repeat(5,1fr);margin-bottom:14px">
+        <div class="a-stat"><div class="a-val" style="color:#58a6ff"><%= @ua.total_files %></div><div class="a-lbl">Total Files</div></div>
+        <div class="a-stat"><div class="a-val" style="color:#3fb950"><%= Admin.format_bytes(@ua.total_bytes) %></div><div class="a-lbl">Storage Used</div></div>
+        <div class="a-stat"><div class="a-val" style="color:#bc8cff"><%= @ua.total_sessions %></div><div class="a-lbl">Total Logins</div></div>
+        <div class="a-stat"><div class="a-val" style="color:#e3b341"><%= @ua.active_tokens %></div><div class="a-lbl">API Tokens</div></div>
+        <div class="a-stat"><div class="a-val" style="color:#58a6ff"><%= length(@user_detail.duplicates) %></div><div class="a-lbl">Duplicate Files</div></div>
       </div>
 
-      <div class="three-col">
+      <!-- ROW 1: Files per month + Logins per month -->
+      <div class="chart-grid-2" style="margin-bottom:12px">
+        <div class="chart-card">
+          <div class="chart-title">Files Uploaded per Month <span class="ct-sub">(Bar — last 12 months)</span></div>
+          <%= if @ua.files_by_month != [] do %>
+            <div class="chart-h200"><canvas id={"uf-fm-#{@user_detail.user.id}"} phx-hook="Chart" data-chart={@files_chart}></canvas></div>
+          <% else %>
+            <div class="chart-empty">No uploads yet</div>
+          <% end %>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Logins per Month <span class="ct-sub">(Bar — last 6 months)</span></div>
+          <%= if @ua.logins_by_month != [] do %>
+            <div class="chart-h200"><canvas id={"uf-lm-#{@user_detail.user.id}"} phx-hook="Chart" data-chart={@logins_chart}></canvas></div>
+          <% else %>
+            <div class="chart-empty">No login history</div>
+          <% end %>
+        </div>
+      </div>
+
+      <!-- ROW 2: Storage growth + File types + Device breakdown -->
+      <div class="chart-r3" style="margin-bottom:14px">
+        <div class="chart-card span2">
+          <div class="chart-title">Storage Growth <span class="ct-sub">(Area — MB per month)</span></div>
+          <%= if @ua.storage_by_month != [] do %>
+            <div class="chart-h180"><canvas id={"uf-sm-#{@user_detail.user.id}"} phx-hook="Chart" data-chart={@storage_chart}></canvas></div>
+          <% else %>
+            <div class="chart-empty">No storage data</div>
+          <% end %>
+        </div>
+        <div>
+          <div class="chart-card" style="margin-bottom:10px">
+            <div class="chart-title">File Types <span class="ct-sub">(Pie)</span></div>
+            <%= if @ua.type_counts != [] do %>
+              <div style="height:130px;position:relative"><canvas id={"uf-tc-#{@user_detail.user.id}"} phx-hook="Chart" data-chart={@types_chart}></canvas></div>
+            <% else %>
+              <div class="chart-empty" style="height:100px">No files</div>
+            <% end %>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">Device Types <span class="ct-sub">(Doughnut)</span></div>
+            <%= if @ua.device_counts != [] do %>
+              <div style="height:130px;position:relative"><canvas id={"uf-dc-#{@user_detail.user.id}"} phx-hook="Chart" data-chart={@devices_chart}></canvas></div>
+            <% else %>
+              <div class="chart-empty" style="height:100px">No sessions</div>
+            <% end %>
+          </div>
+        </div>
+      </div>
+
+      <!-- ROW 3: Services + Activity log -->
+      <div class="chart-grid-2" style="margin-bottom:14px">
+
+        <!-- Services grid -->
         <div class="card">
-          <div class="card-head"><span class="card-title">Files (<%= @user_detail.file_count %>)</span></div>
+          <div class="card-head">
+            <span class="card-title">Platform Services</span>
+            <span class="card-meta">Extensible registry</span>
+          </div>
+          <div class="svc-grid">
+            <%= for {name, svc} <- @ua.services do %>
+              <div class={["svc-tile", svc.enabled && "svc-on"]}>
+                <div class="svc-tile-icon"><%= svc.icon %></div>
+                <div class="svc-tile-body">
+                  <div class="svc-tile-name"><%= name %></div>
+                  <div class="svc-tile-desc"><%= svc.description %></div>
+                  <div class="svc-tile-usage"><%= svc.usage %></div>
+                </div>
+                <div class={["svc-badge", svc.enabled && "on"]}>
+                  <%= if svc.enabled, do: "Active", else: "Off" %>
+                </div>
+              </div>
+            <% end %>
+          </div>
+        </div>
+
+        <!-- Activity log -->
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Recent Activity</span>
+            <span class="card-meta">uploads + logins</span>
+          </div>
+          <div class="activity-log">
+            <%= for event <- @ua.activity_log do %>
+              <div class="activity-row">
+                <div class={["activity-dot", event.kind]}>
+                  <%= if event.kind == "upload", do: "F", else: "L" %>
+                </div>
+                <div class="activity-body">
+                  <div class="activity-label"><%= event.label || "—" %></div>
+                  <div class="activity-sub"><%= event.sub %></div>
+                </div>
+                <div class="activity-time"><%= fd_short(event.at) %></div>
+              </div>
+            <% end %>
+            <%= if @ua.activity_log == [] do %>
+              <div class="empty-state">No activity yet</div>
+            <% end %>
+          </div>
+        </div>
+      </div>
+
+      <!-- ROW 4: Identity + Files list -->
+      <div class="two-col">
+        <div class="card">
+          <div class="card-head"><span class="card-title">Identity & Namespace</span></div>
+          <div class="card-body" style="padding:0">
+            <%= if @user_detail.user.did_id do %>
+              <div class="did-block mono"><%= @user_detail.user.did_id %></div>
+              <%= if @user_detail.namespace do %>
+                <div class="kv-row"><span>Namespace</span><span class="mono"><%= @user_detail.namespace.id %></span></div>
+                <div class="kv-row"><span>Status</span><span><%= @user_detail.namespace.status %></span></div>
+              <% end %>
+            <% else %>
+              <div class="empty-state">No DID assigned</div>
+            <% end %>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Recent Files (<%= @user_detail.file_count %>)</span></div>
           <div class="scroll-list">
-            <%= for f <- Enum.take(@user_detail.files, 50) do %>
+            <%= for f <- Enum.take(@user_detail.files, 20) do %>
               <div class="list-row">
                 <span class="file-icon"><%= ctic(f.content_type) %></span>
                 <div>
                   <div class="row-name"><%= f.filename %></div>
-                  <div class="row-meta"><%= f.status %> · <%= fd(f.inserted_at) %></div>
+                  <div class="row-meta"><%= sct(f.content_type) %> · <%= fd(f.inserted_at) %></div>
                 </div>
               </div>
             <% end %>
             <%= if @user_detail.file_count == 0 do %><div class="empty-state">No files</div><% end %>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><span class="card-title">Sessions</span></div>
-          <div class="scroll-list">
-            <%= for s <- @user_detail.sessions do %>
-              <div class="list-row" style="flex-direction:column;align-items:flex-start;gap:2px">
-                <div class="row-name mono" style="font-size:10px"><%= s.ip_address %> · <%= s.device %></div>
-                <div class="row-meta">Last: <%= fd(s.last_active_at) %><%= if s.revoked_at, do: " · REVOKED", else: "" %></div>
-              </div>
-            <% end %>
-            <%= if @user_detail.sessions == [] do %><div class="empty-state">No sessions</div><% end %>
-          </div>
-        </div>
-
-        <div>
-          <div class="card" style="margin-bottom:12px">
-            <div class="card-head"><span class="card-title">Identity</span></div>
-            <div class="card-body" style="padding:0">
-              <%= if @user_detail.user.did_id do %>
-                <div class="did-block mono"><%= @user_detail.user.did_id %></div>
-                <%= if @user_detail.namespace do %>
-                  <div class="kv-row"><span>Namespace</span><span class="mono"><%= @user_detail.namespace.id %></span></div>
-                  <div class="kv-row"><span>Status</span><span><%= @user_detail.namespace.status %></span></div>
-                <% end %>
-              <% else %>
-                <div class="empty-state">No DID</div>
-              <% end %>
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-head"><span class="card-title">File Types</span></div>
-            <div class="card-body" style="padding:0">
-              <%= for {ct, cnt} <- @user_detail.type_breakdown do %>
-                <div class="kv-row"><span><%= ctic(ct) %> <%= sct(ct) %></span><span class="cell-num"><%= cnt %></span></div>
-              <% end %>
-              <%= if @user_detail.type_breakdown == %{} do %><div class="empty-state">No files</div><% end %>
-            </div>
           </div>
         </div>
       </div>
@@ -802,7 +940,13 @@ defmodule AlemWeb.AdminLive do
     """
   end
 
-  # ── Permissions ───────────────────────────────────────────────────────────
+  # Short date for activity log (e.g. "Apr 11")
+  defp fd_short(nil), do: "—"
+  defp fd_short(%NaiveDateTime{} = d) do
+    month = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] |> Enum.at(d.month - 1)
+    "#{month} #{d.day}"
+  end
+  defp fd_short(_), do: "—"
 
   defp permissions_page(%{permissions: nil} = assigns) do
     ~H"""
@@ -2573,6 +2717,36 @@ defmodule AlemWeb.AdminLive do
     .a-lbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
     .dup-badge{background:rgba(245,158,11,.1);color:#e3b341;border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:2px 6px;font-size:9px;font-weight:700}
     .ok{color:#3fb950}.ta-r{text-align:right}
+
+    /* Profile services grid */
+    .svc-grid{display:flex;flex-direction:column;gap:0}
+    .svc-tile{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--border);transition:background .1s}
+    .svc-tile:last-child{border-bottom:none}
+    .svc-tile:hover{background:var(--hover)}
+    .svc-tile-icon{width:26px;height:26px;border-radius:6px;background:var(--bg);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:var(--muted);flex-shrink:0}
+    .svc-on .svc-tile-icon{background:rgba(88,166,255,.1);border-color:rgba(88,166,255,.25);color:var(--clr-blue)}
+    .svc-tile-body{flex:1;min-width:0}
+    .svc-tile-name{font-size:12px;font-weight:600;color:var(--text)}
+    .svc-tile-desc{font-size:10px;color:var(--muted2);margin-top:1px}
+    .svc-tile-usage{font-size:10px;color:var(--muted);margin-top:1px;font-family:monospace}
+    .svc-badge{font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:var(--bg);color:var(--muted2);border:1px solid var(--border);flex-shrink:0}
+    .svc-badge.on{background:rgba(63,185,80,.1);color:var(--clr-green);border-color:rgba(63,185,80,.2)}
+
+    /* Activity log */
+    .activity-log{display:flex;flex-direction:column}
+    .activity-row{display:flex;align-items:center;gap:9px;padding:8px 14px;border-bottom:1px solid var(--border)}
+    .activity-row:last-child{border-bottom:none}
+    .activity-dot{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0}
+    .activity-dot.upload{background:rgba(88,166,255,.15);color:var(--clr-blue)}
+    .activity-dot.login{background:rgba(63,185,80,.15);color:var(--clr-green)}
+    .activity-body{flex:1;min-width:0}
+    .activity-label{font-size:12px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .activity-sub{font-size:10px;color:var(--muted2)}
+    .activity-time{font-size:10px;color:var(--muted);white-space:nowrap}
+
+    /* Two col */
+    .two-col{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .profile-join{font-size:10px;color:var(--muted2);margin-top:4px}
 </style>
     """
   end

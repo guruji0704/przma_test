@@ -823,7 +823,192 @@ defmodule Alem.Admin do
     }
   end
 
-  defp to_int(%Decimal{} = d), do: Decimal.to_integer(d)
-  defp to_int(i) when is_integer(i), do: i
-  defp to_int(_), do: 0
+
+  # ── User Activity Analytics ───────────────────────────────────────────────
+  # Returns per-user time-series and breakdown data for the profile page.
+  # Designed to be extended: add new service keys to services_used/1 below.
+
+  def user_activity(user_id) do
+    twelve_ago = DateTime.add(DateTime.utc_now(), -365, :day) |> DateTime.to_naive()
+    six_ago    = DateTime.add(DateTime.utc_now(), -180, :day) |> DateTime.to_naive()
+
+    # Files uploaded per month (last 12 months)
+    files_by_month =
+      from(d in Document,
+        where: d.user_id == ^user_id and d.inserted_at >= ^twelve_ago,
+        group_by: fragment("to_char(?, 'YYYY-MM')", d.inserted_at),
+        select: {fragment("to_char(?, 'YYYY-MM')", d.inserted_at), count(d.id)},
+        order_by: [asc: fragment("to_char(?, 'YYYY-MM')", d.inserted_at)])
+      |> Repo.all()
+      |> Enum.map(fn {m, c} -> %{month: m, count: c} end)
+
+    # Sessions / logins per month (last 6 months)
+    logins_by_month =
+      from(s in Alem.Session,
+        where: s.user_id == ^user_id and s.inserted_at >= ^six_ago,
+        group_by: fragment("to_char(?, 'YYYY-MM')", s.inserted_at),
+        select: {fragment("to_char(?, 'YYYY-MM')", s.inserted_at), count(s.id)},
+        order_by: [asc: fragment("to_char(?, 'YYYY-MM')", s.inserted_at)])
+      |> Repo.all()
+      |> Enum.map(fn {m, c} -> %{month: m, count: c} end)
+
+    # File type breakdown (pie chart)
+    type_counts =
+      from(d in Document,
+        where: d.user_id == ^user_id,
+        group_by: d.content_type,
+        select: %{type: d.content_type, count: count(d.id)},
+        order_by: [desc: count(d.id)])
+      |> Repo.all()
+
+    # Storage growth per month (cumulative MB)
+    storage_by_month =
+      from(d in Document,
+        join: c in CasObject, on: c.content_hash == d.content_hash,
+        where: d.user_id == ^user_id and d.inserted_at >= ^twelve_ago,
+        group_by: fragment("to_char(?, 'YYYY-MM')", d.inserted_at),
+        select: {
+          fragment("to_char(?, 'YYYY-MM')", d.inserted_at),
+          coalesce(sum(c.file_size), 0)
+        },
+        order_by: [asc: fragment("to_char(?, 'YYYY-MM')", d.inserted_at)])
+      |> Repo.all()
+      |> Enum.map(fn {m, b} -> %{month: m, mb: Float.round(to_int(b) / 1_048_576, 2)} end)
+
+    # Device breakdown for sessions
+    device_counts =
+      from(s in Alem.Session,
+        where: s.user_id == ^user_id,
+        group_by: s.device,
+        select: %{device: s.device, count: count(s.id)})
+      |> Repo.all()
+
+    # Last 10 activity events (uploads + logins merged)
+    recent_uploads =
+      from(d in Document,
+        where: d.user_id == ^user_id,
+        order_by: [desc: d.inserted_at],
+        limit: 5,
+        select: %{kind: "upload", label: d.filename, sub: d.content_type, at: d.inserted_at})
+      |> Repo.all()
+
+    recent_logins =
+      from(s in Alem.Session,
+        where: s.user_id == ^user_id,
+        order_by: [desc: s.inserted_at],
+        limit: 5,
+        select: %{kind: "login", label: s.device, sub: s.ip_address, at: s.inserted_at})
+      |> Repo.all()
+
+    activity_log =
+      (recent_uploads ++ recent_logins)
+      |> Enum.sort_by(& &1.at, {:desc, NaiveDateTime})
+      |> Enum.take(10)
+
+    # Services used — keyed map, extend by adding more keys
+    services = services_used(user_id)
+
+    # Totals
+    total_files    = Repo.aggregate(from(d in Document, where: d.user_id == ^user_id), :count, :id)
+    total_sessions = Repo.aggregate(from(s in Alem.Session, where: s.user_id == ^user_id), :count, :id)
+    total_bytes    = from(d in Document,
+                       join: c in CasObject, on: c.content_hash == d.content_hash,
+                       where: d.user_id == ^user_id,
+                       select: coalesce(sum(c.file_size), 0))
+                     |> Repo.one() |> to_int()
+    active_tokens  = Repo.aggregate(
+                       from(t in Alem.Pleroma.Web.OAuth.Token,
+                         where: t.user_id == ^user_id and is_nil(t.revoked_at) and t.valid_until > ^DateTime.utc_now()),
+                       :count, :id)
+
+    %{
+      files_by_month:   files_by_month,
+      logins_by_month:  logins_by_month,
+      storage_by_month: storage_by_month,
+      type_counts:      type_counts,
+      device_counts:    device_counts,
+      activity_log:     activity_log,
+      services:         services,
+      total_files:      total_files,
+      total_sessions:   total_sessions,
+      total_bytes:      total_bytes,
+      active_tokens:    active_tokens,
+    }
+  end
+
+  # Services the user has access to/has used.
+  # Add new service detection here as the platform grows.
+  defp services_used(user_id) do
+    has_files   = Repo.aggregate(from(d in Document, where: d.user_id == ^user_id), :count, :id) > 0
+    has_tokens  = Repo.aggregate(
+                    from(t in Alem.Pleroma.Web.OAuth.Token,
+                      where: t.user_id == ^user_id and is_nil(t.revoked_at)),
+                    :count, :id) > 0
+    has_cas     = from(d in Document,
+                    join: c in CasObject, on: c.content_hash == d.content_hash,
+                    where: d.user_id == ^user_id) |> Repo.exists?()
+
+    user       = Repo.get(Alem.Pleroma.User, user_id)
+    has_did    = !is_nil(user && user.did_id)
+    ns_key     = if has_did, do: Alem.DID.namespace_key(user.did_id), else: nil
+    has_ns     = if ns_key, do: Repo.exists?(from n in Alem.Schemas.Namespace, where: n.id == ^ns_key), else: false
+
+    # Namespace config services (extensible)
+    ns_services = if ns_key do
+      case Repo.one(from n in Alem.Schemas.Namespace, where: n.id == ^ns_key, select: n.config) do
+        %{"services" => svcs} when is_map(svcs) -> svcs
+        _ -> %{}
+      end
+    else
+      %{}
+    end
+
+    # ── Service registry ──────────────────────────────────────────────────
+    # To add a new service: add an entry here with enabled: bool, description, icon
+    %{
+      "Document Storage" => %{
+        enabled: has_files,
+        icon: "F",
+        description: "Upload and manage documents",
+        usage: "#{Repo.aggregate(from(d in Document, where: d.user_id == ^user_id), :count, :id)} files"
+      },
+      "CAS Deduplication" => %{
+        enabled: has_cas,
+        icon: "C",
+        description: "Content-addressable storage with dedup",
+        usage: if(has_cas, do: "Active", else: "No files")
+      },
+      "API Access (OAuth)" => %{
+        enabled: has_tokens,
+        icon: "A",
+        description: "REST API access via OAuth2 tokens",
+        usage: if(has_tokens, do: "Has active tokens", else: "No tokens")
+      },
+      "Decentralized ID (DID)" => %{
+        enabled: has_did,
+        icon: "D",
+        description: "Cryptographic decentralized identity",
+        usage: if(has_did, do: String.slice(user.did_id, 0, 24) <> "...", else: "Not assigned")
+      },
+      "Namespace (PRZMA)" => %{
+        enabled: has_ns,
+        icon: "N",
+        description: "Private namespace with GenServer process",
+        usage: if(has_ns, do: "Active: #{ns_key}", else: "Not provisioned")
+      },
+      "Sync Engine" => %{
+        enabled: Map.get(ns_services, "sync", false),
+        icon: "S",
+        description: "Real-time CRDT document sync",
+        usage: if(Map.get(ns_services, "sync", false), do: "Enabled", else: "Disabled")
+      },
+      "Analytics Pipeline" => %{
+        enabled: Map.get(ns_services, "analytics", false),
+        icon: "P",
+        description: "Usage analytics and reporting",
+        usage: if(Map.get(ns_services, "analytics", false), do: "Enabled", else: "Disabled")
+      },
+    }
+  end
+
 end
