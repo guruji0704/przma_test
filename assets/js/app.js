@@ -30,6 +30,19 @@ Hooks.Chart = {
   }
 }
 
+// ThemePersist Hook: saves/restores admin theme preference via localStorage
+Hooks.ThemePersist = {
+  mounted() {
+    const saved = localStorage.getItem("przma_admin_theme") || "dark"
+    if (saved !== "dark") {
+      this.pushEvent("restore_theme", { theme: saved })
+    }
+    this.handleEvent("theme_changed", ({ theme }) => {
+      localStorage.setItem("przma_admin_theme", theme)
+    })
+  }
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 
 const liveSocket = new LiveSocket("/live", Socket, {

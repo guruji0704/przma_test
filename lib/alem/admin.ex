@@ -162,7 +162,7 @@ defmodule Alem.Admin do
       from(d in Document, where: d.user_id == ^user.id,
         order_by: [desc: d.inserted_at],
         select: %{id: d.id, filename: d.filename, content_type: d.content_type,
-                  status: d.status, inserted_at: d.inserted_at})
+                  content_hash: d.content_hash, status: d.status, inserted_at: d.inserted_at})
       |> Repo.all()
 
     storage_bytes =
@@ -448,7 +448,13 @@ defmodule Alem.Admin do
   def block_user(uid),    do: set_user(uid, %{is_active: false})
   def unblock_user(uid),  do: set_user(uid, %{is_active: true})
   def promote_admin(uid), do: set_user(uid, %{is_admin: true})
-  def demote_admin(uid),  do: set_user(uid, %{is_admin: false})
+  def demote_admin(uid) do
+    case Repo.get(User, uid) do
+      %User{email: "admin@przma.com"} -> {:error, "Super admin is protected"}
+      nil -> {:error, :not_found}
+      _   -> set_user(uid, %{is_admin: false})
+    end
+  end
   def set_moderator(uid, v), do: set_user(uid, %{is_moderator: v})
 
   defp set_user(uid, changes) do
@@ -855,11 +861,13 @@ defmodule Alem.Admin do
     # File type breakdown (pie chart)
     type_counts =
       from(d in Document,
+        left_join: c in CasObject, on: c.content_hash == d.content_hash,
         where: d.user_id == ^user_id,
         group_by: d.content_type,
-        select: %{type: d.content_type, count: count(d.id)},
+        select: %{type: d.content_type, count: count(d.id), bytes: coalesce(sum(c.file_size), 0)},
         order_by: [desc: count(d.id)])
       |> Repo.all()
+      |> Enum.map(fn r -> %{r | bytes: to_int(r.bytes)} end)
 
     # Storage growth per month (cumulative MB)
     storage_by_month =
@@ -884,12 +892,18 @@ defmodule Alem.Admin do
       |> Repo.all()
 
     # Last 10 activity events (uploads + logins merged)
+    # SECURITY: filenames NEVER returned — CAS hash (24 chars) + MIME type only
     recent_uploads =
       from(d in Document,
         where: d.user_id == ^user_id,
         order_by: [desc: d.inserted_at],
         limit: 5,
-        select: %{kind: "upload", label: d.filename, sub: d.content_type, at: d.inserted_at})
+        select: %{
+          kind: "upload",
+          cas_hash:   fragment("left(?, 24)", d.content_hash),
+          file_type:  d.content_type,
+          device:     nil, ip_address: nil,
+          at:         d.inserted_at})
       |> Repo.all()
 
     recent_logins =
@@ -897,7 +911,12 @@ defmodule Alem.Admin do
         where: s.user_id == ^user_id,
         order_by: [desc: s.inserted_at],
         limit: 5,
-        select: %{kind: "login", label: s.device, sub: s.ip_address, at: s.inserted_at})
+        select: %{
+          kind: "login",
+          cas_hash: nil, file_type: nil,
+          device:     s.device,
+          ip_address: s.ip_address,
+          at:         s.inserted_at})
       |> Repo.all()
 
     activity_log =
