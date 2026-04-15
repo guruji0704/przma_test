@@ -1,6 +1,7 @@
 defmodule AlemWeb.SyncController do
   use AlemWeb, :controller
   require Logger
+  import Ecto.Query
   alias Alem.Auth
   alias Alem.DID
   alias Alem.Namespace.Manager
@@ -196,6 +197,7 @@ defmodule AlemWeb.SyncController do
               status: "synced", automerge_state: <<>>, device_id: ctx.device_id,
               last_modified_at: Map.get(params, "last_modified_at", ""),
               file_size: Map.get(params, "file_size", 0),
+              content_type: Map.get(params, "content_type", "application/octet-stream"),
               epoch_id: epoch_id
             }, @sqld_fallback)
 
@@ -204,7 +206,7 @@ defmodule AlemWeb.SyncController do
               extract_vault_content_async(doc_id, s3_key, bucket, epoch_id, @sqld_fallback, ctx)
             else
               Logger.warning("[CAS] Skipping extraction for doc=#{doc_id}: Vault V1 (No Epoch ID)")
-              
+
               # Record skipped activity
               {:ok, activity} = Alem.Cas.create_activity(%{
                 tenant_id: "default",
@@ -275,7 +277,7 @@ defmodule AlemWeb.SyncController do
   def extract_vault_content_async(doc_id, s3_key, bucket, epoch_id, sqld_url, ctx) do
     Logger.info("[CAS] Starting extraction for doc=#{doc_id} using epoch=#{epoch_id}")
     tenant_id = "default"
-    
+
     {:ok, activity} = Alem.Cas.create_activity(%{
       tenant_id: tenant_id,
       namespace_key: ctx.namespace_key,
@@ -316,16 +318,16 @@ defmodule AlemWeb.SyncController do
     do
       content_hash = :crypto.hash(:sha256, plaintext) |> Base.encode16(case: :lower)
       Logger.info("[CAS] Content hash: #{content_hash}")
-      
+
       # Core Dedup Logic: Find existing or register new
       case Alem.Cas.find_or_register_object(content_hash, %{
         tenant_id: tenant_id,
         namespace_key: ctx.namespace_key,
         actor_did: ctx.actor_did,
         user_id: ctx.user_id,
-        storage_key: s3_key, 
+        storage_key: s3_key,
         file_size: byte_size(plaintext),
-        media_type: "application/octet-stream", 
+        media_type: "application/octet-stream",
         storage_backend: "s3"
       }) do
         {:ok, cas_obj} ->
@@ -342,25 +344,37 @@ defmodule AlemWeb.SyncController do
 
           if cas_obj.storage_key != s3_key do
              Logger.info("[CAS] Duplicate detected. Redirecting doc=#{doc_id} to master_key=#{cas_obj.storage_key}")
-             sqld_execute("UPDATE documents SET status = 'indexed', content_hash = ?, s3_content_key = ? WHERE id = ?", 
+             sqld_execute("UPDATE documents SET status = 'indexed', content_hash = ?, s3_content_key = ? WHERE id = ?",
                [content_hash, cas_obj.storage_key, doc_id], sqld_url)
+             
+             Alem.Repo.update_all(
+               from(d in Alem.Schemas.Document, where: d.id == ^doc_id),
+               set: [content_hash: content_hash, object_key: cas_obj.storage_key, status: "indexed"]
+             )
+             
              ExAws.S3.delete_object(bucket, s3_key) |> ExAws.request(virtual_host: false)
              record_event.("cas.deduplicated", true, %{master_key: cas_obj.storage_key})
           else
              Logger.info("[CAS] New content registered for doc=#{doc_id}")
-             sqld_execute("UPDATE documents SET status = 'indexed', content_hash = ? WHERE id = ?", 
+             sqld_execute("UPDATE documents SET status = 'indexed', content_hash = ? WHERE id = ?",
                 [content_hash, doc_id], sqld_url)
+             
+             Alem.Repo.update_all(
+               from(d in Alem.Schemas.Document, where: d.id == ^doc_id),
+               set: [content_hash: content_hash, status: "indexed"]
+             )
+             
              record_event.("cas.registered", true, %{hash: content_hash})
           end
           :ok
 
-        {:error, changeset} -> 
+        {:error, changeset} ->
           Logger.error("[CAS] Failed to register object in DB: #{inspect(changeset.errors)}")
           record_event.("cas.error", false, %{error: inspect(changeset.errors)})
           :error
       end
     else
-      {:error, reason} -> 
+      {:error, reason} ->
         Logger.error("[CAS] Extraction failed for doc=#{doc_id}: #{inspect(reason)}")
         record_event.("sync.failure", false, %{reason: inspect(reason)})
         :error
@@ -393,10 +407,10 @@ defmodule AlemWeb.SyncController do
 
   defp upsert_document_metadata(attrs, sqld_url) do
     now_iso = DateTime.utc_now() |> DateTime.to_iso8601()
-    
+
     # 1. SQLD (Source of truth for high-scale metadata)
-    sql_sqld = "INSERT INTO documents (id, user_id, filename, automerge_state, s3_content_key, device_id, last_modified_at, file_size, epoch_id, status, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET filename=excluded.filename, updated_at=excluded.updated_at, status=excluded.status"
-    args_sqld = [attrs.id, attrs.user_id, attrs.filename, attrs.automerge_state, attrs.s3_content_key, attrs.device_id, attrs.last_modified_at, attrs.file_size, attrs[:epoch_id], attrs.status, now_iso, now_iso]
+    sql_sqld = "INSERT INTO documents (id, user_id, filename, automerge_state, s3_content_key, device_id, last_modified_at, file_size, content_type, epoch_id, status, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET filename=excluded.filename, content_type=excluded.content_type, updated_at=excluded.updated_at, status=excluded.status"
+    args_sqld = [attrs.id, attrs.user_id, attrs.filename, attrs.automerge_state, attrs.s3_content_key, attrs.device_id, attrs.last_modified_at, attrs.file_size, attrs[:content_type], attrs[:epoch_id], attrs.status, now_iso, now_iso]
     sqld_execute(sql_sqld, args_sqld, sqld_url)
 
     # 2. Postgres (Required for CAS foreign key constraints)
@@ -407,7 +421,10 @@ defmodule AlemWeb.SyncController do
       user_id: attrs.user_id,
       filename: attrs.filename,
       object_key: attrs.s3_content_key,
-      status: attrs.status
+      status: attrs.status,
+      file_size: attrs[:file_size],
+      content_type: attrs[:content_type],
+      content_hash: attrs[:content_hash]
     })
     |> Alem.Repo.insert(on_conflict: :nothing)
 
@@ -447,7 +464,7 @@ defmodule AlemWeb.SyncController do
   defp decode_file_content(%{"file_content_b64" => b}), do: Base.decode64(b)
   defp decode_file_content(_), do: {:error, :no_content}
   defp require_param(p, k), do: if(Map.has_key?(p, k), do: {:ok, Map.get(p, k)}, else: {:error, k})
-  defp parse_integer(p, k) do 
+  defp parse_integer(p, k) do
     val = Map.get(p, k)
     cond do
       is_integer(val) -> {:ok, val}
