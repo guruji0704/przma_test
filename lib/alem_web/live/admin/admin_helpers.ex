@@ -18,6 +18,45 @@ defmodule AlemWeb.Admin.Helpers do
   end
   def fd_short(_), do: "—"
 
+  # ── Time ago formatter ────────────────────────────────────────────────────
+  def time_ago(nil), do: "—"
+  def time_ago(%NaiveDateTime{} = dt) do
+    now   = NaiveDateTime.utc_now()
+    diff  = NaiveDateTime.diff(now, dt, :second)
+    cond do
+      diff < 60      -> "just now"
+      diff < 3600    -> "#{div(diff, 60)}m ago"
+      diff < 86400   -> "#{div(diff, 3600)}h ago"
+      diff < 2592000 -> "#{div(diff, 86400)}d ago"
+      diff < 31536000-> "#{div(diff, 2592000)} mo ago"
+      true           -> "#{div(diff, 31536000)}yr ago"
+    end
+  end
+  def time_ago(%DateTime{} = dt) do
+    time_ago(DateTime.to_naive(dt))
+  end
+  def time_ago(_), do: "—"
+
+  # ── Duration since joined ─────────────────────────────────────────────────
+  # e.g. "3 days" / "1 year"
+  def joined_ago(nil), do: "—"
+  def joined_ago(%NaiveDateTime{} = dt) do
+    now  = NaiveDateTime.utc_now()
+    diff = NaiveDateTime.diff(now, dt, :second)
+    cond do
+      diff < 86400   -> "today"
+      diff < 172800  -> "1 day"
+      diff < 2592000 -> "#{div(diff, 86400)} days"
+      diff < 5184000 -> "1 month"
+      diff < 31536000-> "#{div(diff, 2592000)} months"
+      diff < 63072000-> "1 year"
+      true           -> "#{div(diff, 31536000)} years"
+    end
+  end
+  def joined_ago(%DateTime{} = dt), do: joined_ago(DateTime.to_naive(dt))
+  def joined_ago(_), do: "—"
+
+
   # ── Content-type icon ─────────────────────────────────────────────────────
   def ctic(nil), do: "◈"
   def ctic(ct) do

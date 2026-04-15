@@ -59,6 +59,15 @@ defmodule AlemWeb.AdminLive do
       |> assign(:user_sort,        "newest")
       |> assign(:cas_filter,       "all")
       |> assign(:cas_search,       "")
+      |> assign(:s3_search,        "")
+      |> assign(:s3_type_filter,   "all")
+      |> assign(:s3_view,           :root)
+      |> assign(:s3_ns_data,        nil)
+      |> assign(:s3_user_namespaces, [])
+      |> assign(:s3_ns_filter,      "")
+      |> assign(:admin_users,       [])
+      |> assign(:new_admin_email,    "")
+      |> assign(:new_admin_error,    nil)
       |> assign(:confirm_action,   nil)
       |> assign(:flash_msg,        nil)
       |> assign(:s3_prefix,        "")
@@ -80,12 +89,13 @@ defmodule AlemWeb.AdminLive do
   end
 
   @impl true
-  def handle_params(%{"p" => page, "theme" => t}, _uri, socket) do
-    theme = if t == "light", do: :light, else: :dark
-    socket = assign(socket, :theme, theme)
-    handle_params(%{"p" => page}, _uri, socket)
-  end
-  def handle_params(%{"p" => page}, _uri, socket) do
+  def handle_params(%{"p" => page} = params, _uri, socket) do
+    socket =
+      case Map.get(params, "theme") do
+        "light" -> assign(socket, :theme, :light)
+        "dark"  -> assign(socket, :theme, :dark)
+        _       -> socket
+      end
     try do
       atom = String.to_existing_atom(page)
       {:noreply, socket |> assign(:page, atom) |> reload_page_for_params(atom)}
@@ -93,6 +103,7 @@ defmodule AlemWeb.AdminLive do
       _ -> {:noreply, socket}
     end
   end
+
   def handle_params(_params, _uri, socket), do: {:noreply, socket}
 
   defp reload_page_for_params(socket, page) do
@@ -100,8 +111,9 @@ defmodule AlemWeb.AdminLive do
       :users             -> assign(socket, :users, Admin.list_users(%{search: socket.assigns.search, filter: socket.assigns.user_filter, sort: socket.assigns.user_sort}))
       :monitoring        -> assign(socket, :monitoring, Admin.monitoring_stats())
       :vault             -> socket |> assign(:cas_objects, Admin.list_cas_objects(%{})) |> assign(:s3_tree, Admin.s3_folder_tree())
+      :admin_mgmt        -> assign(socket, :admin_users, Admin.list_admin_users())
       :duplicates        -> assign(socket, :duplicates, Admin.duplicate_analysis())
-      :s3                -> socket |> assign(:s3_roots, Admin.s3_root_folders()) |> assign(:s3_result, nil) |> assign(:s3_prefix, "")
+      :s3                -> socket |> assign(:s3_roots, Admin.s3_root_folders()) |> assign(:s3_result, nil) |> assign(:s3_prefix, "") |> assign(:s3_view, :root) |> assign(:s3_ns_data, nil) |> assign(:s3_user_namespaces, []) |> assign(:s3_ns_filter, "")
       :dashboard         -> socket |> assign(:stats, Admin.dashboard_stats()) |> assign(:audit_log, Admin.get_audit_log(20))
       :users_analytics   -> assign(socket, :analytics_users,   Admin.users_analytics())
       :storage_analytics -> assign(socket, :analytics_storage, Admin.storage_analytics())
@@ -282,6 +294,23 @@ defmodule AlemWeb.AdminLive do
       |> assign(:flash_msg, nil)}
   end
 
+    def handle_event("new_admin_email_change", %{"value" => v}, socket) do
+    {:noreply, assign(socket, :new_admin_email, String.trim(v))}
+  end
+
+  def handle_event("create_admin", _, socket) do
+    email = socket.assigns.new_admin_email
+    case Admin.create_admin_account(email) do
+      {:ok, _}   -> {:noreply, socket |> assign(:new_admin_email, "") |> assign(:new_admin_error, nil) |> assign(:admin_users, Admin.list_admin_users()) |> assign(:flash_msg, {:success, "Admin account created"})}
+      {:error, e} -> {:noreply, assign(socket, :new_admin_error, inspect(e))}
+    end
+  end
+
+  def handle_event("revoke_admin", %{"id" => uid}, socket) do
+    Admin.revoke_admin_account(uid)
+    {:noreply, socket |> assign(:admin_users, Admin.list_admin_users()) |> assign(:flash_msg, {:success, "Admin account revoked"})}
+  end
+
   def handle_event("perm_action", %{"action" => action, "user_id" => uid}, socket) do
     result =
       case action do
@@ -393,18 +422,89 @@ defmodule AlemWeb.AdminLive do
 
   # ── S3 ────────────────────────────────────────────────────────────────────
 
+  def handle_event("s3_search", %{"search" => q}, socket) do
+    {:noreply, assign(socket, :s3_search, q)}
+  end
+
+  def handle_event("s3_ns_filter", %{"search" => q}, socket) do
+    {:noreply, assign(socket, :s3_ns_filter, q)}
+  end
+
+  def handle_event("s3_type_filter", %{"filter" => f}, socket) do
+    {:noreply, assign(socket, :s3_type_filter, f)}
+  end
+
   def handle_event("s3_browse", %{"prefix" => prefix}, socket) do
-    {:noreply, load_s3(socket, prefix)}
+    # Detect if this is a user namespace level: "user/NSKEY/"
+    # If so, switch to DB-backed file listing instead of S3 folder drilling
+    case classify_s3_prefix(prefix) do
+      {:user_root} ->
+        # "user/" level - show list of user namespaces from S3
+        case Admin.list_s3_objects("user/") do
+          {:ok, data} ->
+            ns_list = Admin.list_user_namespaces()
+            socket = socket
+              |> assign(:s3_prefix, "user/")
+              |> assign(:s3_view, :user_list)
+              |> assign(:s3_result, data)
+              |> assign(:s3_user_namespaces, ns_list)
+              |> assign(:s3_error, nil)
+            {:noreply, socket}
+          {:error, r} ->
+            {:noreply, assign(socket, :s3_error, r)}
+        end
+      {:namespace, ns_key} ->
+        # "user/NSKEY/" level - show DB table for this namespace
+        ns_data = Admin.list_namespace_files(ns_key)
+        socket = socket
+          |> assign(:s3_prefix, prefix)
+          |> assign(:s3_view, :namespace_files)
+          |> assign(:s3_ns_data, ns_data)
+          |> assign(:s3_result, nil)
+          |> assign(:s3_error, nil)
+        {:noreply, socket}
+      {:other} ->
+        # analytics/ or deep paths — use regular S3 folder browsing
+        {:noreply, load_s3(socket, prefix)}
+    end
+  end
+
+  defp classify_s3_prefix("user/"), do: {:user_root}
+  defp classify_s3_prefix(prefix) do
+    case String.split(prefix, "/", trim: true) do
+      ["user", ns_key] -> {:namespace, ns_key}
+      _                -> {:other}
+    end
   end
 
   def handle_event("s3_back", _, socket) do
-    parts  = socket.assigns.s3_prefix |> String.trim_trailing("/") |> String.split("/")
-    parent = parts |> Enum.drop(-1) |> Enum.join("/")
-    prefix = if parent != "", do: parent <> "/", else: ""
-    socket = if prefix == "",
-      do: socket |> assign(:s3_result, nil) |> assign(:s3_prefix, ""),
-      else: load_s3(socket, prefix)
-    {:noreply, socket}
+    case socket.assigns.s3_view do
+      :namespace_files ->
+        # Go back to user list
+        ns_list = Admin.list_user_namespaces()
+        case Admin.list_s3_objects("user/") do
+          {:ok, data} ->
+            socket = socket
+              |> assign(:s3_prefix, "user/")
+              |> assign(:s3_view, :user_list)
+              |> assign(:s3_result, data)
+              |> assign(:s3_user_namespaces, ns_list)
+              |> assign(:s3_ns_data, nil)
+            {:noreply, socket}
+          _ ->
+            {:noreply, socket |> assign(:s3_view, :root) |> assign(:s3_prefix, "")}
+        end
+      :user_list ->
+        {:noreply, socket |> assign(:s3_view, :root) |> assign(:s3_prefix, "")}
+      _ ->
+        parts  = socket.assigns.s3_prefix |> String.trim_trailing("/") |> String.split("/")
+        parent = parts |> Enum.drop(-1) |> Enum.join("/")
+        prefix = if parent != "", do: parent <> "/", else: ""
+        socket = if prefix == "",
+          do: socket |> assign(:s3_result, nil) |> assign(:s3_prefix, "") |> assign(:s3_view, :root),
+          else: load_s3(socket, prefix)
+        {:noreply, socket}
+    end
   end
 
   def handle_event("s3_presign", %{"key" => key}, socket) do
@@ -448,6 +548,7 @@ defmodule AlemWeb.AdminLive do
               <% :users             -> %> <%= AlemWeb.Admin.Pages.Users.page(assigns) %>
               <% :user_detail       -> %> <%= AlemWeb.Admin.Pages.UserProfile.page(assigns) %>
               <% :permissions       -> %> <%= AlemWeb.Admin.Pages.Permissions.page(assigns) %>
+              <% :admin_mgmt        -> %> <%= AlemWeb.Admin.Pages.AdminMgmt.page(assigns) %>
               <% :monitoring        -> %> <%= AlemWeb.Admin.Pages.Monitoring.page(assigns) %>
               <% :vault             -> %> <%= AlemWeb.Admin.Pages.Storage.vault(assigns) %>
               <% :duplicates        -> %> <%= AlemWeb.Admin.Pages.Storage.duplicates(assigns) %>
@@ -492,21 +593,16 @@ defmodule AlemWeb.AdminLive do
 
         <div class="nsl">Users</div>
         <.ni page={:users}       cur={@page} ic="users"  lb="All Users"   bd={@stats.total_users} />
-        <.ni page={:permissions} cur={@page} ic="shield" lb="Permissions" />
+        <.ni page={:permissions}   cur={@page} ic="shield"   lb="Permissions" />
+        <.ni page={:admin_mgmt}   cur={@page} ic="star"    lb="Admin Accounts" />
 
         <div class="nsl">Storage</div>
         <.ni page={:vault}      cur={@page} ic="database" lb="CAS Vault"  bd={@stats.total_cas} />
         <.ni page={:duplicates} cur={@page} ic="copy"     lb="Duplicates" bd={@stats.duplicate_cas} />
         <.ni page={:s3}         cur={@page} ic="cloud"    lb="S3 Browser" />
 
-        <div class="nsl">Developer</div>
       </nav>
 
-      <div class="sb-ft">
-        <div class="ft-stat"><span class="ft-dot"></span><span><%= Admin.format_bytes(@stats.total_bytes) %> stored</span></div>
-        <div class="ft-stat accent"><span class="ft-dot green"></span><span><%= Admin.format_bytes(@stats.saved_bytes) %> saved</span></div>
-        <div class="ft-stat muted"><span class="ft-dot blue"></span><span><%= @stats.active_sessions %> sessions</span></div>
-      </div>
     </aside>
     """
   end

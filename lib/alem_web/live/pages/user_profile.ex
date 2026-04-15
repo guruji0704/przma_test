@@ -100,7 +100,7 @@ defmodule AlemWeb.Admin.Pages.UserProfile do
             <%= if @user_detail.user.is_verified do %><span class="badge blue">Verified</span><% else %><span class="badge gray">Unverified</span><% end %>
             <%= if @user_detail.user.is_admin do %><span class="badge amber">Admin</span><% end %>
           </div>
-          <div class="muted sm">Joined <%= fd(@user_detail.user.inserted_at) %></div>
+          <div class="muted sm">Joined <%= joined_ago(@user_detail.user.inserted_at) %> ago</div>
         </div>
         <div class="profile-actions">
           <button class="action-btn purple" phx-click="view_permissions" phx-value-id={@user_detail.user.id}>Permissions</button>
@@ -111,10 +111,9 @@ defmodule AlemWeb.Admin.Pages.UserProfile do
             <% else %>
               <button class="action-btn green" phx-click="confirm_action" phx-disable-with="..." phx-value-action="unblock" phx-value-user_id={@user_detail.user.id} phx-value-label={"Unblock #{@user_detail.user.nickname}?"}>Unblock</button>
             <% end %>
+            <%!-- Admin promotion handled via Admin Management page --%>
             <%= if @user_detail.user.is_admin do %>
               <button class="action-btn gray" phx-click="confirm_action" phx-disable-with="..." phx-value-action="demote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Remove admin from #{@user_detail.user.nickname}?"}>Remove Admin</button>
-            <% else %>
-              <button class="action-btn amber" phx-click="confirm_action" phx-disable-with="..." phx-value-action="promote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Make #{@user_detail.user.nickname} admin?"}>Make Admin</button>
             <% end %>
             <button class="action-btn orange" phx-click="confirm_action" phx-disable-with="..." phx-value-action="soft_delete" phx-value-user_id={@user_detail.user.id} phx-value-label={"Soft delete #{@user_detail.user.nickname}?"}>Soft Delete</button>
           <% else %>

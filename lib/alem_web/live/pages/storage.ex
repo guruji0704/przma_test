@@ -1,14 +1,24 @@
 defmodule AlemWeb.Admin.Pages.Storage do
-  @moduledoc "Storage pages: CAS Vault, Duplicates, S3 Browser (read-only, no download)."
+  @moduledoc """
+  Storage pages: CAS Vault, Duplicates, S3 Browser (read-only).
+
+  S3 Browser has three views:
+    :root           — shows "user/" and "analytics/" tiles
+    :user_list      — shows all user namespaces as cards (DB + S3)
+    :namespace_files — shows all files for a namespace from the DB (not S3 drilling)
+  Filenames are NEVER shown. Only doc IDs, types, sizes, timestamps.
+  """
   use Phoenix.Component
   import AlemWeb.Admin.Helpers
   import AlemWeb.Admin.Components
   alias Alem.Admin
 
+  # ── CAS Vault ─────────────────────────────────────────────────────────────
+
   def vault(assigns) do
     ~H"""
     <div>
-      <.back_button nav_history={@nav_history} />
+      <.back_button />
       <div class="vault-layout">
         <div class="vault-sidebar">
           <div class="card-head"><span class="card-title">Namespaces</span></div>
@@ -66,13 +76,12 @@ defmodule AlemWeb.Admin.Pages.Storage do
     """
   end
 
-  # ── Duplicates Page ───────────────────────────────────────────────────────
-
+  # ── Duplicates ─────────────────────────────────────────────────────────────
 
   def duplicates(assigns) do
     ~H"""
     <div>
-      <.back_button nav_history={@nav_history} />
+      <.back_button />
       <div class="stat-strip" style="margin-bottom:16px">
         <div class="strip-stat">
           <div class="strip-val"><%= length(@duplicates.duplicates) %></div>
@@ -102,11 +111,7 @@ defmodule AlemWeb.Admin.Pages.Storage do
               </tr>
             <% end %>
             <%= if @duplicates.duplicates == [] do %>
-              <tr>
-                <td colspan="6" class="empty-row">
-                  No duplicates — CAS is perfectly deduplicated ✓
-                </td>
-              </tr>
+              <tr><td colspan="6" class="empty-row">No duplicates — CAS is perfectly deduplicated ✓</td></tr>
             <% end %>
           </tbody>
         </table>
@@ -115,98 +120,286 @@ defmodule AlemWeb.Admin.Pages.Storage do
     """
   end
 
-  # ── SQL Console ───────────────────────────────────────────────────────────
-
-  @presets [
-    {"All users",           "SELECT id, nickname, email, is_verified, is_active, is_admin, inserted_at\nFROM users ORDER BY inserted_at DESC LIMIT 20;"},
-    {"Files per user",      "SELECT u.nickname, COUNT(d.id) AS files, MAX(d.inserted_at) AS last_upload\nFROM users u LEFT JOIN documents d ON d.user_id = u.id\nGROUP BY u.id, u.nickname ORDER BY files DESC;"},
-    {"Storage by type",     "SELECT media_type, COUNT(*) AS count, SUM(file_size) AS bytes\nFROM cas_objects GROUP BY media_type ORDER BY bytes DESC;"},
-    {"Duplicates",          "SELECT content_hash, media_type, file_size, ref_count,\n       file_size*(ref_count-1) AS saved\nFROM cas_objects WHERE ref_count>1 ORDER BY ref_count DESC LIMIT 50;"},
-    {"Active sessions",     "SELECT s.id, u.nickname, s.ip_address, s.device, s.last_active_at\nFROM sessions s JOIN users u ON u.id=s.user_id\nWHERE s.revoked_at IS NULL ORDER BY s.last_active_at DESC LIMIT 30;"},
-    {"Active tokens",       "SELECT t.id, u.nickname, t.scopes, t.valid_until\nFROM oauth_tokens t JOIN users u ON u.id=t.user_id\nWHERE t.revoked_at IS NULL AND t.valid_until>NOW()\nORDER BY t.valid_until DESC LIMIT 20;"},
-    {"Namespace stats",     "SELECT id, status, document_count, storage_bytes, last_activity_at\nFROM namespaces ORDER BY storage_bytes DESC;"},
-    {"Unverified users",    "SELECT id, nickname, email, inserted_at\nFROM users WHERE is_verified=false ORDER BY inserted_at DESC;"},
-    {"Blocked users",       "SELECT id, nickname, email, inserted_at FROM users WHERE is_active=false;"},
-    {"CAS today",           "SELECT content_hash, media_type, file_size, ref_count, inserted_at\nFROM cas_objects WHERE inserted_at::date=CURRENT_DATE ORDER BY inserted_at DESC;"},
-    {"Large files",         "SELECT storage_key, media_type, file_size, ref_count\nFROM cas_objects ORDER BY file_size DESC LIMIT 25;"},
-    {"User storage totals", "SELECT u.nickname, u.email, COUNT(d.id) AS files, COALESCE(SUM(c.file_size),0) AS bytes\nFROM users u\nLEFT JOIN documents d ON d.user_id=u.id\nLEFT JOIN cas_objects c ON c.content_hash=d.content_hash\nGROUP BY u.id, u.nickname, u.email\nORDER BY bytes DESC;"},
-  ]
-
+  # ── S3 Browser ─────────────────────────────────────────────────────────────
+  # Three views: :root → :user_list → :namespace_files
+  # Filenames are NEVER shown — only document UUIDs, types, sizes, timestamps.
 
   def s3(assigns) do
     ~H"""
     <div>
-      <.back_button nav_history={@nav_history} />
-      <%= if @s3_prefix == "" do %>
-        <div class="section-label" style="margin-bottom:16px">Scoped to platform storage paths</div>
+
+      <div class="s3-breadcrumb" style="margin-bottom:18px">
+        <%= if @s3_view != :root do %>
+          <button class="btn-sm" phx-click="s3_back">← Back</button>
+        <% end %>
+        <span style="color:var(--tx3);font-size:11px">Storage /</span>
+        <span class={["breadcrumb-path", @s3_view == :root && "active"]} style="font-size:11px">
+          Root
+        </span>
+        <%= if @s3_view in [:user_list, :namespace_files] do %>
+          <span class="breadcrumb-sep">›</span>
+          <span class="breadcrumb-path" style="font-size:11px">user/</span>
+        <% end %>
+        <%= if @s3_view == :namespace_files && @s3_ns_data do %>
+          <span class="breadcrumb-sep">›</span>
+          <span class="breadcrumb-path" style="font-size:11px">
+            <%= @s3_ns_data.namespace_key %>
+            <%= if @s3_ns_data.user do %>
+              <span style="color:var(--tx2);font-family:sans-serif"> (<%= @s3_ns_data.user.nickname %>)</span>
+            <% end %>
+          </span>
+        <% end %>
+      </div>
+
+
+      <%= if @s3_view == :root do %>
+        <div class="page-header" style="margin-bottom:16px">
+          <div>
+            <h2 class="page-heading">S3 Browser</h2>
+            <div class="page-sub">Read-only view of platform object storage</div>
+          </div>
+        </div>
         <div class="s3-root-grid">
           <%= for root <- @s3_roots do %>
             <button class="s3-card" phx-click="s3_browse" phx-value-prefix={root.prefix}>
-              <div class="s3-card-icon"><%= if String.starts_with?(root.prefix, "user/"), do: "◎", else: "◈" %></div>
-              <div class="s3-card-name mono"><%= root.prefix %></div>
-              <div class="s3-card-meta"><%= root.object_count %> files · <%= root.subfolder_count %> subfolders</div>
+              <div class="s3-card-icon">
+                <%= if String.starts_with?(root.prefix, "user/"), do: "◎", else: "◈" %>
+              </div>
+              <div class="s3-card-name mono"><%= String.trim_trailing(root.prefix, "/") %></div>
+              <div class="s3-card-meta">
+                <%= root.subfolder_count %> namespaces · read-only
+              </div>
               <div class="s3-card-cta">Browse →</div>
             </button>
           <% end %>
         </div>
-      <% else %>
-        <div class="s3-breadcrumb">
-          <button class="btn-sm" phx-click="s3_back">← Back</button>
-          <span class="breadcrumb-sep">Browsing:</span>
-          <span class="breadcrumb-path mono"><%= @s3_prefix %></span>
-          <button class="btn-sm" phx-click="s3_browse" phx-value-prefix={@s3_prefix}>⟳ Refresh</button>
+
+
+      <% end %>
+      <%= if @s3_view == :user_list do %>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div>
+            <h2 class="page-heading">User Namespaces</h2>
+            <div class="page-sub"><%= length(@s3_user_namespaces) %> users with storage</div>
+          </div>
+          <div class="search-box" style="max-width:220px">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input class="search-input" placeholder="Search user…"
+                   phx-keyup="s3_ns_filter" phx-debounce="200"
+                   name="nsq" value={@s3_ns_filter}
+                   phx-value-search={@s3_ns_filter}/>
+          </div>
         </div>
 
-        <%= if @s3_error do %>
-          <div class="error-block">
-            <div class="error-title">S3 Error</div>
-            <pre class="error-body"><%= @s3_error %></pre>
+        <% ns_list = if @s3_ns_filter != "" do
+            q = String.downcase(@s3_ns_filter)
+            Enum.filter(@s3_user_namespaces, fn ns ->
+              String.contains?(String.downcase(ns.nickname || ""), q) ||
+              String.contains?(String.downcase(ns.namespace_key || ""), q) ||
+              String.contains?(String.downcase(ns.email || ""), q)
+            end)
+          else
+            @s3_user_namespaces
+          end %>
+
+        <%= if ns_list == [] do %>
+          <div class="empty-state">No user namespaces found</div>
+        <% else %>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Namespace Key</th>
+                  <th>Files</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <%= for ns <- ns_list do %>
+                  <tr class="data-row">
+                    <td>
+                      <div class="user-info">
+                        <div class="user-name"><%= ns.nickname %></div>
+                        <div class="user-id mono"><%= ns.email %></div>
+                      </div>
+                    </td>
+                    <td class="mono cell-sm"><%= ns.namespace_key %></td>
+                    <td class="cell-num"><%= ns.file_count %></td>
+                    <td>
+                      <button class="btn-sm accent"
+                              phx-click="s3_browse"
+                              phx-value-prefix={"user/#{ns.namespace_key}/"}>
+                        View Files →
+                      </button>
+                    </td>
+                  </tr>
+                <% end %>
+              </tbody>
+            </table>
           </div>
         <% end %>
 
-        <%= if @s3_result do %>
-          <%= if @s3_result.prefixes != [] do %>
-            <div class="section-label">Subfolders (<%= length(@s3_result.prefixes) %>)</div>
-            <div class="s3-folder-grid">
-              <%= for pfx <- @s3_result.prefixes, is_map(pfx), Map.has_key?(pfx, :prefix) do %>
-                <button class="s3-folder" phx-click="s3_browse" phx-value-prefix={pfx.prefix}>
-                  <span style="color:var(--clr-blue)">▸</span>
-                  <span class="mono" style="font-size:12px">
-                    <%= pfx.prefix |> String.replace_prefix(@s3_prefix, "") |> String.trim_trailing("/") %>
-                  </span>
-                </button>
-              <% end %>
-            </div>
-          <% end %>
-          <%= if @s3_result.objects != [] do %>
-            <div class="section-label" style="margin-top:20px">Files (<%= length(@s3_result.objects) %>)</div>
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead><tr><th>Key</th><th>Size</th><th>Modified</th><th></th></tr></thead>
-                <tbody>
-                  <%= for obj <- @s3_result.objects, is_map(obj) do %>
-                    <% key = Map.get(obj, :key, "") %>
-                    <tr class="data-row">
-                      <td class="mono cell-sm" style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={key}><%= key %></td>
-                      <td class="cell-num cell-sm"><%= Admin.format_bytes(parse_size(Map.get(obj, :size, 0))) %></td>
-                      <td class="cell-sm"><%= Map.get(obj, :last_modified, "") %></td>
-                      <td><button class="btn-sm" phx-click="s3_presign" phx-value-key={key}>⬇ Link</button></td>
-                    </tr>
-                  <% end %>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-          <%= if @s3_result.objects == [] && @s3_result.prefixes == [] do %>
-            <div class="empty-state">Folder is empty</div>
-          <% end %>
+
+        <% s3_keys = (@s3_result && @s3_result.prefixes || [])
+                     |> Enum.map(fn p -> p[:prefix] || "" end)
+                     |> Enum.map(& String.trim_trailing(&1, "/") |> String.split("/") |> List.last())
+           known_keys = Enum.map(@s3_user_namespaces, & &1.namespace_key)
+           orphans = Enum.filter(s3_keys, & &1 not in known_keys) %>
+        <%= if orphans != [] do %>
+          <div class="section-label" style="margin-top:20px;margin-bottom:8px">
+            Unlinked namespaces in S3 (<%= length(orphans) %>)
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <%= for key <- orphans do %>
+              <button class="s3-folder"
+                      phx-click="s3_browse"
+                      phx-value-prefix={"user/#{key}/"}>
+                <span style="color:var(--clr-amber)">▸</span>
+                <span class="mono" style="font-size:11px"><%= key %></span>
+              </button>
+            <% end %>
+          </div>
         <% end %>
+
+
+      <% end %>
+      <%= if @s3_view == :namespace_files && @s3_ns_data do %>
+
+        <%= if @s3_ns_data.user do %>
+          <div class="profile-card" style="margin-bottom:16px;padding:16px">
+            <div class="profile-avatar-lg">
+              <%= String.first(@s3_ns_data.user.nickname || "?") |> String.upcase() %>
+            </div>
+            <div class="profile-info">
+              <div class="profile-name"><%= @s3_ns_data.user.nickname %></div>
+              <div class="profile-email"><%= @s3_ns_data.user.email %></div>
+              <div class="profile-id mono"><%= @s3_ns_data.namespace_key %></div>
+            </div>
+            <div style="text-align:right">
+              <div class="strip-val" style="font-size:22px"><%= @s3_ns_data.total %></div>
+              <div class="strip-lbl">Total Files</div>
+            </div>
+          </div>
+        <% else %>
+          <div class="profile-card" style="margin-bottom:16px">
+            <div>
+              <div class="profile-name mono"><%= @s3_ns_data.namespace_key %></div>
+              <div class="profile-email">No user linked to this namespace</div>
+            </div>
+          </div>
+        <% end %>
+
+
+        <div class="toolbar" style="margin-bottom:12px">
+          <div class="search-box">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input class="search-input" placeholder="Search by document ID or type…"
+                   phx-keyup="s3_search" phx-debounce="250"
+                   name="s3q" value={@s3_search}
+                   phx-value-search={@s3_search}/>
+          </div>
+          <div class="filter-pills">
+            <%= for {v,l} <- [{"all","All"},{"image","Images"},{"pdf","PDF"},{"binary","Binary"},{"video","Video"}] do %>
+              <button class={["pill", (@s3_type_filter || "all") == v && "active"]}
+                      phx-click="s3_type_filter" phx-value-filter={v}><%= l %></button>
+            <% end %>
+          </div>
+        </div>
+
+
+        <% files = @s3_ns_data.files
+                   |> then(fn f ->
+                       q = @s3_search
+                       if q && q != "" do
+                         ql = String.downcase(q)
+                         Enum.filter(f, fn doc ->
+                           String.contains?(String.downcase(doc.id || ""), ql) ||
+                           String.contains?(String.downcase(doc.content_type || ""), ql) ||
+                           String.contains?(String.downcase(doc.content_hash || ""), ql)
+                         end)
+                       else f end
+                     end)
+                   |> then(fn f ->
+                       tf = @s3_type_filter || "all"
+                       if tf != "all" do
+                         Enum.filter(f, fn doc ->
+                           ct = String.downcase(doc.content_type || "")
+                           cond do
+                             tf == "image"  -> String.starts_with?(ct, "image/")
+                             tf == "pdf"    -> ct == "application/pdf"
+                             tf == "video"  -> String.starts_with?(ct, "video/")
+                             tf == "binary" -> !String.starts_with?(ct, ["image/","video/","audio/","text/"]) && ct != "application/pdf"
+                             true           -> true
+                           end
+                         end)
+                       else f end
+                     end) %>
+
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Document ID</th>
+                <th>Content Hash</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Refs</th>
+                <th>Status</th>
+                <th>Stored</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              <%= for doc <- files do %>
+                <tr class="data-row">
+                  <td class="mono cell-sm" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={doc.id}>
+                    <%= String.slice(doc.id || "—", 0, 20) %><%= if String.length(doc.id || "") > 20, do: "…" %>
+                  </td>
+                  <td class="mono cell-sm" style="color:var(--clr-blue)" title={doc.content_hash}>
+                    <%= String.slice(doc.content_hash || "—", 0, 16) %>…
+                  </td>
+                  <td>
+                    <span class="ref-badge"><%= ctic(doc.content_type) %> <%= sct(doc.content_type) %></span>
+                  </td>
+                  <td class="cell-num"><%= Admin.format_bytes(doc.file_size || 0) %></td>
+                  <td>
+                    <%= if doc.ref_count && doc.ref_count > 1 do %>
+                      <span class="ref-badge dup"><%= doc.ref_count %>×</span>
+                    <% else %>
+                      <span class="ref-badge">1</span>
+                    <% end %>
+                  </td>
+                  <td>
+                    <span class={"badge #{if doc.status == "synced", do: "green", else: "gray"}"}>
+                      <%= doc.status || "—" %>
+                    </span>
+                  </td>
+                  <td class="cell-sm"><%= fd(doc.inserted_at) %></td>
+                  <td class="cell-sm"><%= fd(doc.updated_at) %></td>
+                </tr>
+              <% end %>
+              <%= if files == [] do %>
+                <tr><td colspan="8" class="empty-row">No files match the filter</td></tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="margin-top:10px;padding:8px 12px;border-radius:7px;background:var(--bg3);border:1px solid var(--border);font-size:10px;color:var(--tx3)">
+          ℹ Filenames are never shown. Showing document IDs and content hashes only. Data sourced from PostgreSQL — not S3 folder structure.
+        </div>
       <% end %>
     </div>
     """
   end
 
-  # ── Shared Components ──────────────────────────────────────────────────────
-
-
+  defp parse_size(s) when is_binary(s), do: String.to_integer(s)
+  defp parse_size(i) when is_integer(i), do: i
+  defp parse_size(%Decimal{} = d), do: Decimal.to_integer(d)
+  defp parse_size(_), do: 0
 end

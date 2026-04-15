@@ -116,13 +116,6 @@ defmodule AlemWeb.Admin.Styles do
       padding: 1px 6px; border-radius: 8px; font-family: 'IBM Plex Mono', monospace;
     }
     .ni.active .ni-bd { background: rgba(91,158,255,.15); color: var(--clr-blue) }
-    .sb-ft { padding: 12px; border-top: 1px solid var(--border); font-size: 11px }
-    .ft-stat { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; color: var(--tx2) }
-    .ft-stat.accent { color: var(--clr-green) }
-    .ft-stat.muted { color: var(--tx3) }
-    .ft-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--clr-green); flex-shrink: 0; box-shadow: 0 0 6px rgba(0,221,160,.4) }
-    .ft-dot.green { background: var(--clr-green); box-shadow: 0 0 6px rgba(0,221,160,.4) }
-    .ft-dot.blue  { background: var(--clr-blue);  box-shadow: 0 0 6px rgba(91,158,255,.4) }
 
     /* ── TOPBAR ─────────────────────────────────────────────────── */
     .am { display: flex; flex-direction: column; overflow: hidden }
@@ -355,6 +348,41 @@ defmodule AlemWeb.Admin.Styles do
       padding: 7px 10px; color: var(--tx); font-size: 12px; font-family: 'Syne', sans-serif;
       cursor: pointer; outline: none;
     }
+
+
+    /* ── USER CELL (monitoring, users table) ───────────────────────────── */
+    .user-cell {
+      display: flex; align-items: center; gap: 9px; min-width: 0;
+    }
+    .user-avatar {
+      width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0;
+      background: linear-gradient(135deg, var(--clr-blue), var(--clr-purple));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 800; color: #fff;
+    }
+    .user-info { min-width: 0; flex: 1 }
+    .user-name { font-size: 12px; font-weight: 700; color: var(--tx); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+    .user-id   { font-size: 10px; color: var(--tx3); font-family: 'IBM Plex Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+
+    /* ── PAGE HEADERS ────────────────────────────────────────────────── */
+    .page-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px }
+    .page-heading { font-size: 18px; font-weight: 800; color: var(--tx); margin-bottom: 4px }
+    .page-count-badge { background: var(--bg4); color: var(--tx3); font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); font-family: 'IBM Plex Mono', monospace; vertical-align: middle; margin-left: 8px }
+    .page-title-row { display: flex; align-items: center; gap: 6px }
+    .filter-shortcuts { display: flex; gap: 6px; flex-wrap: wrap }
+    .fsc { padding: 4px 12px; border-radius: 20px; border: 1px solid var(--border); background: var(--bg3); color: var(--tx2); font-size: 11px; font-weight: 700; cursor: pointer; font-family: 'Syne', sans-serif; transition: all .15s }
+    .fsc:hover { border-color: var(--border2); color: var(--tx) }
+    .fsc.active { color: #fff }
+    .fsc-red.active    { background: var(--clr-red);    border-color: var(--clr-red) }
+    .fsc-amber.active  { background: var(--clr-amber);  border-color: var(--clr-amber) }
+    .fsc-green.active  { background: var(--clr-green);  border-color: var(--clr-green) }
+    .fsc-gray.active   { background: var(--tx3);         border-color: var(--tx3) }
+    .inline-link { background: none; border: none; color: var(--clr-blue); cursor: pointer; font-size: 12px; padding: 0; font-weight: 600; text-decoration: underline }
+    .empty-filtered-state { text-align: center; padding: 60px 20px }
+    .ef-icon  { font-size: 36px; margin-bottom: 12px }
+    .ef-title { font-size: 16px; font-weight: 800; margin-bottom: 6px }
+    .ef-sub   { font-size: 12px; color: var(--tx3); margin-bottom: 20px; max-width: 320px; margin-left: auto; margin-right: auto; line-height: 1.5 }
+    .ef-btn   { background: var(--clr-blue); color: #fff; border: none; border-radius: 8px; padding: 9px 20px; cursor: pointer; font-size: 12px; font-weight: 700; font-family: 'Syne', sans-serif }
 
     /* ── TABLE ──────────────────────────────────────────────────── */
     .table-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden }
@@ -880,6 +908,91 @@ defmodule AlemWeb.Admin.Styles do
     .theme-light .data-plane-title { color: #9898b8 }
 
     /* END LIGHT MODE OVERRIDES */
+
+
+    /* ══ RESPONSIVE LAYOUT ═══════════════════════════════════════════
+       Mobile-first breakpoints for all devices.
+       The admin panel uses a sidebar+content grid layout.
+       On small screens, sidebar collapses, content goes full-width.
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Tablet: collapse sidebar to icons only (≤900px) */
+    @media (max-width: 900px) {
+      .al { grid-template-columns: 60px 1fr }
+      .sb { min-width: 0 }
+      .sb-top { padding: 12px 8px }
+      .sb-logo { justify-content: center }
+      .lt, .sb-sub, .ni-lb, .ni-bd, .nsl { display: none }
+      .ni { padding: 8px; justify-content: center }
+      .lm { margin: 0 auto }
+      .sb-ft { display: none }
+      .ac { padding: 14px 16px }
+      .topbar { padding: 0 16px }
+      .tb-t { font-size: 14px }
+      .tb-bc { display: none }
+      .tb-chips { display: none }
+      .sg { grid-template-columns: repeat(2, 1fr) }
+      .dash-grid { grid-template-columns: 1fr }
+      .stat-strip { grid-template-columns: repeat(3, 1fr) }
+      .a-strip { grid-template-columns: repeat(3, 1fr) }
+      .perm-grid { grid-template-columns: 1fr 1fr }
+      .chart-grid-2 { grid-template-columns: 1fr }
+      .chart-r3 { grid-template-columns: 1fr }
+      .vault-layout { grid-template-columns: 1fr }
+      .vault-sidebar { display: none }
+    }
+
+    /* Mobile: full-screen, no sidebar (≤600px) */
+    @media (max-width: 600px) {
+      .al { grid-template-columns: 1fr; position: relative }
+      .sb { display: none }  /* use hamburger menu in future */
+      .ac { padding: 12px }
+      .topbar { padding: 0 12px }
+      .sg { grid-template-columns: repeat(2, 1fr); gap: 8px }
+      .sc { padding: 10px 12px; gap: 8px }
+      .sc-v { font-size: 18px }
+      .dash-grid { grid-template-columns: 1fr; gap: 10px }
+      .stat-strip { grid-template-columns: repeat(2, 1fr) }
+      .a-strip { grid-template-columns: repeat(2, 1fr) }
+      .perm-grid { grid-template-columns: 1fr }
+      .toolbar { flex-direction: column; gap: 8px }
+      .filter-pills { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px }
+      .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch }
+      .data-table { min-width: 560px }
+      .profile-card { flex-direction: column; align-items: stretch }
+      .profile-actions { flex-direction: row; flex-wrap: wrap }
+      .action-btn { flex: 1; min-width: 90px; text-align: center }
+      .chart-grid-2 { grid-template-columns: 1fr }
+      .chart-r3 { grid-template-columns: 1fr }
+      .vault-layout { grid-template-columns: 1fr }
+      .vault-sidebar { display: none }
+      .s3-root-grid { grid-template-columns: 1fr }
+      .page-header { flex-direction: column; gap: 8px }
+      .filter-shortcuts { overflow-x: auto; flex-wrap: nowrap }
+      .up-strip { grid-template-columns: repeat(3, 1fr) }
+      .up-row2, .up-row3, .up-row-wide { grid-template-columns: 1fr }
+      .tb-r { gap: 6px }
+      .chip { display: none }
+      .chip.chip-sessions { display: flex }
+    }
+
+    /* Large screens (≥1400px) — wider content columns */
+    @media (min-width: 1400px) {
+      .al { grid-template-columns: 240px 1fr }
+      .sg { grid-template-columns: repeat(4, 1fr) }
+    }
+
+    /* Ensure tables always scroll horizontally, never overflow page */
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch }
+    .data-table  { width: 100%; min-width: 500px }
+
+    /* Scrollbar styling for WebKit */
+    ::-webkit-scrollbar { width: 5px; height: 5px }
+    ::-webkit-scrollbar-track { background: var(--bg2) }
+    ::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 3px }
+    ::-webkit-scrollbar-thumb:hover { background: var(--tx3) }
+
+    /* ══ END RESPONSIVE ══════════════════════════════════════════════ */
 
     </style>
     """

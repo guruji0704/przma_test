@@ -42,13 +42,7 @@ defmodule AlemWeb.Admin.Pages.Monitoring do
             <%= for u <- @monitoring.users do %>
               <tr class="data-row">
                 <td>
-                  <div class="user-cell">
-                    <div class="user-avatar"><%= String.first(u.nickname || "?") |> String.upcase() %></div>
-                    <div>
-                      <div class="user-name"><%= u.nickname %></div>
-                      <div class="user-id mono"><%= String.slice(u.user_id, 0, 8) %>&#8230;</div>
-                    </div>
-                  </div>
+                  <div class="user-cell"><div class="user-info"><div class="user-name"><%= u.nickname %></div><div class="user-id mono"><%= String.slice(u.user_id, 0, 8) %></div></div></div>
                 </td>
                 <td>
                   <div class="badge-row">
@@ -64,7 +58,7 @@ defmodule AlemWeb.Admin.Pages.Monitoring do
                 <td class="cell-num"><%= Admin.format_bytes(u.storage_bytes) %></td>
                 <td class="cell-num"><%= Map.get(u, :sessions, 0) %></td>
                 <td class="cell-sm"><%= fd(Map.get(u, :last_active)) %></td>
-                <td class="cell-sm"><%= fd(u.joined) %></td>
+                <td class="cell-sm"><%= joined_ago(u.joined) %></td>
                 <td>
                   <div class="action-btns">
                     <button class="btn-sm" phx-click="view_user" phx-value-id={u.user_id}>Profile</button>

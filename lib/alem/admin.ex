@@ -98,10 +98,11 @@ defmodule Alem.Admin do
 
     query =
       case sort do
-        "newest"   -> order_by(query, [u], desc: u.inserted_at)
-        "oldest"   -> order_by(query, [u], asc:  u.inserted_at)
-        "name_asc" -> order_by(query, [u], asc:  u.nickname)
-        _          -> order_by(query, [u], desc: u.inserted_at)
+        "newest"    -> order_by(query, [u], desc: u.inserted_at)
+        "oldest"    -> order_by(query, [u], asc:  u.inserted_at)
+        "name_asc"  -> order_by(query, [u], asc:  u.nickname)
+        "name_desc" -> order_by(query, [u], desc: u.nickname)
+        _           -> order_by(query, [u], desc: u.inserted_at)
       end
 
     users = query |> limit(^per) |> offset(^((page - 1) * per)) |> Repo.all()
@@ -1028,6 +1029,109 @@ defmodule Alem.Admin do
         usage: if(Map.get(ns_services, "analytics", false), do: "Enabled", else: "Disabled")
       },
     }
+  end
+
+
+  # ── Admin Account Management ──────────────────────────────────────────────
+  # Admins are tracked via is_admin flag on users table.
+  # Super admin (admin@przma.com) can grant/revoke admin status.
+  # This does NOT create a new user — it grants admin flag to existing user.
+
+  def list_admin_users do
+    from(u in User, where: u.is_admin == true,
+      order_by: [asc: u.inserted_at],
+      select: %{id: u.id, nickname: u.nickname, email: u.email,
+                inserted_at: u.inserted_at, is_active: u.is_active})
+    |> Repo.all()
+  end
+
+  def create_admin_account(email) when is_binary(email) do
+    case Repo.get_by(User, email: String.downcase(String.trim(email))) do
+      nil  -> {:error, "No user found with email: #{email}"}
+      user ->
+        if user.is_admin do
+          {:error, "User is already an admin"}
+        else
+          case set_user(user.id, %{is_admin: true}) do
+            {:ok, u}    -> {:ok, u}
+            {:error, _} -> {:error, "Failed to grant admin"}
+          end
+        end
+    end
+  end
+
+  def revoke_admin_account(user_id) do
+    # Cannot revoke the super admin
+    case Repo.get(User, user_id) do
+      %{email: "admin@przma.com"} -> {:error, "Cannot revoke super admin"}
+      nil -> {:error, "User not found"}
+      _   -> set_user(user_id, %{is_admin: false})
+    end
+  end
+
+
+  # ── S3 Namespace File Listing (DB-backed, no folder drilling) ────────────────
+  # Given a namespace_key (e.g. "CZNkZ0P5pAzWGLtM"), look up the user and
+  # return all their documents with CAS metadata. Used by S3 Browser.
+  def list_namespace_files(namespace_key) when is_binary(namespace_key) do
+    # Find user with this namespace key (derived from DID fingerprint)
+    # namespace_key = first 16 chars of DID fingerprint -> stored as namespace.id
+    user_query =
+      from(u in User,
+        where: not is_nil(u.did_id),
+        select: {u.id, u.nickname, u.email, u.did_id})
+    all_users = Repo.all(user_query)
+
+    # Find which user has this namespace key
+    matching_user =
+      Enum.find(all_users, fn {_id, _nick, _email, did_id} ->
+        Alem.DID.namespace_key(did_id) == namespace_key
+      end)
+
+    case matching_user do
+      nil -> %{namespace_key: namespace_key, user: nil, files: [], total: 0}
+      {uid, nickname, email, _did_id} ->
+        files =
+          from(d in Document,
+            left_join: c in CasObject, on: c.content_hash == d.content_hash,
+            where: d.user_id == ^uid,
+            order_by: [desc: d.inserted_at],
+            select: %{
+              id:           d.id,
+              content_hash: d.content_hash,
+              content_type: d.content_type,
+              file_size:    c.file_size,
+              ref_count:    c.ref_count,
+              status:       d.status,
+              inserted_at:  d.inserted_at,
+              updated_at:   d.updated_at
+            })
+          |> Repo.all()
+
+        %{
+          namespace_key: namespace_key,
+          user: %{id: uid, nickname: nickname, email: email},
+          files: files,
+          total: length(files)
+        }
+    end
+  end
+
+  def list_namespace_files(_), do: %{namespace_key: nil, user: nil, files: [], total: 0}
+
+  # List all user namespaces for the S3 Browser top-level user view
+  def list_user_namespaces do
+    from(u in User,
+      where: not is_nil(u.did_id),
+      select: {u.id, u.nickname, u.email, u.did_id})
+    |> Repo.all()
+    |> Enum.map(fn {uid, nickname, email, did_id} ->
+      ns_key = Alem.DID.namespace_key(did_id)
+      file_count = Repo.aggregate(
+        from(d in Document, where: d.user_id == ^uid), :count, :id)
+      %{user_id: uid, nickname: nickname, email: email, namespace_key: ns_key, file_count: file_count}
+    end)
+    |> Enum.filter(fn ns -> ns.namespace_key != nil end)
   end
 
 end

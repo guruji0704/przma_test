@@ -65,7 +65,7 @@ defmodule AlemWeb.Admin.Pages.Users do
           <% end %>
         </div>
         <select class="select-box" phx-change="sort_users" name="sort">
-          <%= for {v,l} <- [{"newest","Newest"},{"oldest","Oldest"},{"files_desc","Most Files"},{"name_asc","Name A→Z"}] do %>
+          <%= for {v,l} <- [{"newest","Newest"},{"oldest","Oldest"},{"files_desc","Most Files"},{"name_asc","Name A→Z"},{"name_desc","Name Z→A"}] do %>
             <option value={v} selected={@user_sort == v}><%= l %></option>
           <% end %>
         </select>
@@ -101,7 +101,7 @@ defmodule AlemWeb.Admin.Pages.Users do
           <table class="data-table">
             <thead>
               <tr>
-                <th>User</th><th>Email</th><th>Status</th><th>Files</th><th>Joined</th><th>Actions</th>
+                <th>User</th><th>Email</th><th>Status</th><th>Files</th><th>Member Since</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -109,10 +109,7 @@ defmodule AlemWeb.Admin.Pages.Users do
                 <tr class="data-row" phx-click="view_user" phx-value-id={u.id} style="cursor:pointer">
                   <td>
                     <div class="user-cell">
-                      <div class="user-avatar">
-                        <%= String.first(u.nickname || "?") |> String.upcase() %>
-                      </div>
-                      <div>
+                      <div class="user-info">
                         <div class="user-name"><%= u.nickname %></div>
                         <div class="user-id mono"><%= String.slice(u.id, 0, 10) %>…</div>
                       </div>
@@ -121,7 +118,7 @@ defmodule AlemWeb.Admin.Pages.Users do
                   <td class="cell-sm mono"><%= u.email %></td>
                   <td><div class="badge-row"><.user_badges u={u}/></div></td>
                   <td class="cell-num"><%= u.file_count %></td>
-                  <td class="cell-sm"><%= fd(u.inserted_at) %></td>
+                  <td class="cell-sm"><%= joined_ago(u.inserted_at) %></td>
                   <td>
                     <div class="action-btns" phx-click="" style="pointer-events:all">
                       <button class="btn-sm" phx-click="view_user" phx-value-id={u.id}>Profile</button>
