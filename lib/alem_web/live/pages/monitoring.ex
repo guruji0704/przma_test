@@ -5,6 +5,12 @@ defmodule AlemWeb.Admin.Pages.Monitoring do
   import AlemWeb.Admin.Components
   alias Alem.Admin
 
+  def page(%{monitoring: nil} = assigns) do
+    ~H"""
+    <div class="empty-state">Loading monitoring data...</div>
+    """
+  end
+
   def page(assigns) do
     ~H"""
     <div>
@@ -13,20 +19,24 @@ defmodule AlemWeb.Admin.Pages.Monitoring do
       <div class="card" style="margin-bottom:16px">
         <div class="card-head"><span class="card-title">Storage by File Type</span></div>
         <div class="card-body">
-          <%= for t <- Enum.take(@monitoring.storage_by_type, 8) do %>
-            <.storage_bar label={"#{ctic(t.type)} #{sct(t.type)}"} value={t.bytes}
-                          max={@stats.total_bytes} color="blue" fmt={Admin.format_bytes(t.bytes)} />
-          <% end %>
-          <%= if @monitoring.storage_by_type == [] do %>
-            <div class="empty-state">No data yet</div>
+          <%= if @monitoring.storage_by_type != [] do %>
+            <%= for t <- Enum.take(@monitoring.storage_by_type, 8) do %>
+              <.storage_bar label={"#{ctic(t.type)} #{sct(t.type)}"} value={t.bytes}
+                            max={@stats.total_bytes} color="blue" fmt={Admin.format_bytes(t.bytes)} />
+            <% end %>
+          <% else %>
+            <div class="empty-state">No storage data yet</div>
           <% end %>
         </div>
       </div>
 
-      <div class="table-wrap">
+      <div class="tbl-wrap">
         <table class="data-table">
           <thead>
-            <tr><th>User</th><th>Status</th><th>Files</th><th>Storage</th><th>Sessions</th><th>Last Active</th><th>Joined</th><th></th></tr>
+            <tr>
+              <th>User</th><th>Status</th><th>Files</th>
+              <th>Storage</th><th>Sessions</th><th>Last Active</th><th>Joined</th><th></th>
+            </tr>
           </thead>
           <tbody>
             <%= for u <- @monitoring.users do %>
@@ -36,13 +46,17 @@ defmodule AlemWeb.Admin.Pages.Monitoring do
                     <div class="user-avatar"><%= String.first(u.nickname || "?") |> String.upcase() %></div>
                     <div>
                       <div class="user-name"><%= u.nickname %></div>
-                      <div class="user-id mono"><%= String.slice(u.user_id, 0, 8) %>…</div>
+                      <div class="user-id mono"><%= String.slice(u.user_id, 0, 8) %>&#8230;</div>
                     </div>
                   </div>
                 </td>
                 <td>
                   <div class="badge-row">
-                    <%= if u.is_active do %><span class="badge green">Active</span><% else %><span class="badge red">Blocked</span><% end %>
+                    <%= if u.is_active do %>
+                      <span class="badge green">Active</span>
+                    <% else %>
+                      <span class="badge red">Blocked</span>
+                    <% end %>
                     <%= if u.is_verified do %><span class="badge blue">Verified</span><% end %>
                   </div>
                 </td>
@@ -68,8 +82,4 @@ defmodule AlemWeb.Admin.Pages.Monitoring do
     </div>
     """
   end
-
-  # ── Vault Page ────────────────────────────────────────────────────────────
-
-
 end

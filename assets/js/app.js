@@ -30,16 +30,24 @@ Hooks.Chart = {
   }
 }
 
-// ThemePersist Hook: saves/restores admin theme preference via localStorage
+// ThemePersist: zero-flicker theme persistence
 Hooks.ThemePersist = {
   mounted() {
-    const saved = localStorage.getItem("przma_admin_theme") || "dark"
-    if (saved !== "dark") {
+    const saved = localStorage.getItem("przma_theme") || "dark"
+    this.applyTheme(saved)
+    const serverTheme = this.el.dataset.theme || "dark"
+    if (saved !== serverTheme) {
       this.pushEvent("restore_theme", { theme: saved })
     }
     this.handleEvent("theme_changed", ({ theme }) => {
-      localStorage.setItem("przma_admin_theme", theme)
+      localStorage.setItem("przma_theme", theme)
+      this.applyTheme(theme)
     })
+  },
+  applyTheme(theme) {
+    const el = this.el
+    el.classList.remove("theme-dark", "theme-light")
+    el.classList.add(theme === "light" ? "theme-light" : "theme-dark")
   }
 }
 

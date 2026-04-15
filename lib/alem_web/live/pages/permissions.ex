@@ -5,7 +5,7 @@ defmodule AlemWeb.Admin.Pages.Permissions do
   import AlemWeb.Admin.Components
   alias Alem.Admin
 
-  import AlemWeb.Admin.Pages.Users, only: [user_badges: 1]
+  # user_badges is in AlemWeb.Admin.Components (imported above)
 
   def page(%{permissions: nil} = assigns) do
     ~H"""
@@ -108,9 +108,9 @@ defmodule AlemWeb.Admin.Pages.Permissions do
                   <%= if @p.can_login, do: "ENABLED", else: "DISABLED" %>
                 </span>
                 <%= if @p.can_login do %>
-                  <button class="perm-btn red" phx-click="perm_action" phx-value-action="block" phx-value-user_id={@u.id}>Block</button>
+                  <button class="perm-btn red" phx-click="perm_action" phx-disable-with="..." phx-value-action="block" phx-value-user_id={@u.id}>Block</button>
                 <% else %>
-                  <button class="perm-btn green" phx-click="perm_action" phx-value-action="unblock" phx-value-user_id={@u.id}>Unblock</button>
+                  <button class="perm-btn green" phx-click="perm_action" phx-disable-with="..." phx-value-action="unblock" phx-value-user_id={@u.id}>Unblock</button>
                 <% end %>
               </div>
             </div>
@@ -134,13 +134,13 @@ defmodule AlemWeb.Admin.Pages.Permissions do
                 </span>
                 <%= if @p.is_admin do %>
                   <button class="perm-btn gray"
-                          phx-click="confirm_action"
+                          phx-click="confirm_action" phx-disable-with="..."
                           phx-value-action="demote"
                           phx-value-user_id={@u.id}
                           phx-value-label={"Remove admin from #{@u.nickname}?"}>Remove</button>
                 <% else %>
                   <button class="perm-btn amber"
-                          phx-click="confirm_action"
+                          phx-click="confirm_action" phx-disable-with="..."
                           phx-value-action="promote"
                           phx-value-user_id={@u.id}
                           phx-value-label={"Make #{@u.nickname} an admin?"}>Grant</button>
@@ -157,9 +157,9 @@ defmodule AlemWeb.Admin.Pages.Permissions do
                   <%= if @p.is_admin || @u.is_moderator, do: "ENABLED", else: "NONE" %>
                 </span>
                 <%= if @u.is_moderator do %>
-                  <button class="perm-btn gray" phx-click="perm_action" phx-value-action="remove_moderator" phx-value-user_id={@u.id}>Revoke</button>
+                  <button class="perm-btn gray" phx-click="perm_action" phx-disable-with="..." phx-value-action="remove_moderator" phx-value-user_id={@u.id}>Revoke</button>
                 <% else %>
-                  <button class="perm-btn purple" phx-click="perm_action" phx-value-action="make_moderator" phx-value-user_id={@u.id}>Grant</button>
+                  <button class="perm-btn purple" phx-click="perm_action" phx-disable-with="..." phx-value-action="make_moderator" phx-value-user_id={@u.id}>Grant</button>
                 <% end %>
               </div>
             </div>
@@ -179,7 +179,7 @@ defmodule AlemWeb.Admin.Pages.Permissions do
                   <%= @p.active_tokens %> active
                 </span>
                 <%= if @p.active_tokens > 0 do %>
-                  <button class="perm-btn red" phx-click="perm_action" phx-value-action="revoke_tokens" phx-value-user_id={@u.id}>Revoke All</button>
+                  <button class="perm-btn red" phx-click="perm_action" phx-disable-with="..." phx-value-action="revoke_tokens" phx-value-user_id={@u.id}>Revoke All</button>
                 <% end %>
               </div>
             </div>
@@ -193,7 +193,7 @@ defmodule AlemWeb.Admin.Pages.Permissions do
                   <%= @p.active_sessions %> active
                 </span>
                 <%= if @p.active_sessions > 0 do %>
-                  <button class="perm-btn red" phx-click="perm_action" phx-value-action="revoke_sessions" phx-value-user_id={@u.id}>Kill All</button>
+                  <button class="perm-btn red" phx-click="perm_action" phx-disable-with="..." phx-value-action="revoke_sessions" phx-value-user_id={@u.id}>Kill All</button>
                 <% end %>
               </div>
             </div>

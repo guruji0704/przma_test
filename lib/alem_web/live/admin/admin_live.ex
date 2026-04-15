@@ -623,15 +623,18 @@ defmodule AlemWeb.AdminLive do
 
   # Build a full breadcrumb trail from history + current page
   defp full_breadcrumb(history, current_page) do
-    history_labels =
+    # Show max 3 crumbs + current page to avoid overflow
+    recent =
       history
+      |> Enum.take(3)
       |> Enum.reverse()
       |> Enum.map(fn
         {page, _filter} -> page_label(page)
         page            -> page_label(page)
       end)
-    crumbs = history_labels ++ [page_label(current_page)]
-    Enum.join(crumbs, " → ")
+    crumbs = recent ++ [page_label(current_page)]
+    label  = Enum.join(crumbs, " → ")
+    if String.length(label) > 60, do: "… → " <> page_label(current_page), else: label
   end
 
   defp page_label(:dashboard),         do: "Dashboard"

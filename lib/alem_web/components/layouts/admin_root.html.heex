@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <meta name="csrf-token" content={get_csrf_token()}/>
     <title>PRZMA Control Plane</title>
+    <script>
+      (function(){
+        try {
+          var t = localStorage.getItem("przma_theme") || "dark";
+          document.documentElement.setAttribute("data-pre-theme", t);
+          document.body.style.background = t === "light" ? "#f0f2f7" : "#080b12";
+        } catch(e) {}
+      })();
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
     <script defer phx-track-static type="text/javascript" src="/assets/app.js"></script>
   </head>

@@ -107,16 +107,16 @@ defmodule AlemWeb.Admin.Pages.UserProfile do
           <%!-- admin@przma.com is protected — no destructive actions shown --%>
           <%= if @user_detail.user.email != "admin@przma.com" do %>
             <%= if @user_detail.user.is_active do %>
-              <button class="action-btn red" phx-click="confirm_action" phx-value-action="block" phx-value-user_id={@user_detail.user.id} phx-value-label={"Block #{@user_detail.user.nickname}?"}>Block</button>
+              <button class="action-btn red" phx-click="confirm_action" phx-disable-with="..." phx-value-action="block" phx-value-user_id={@user_detail.user.id} phx-value-label={"Block #{@user_detail.user.nickname}?"}>Block</button>
             <% else %>
-              <button class="action-btn green" phx-click="confirm_action" phx-value-action="unblock" phx-value-user_id={@user_detail.user.id} phx-value-label={"Unblock #{@user_detail.user.nickname}?"}>Unblock</button>
+              <button class="action-btn green" phx-click="confirm_action" phx-disable-with="..." phx-value-action="unblock" phx-value-user_id={@user_detail.user.id} phx-value-label={"Unblock #{@user_detail.user.nickname}?"}>Unblock</button>
             <% end %>
             <%= if @user_detail.user.is_admin do %>
-              <button class="action-btn gray" phx-click="confirm_action" phx-value-action="demote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Remove admin from #{@user_detail.user.nickname}?"}>Remove Admin</button>
+              <button class="action-btn gray" phx-click="confirm_action" phx-disable-with="..." phx-value-action="demote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Remove admin from #{@user_detail.user.nickname}?"}>Remove Admin</button>
             <% else %>
-              <button class="action-btn amber" phx-click="confirm_action" phx-value-action="promote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Make #{@user_detail.user.nickname} admin?"}>Make Admin</button>
+              <button class="action-btn amber" phx-click="confirm_action" phx-disable-with="..." phx-value-action="promote" phx-value-user_id={@user_detail.user.id} phx-value-label={"Make #{@user_detail.user.nickname} admin?"}>Make Admin</button>
             <% end %>
-            <button class="action-btn orange" phx-click="confirm_action" phx-value-action="soft_delete" phx-value-user_id={@user_detail.user.id} phx-value-label={"Soft delete #{@user_detail.user.nickname}?"}>Soft Delete</button>
+            <button class="action-btn orange" phx-click="confirm_action" phx-disable-with="..." phx-value-action="soft_delete" phx-value-user_id={@user_detail.user.id} phx-value-label={"Soft delete #{@user_detail.user.nickname}?"}>Soft Delete</button>
           <% else %>
             <div class="protected-badge">&#128274; Super Admin &middot; Protected</div>
           <% end %>
