@@ -3,7 +3,7 @@ defmodule Alem.Schemas.Document do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :string, autogenerate: false}
+  @primary_key {:id, :binary_id, autogenerate: false}
   schema "documents" do
     field :tenant_id, :string
     field :user_id, :string
@@ -11,6 +11,7 @@ defmodule Alem.Schemas.Document do
     field :content_type, :string
     field :object_key, :string
     field :content_hash, :string
+    field :file_size, :integer
     field :text_content, :string
     field :metadata, :map
     field :status, :string, default: "processing"
@@ -20,7 +21,8 @@ defmodule Alem.Schemas.Document do
 
   def changeset(document, attrs) do
     document
-    |> cast(attrs, [:id, :tenant_id, :user_id, :filename, :content_type, :object_key, :content_hash, :text_content, :metadata, :status])
+    |> cast(attrs, [:id, :tenant_id, :user_id, :filename, :content_type, :object_key, :content_hash, :file_size, :text_content, :metadata, :status])
     |> validate_required([:id, :tenant_id, :user_id, :filename])
+    |> validate_number(:file_size, greater_than: 0)
   end
 end

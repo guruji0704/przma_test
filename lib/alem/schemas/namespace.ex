@@ -16,6 +16,8 @@ defmodule Alem.Schemas.Namespace do
     field :document_count, :integer, default: 0
     field :vector_count, :integer, default: 0
     field :storage_bytes, :integer, default: 0
+    field :did, :string
+    field :identity_type, :string, default: "did"
     field :last_activity_at, :utc_datetime
 
     timestamps()
@@ -24,7 +26,7 @@ defmodule Alem.Schemas.Namespace do
   def changeset(namespace, attrs) do
     namespace
     |> cast(attrs, [:id, :tenant_id, :config, :status, :document_count, :vector_count,
-                    :storage_bytes, :last_activity_at])
+                    :storage_bytes, :last_activity_at, :did, :identity_type])
     |> validate_required([:id, :tenant_id])
     |> validate_inclusion(:status, ["active", "suspended", "deleted"])
   end

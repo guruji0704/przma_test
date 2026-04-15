@@ -10,47 +10,45 @@ defmodule Alem.Sqld do
   def ensure_schema do
     Logger.info("[sqld] Bootstrapping schema...")
 
-    sql = """
-    CREATE TABLE IF NOT EXISTS documents (
-      id               TEXT PRIMARY KEY,
-      user_id          TEXT NOT NULL,
-      filename         TEXT NOT NULL,
+    statements = [
+      """
+      CREATE TABLE IF NOT EXISTS documents (
+        id               TEXT PRIMARY KEY,
+        user_id          TEXT NOT NULL,
+        filename         TEXT NOT NULL,
+        automerge_state  BLOB,
+        s3_content_key   TEXT,
+        epoch_id         INTEGER,
+        device_id        TEXT,
+        last_modified_at TEXT,
+        file_size        INTEGER DEFAULT 0,
+        status           TEXT DEFAULT 'synced',
+        inserted_at      TEXT NOT NULL,
+        updated_at       TEXT NOT NULL
+      )
+      """,
+      "CREATE INDEX IF NOT EXISTS idx_docs_user    ON documents(user_id)",
+      "CREATE INDEX IF NOT EXISTS idx_docs_updated ON documents(updated_at)",
+      """
+      CREATE TABLE IF NOT EXISTS epoch_keys (
+        epoch_id            INTEGER PRIMARY KEY,
+        public_key_b64      TEXT    NOT NULL,
+        enc_private_key_b64 TEXT,
+        started_at          TEXT    NOT NULL,
+        expires_at          TEXT    NOT NULL,
+        grace_until         TEXT,
+        is_current          INTEGER DEFAULT 0
+      )
+      """,
+      "CREATE INDEX IF NOT EXISTS idx_epoch_current ON epoch_keys(is_current)"
+    ]
 
-      -- CRDT state lives here (Binary)
-      automerge_state  BLOB,
+    results = Enum.map(statements, fn sql -> execute(sql) end)
 
-      -- Pointer to the actual file in S3
-      s3_content_key   TEXT,
-
-      -- Epoch key used to encrypt this file (for server-side CAS decryption)
-      epoch_id         INTEGER,
-
-      device_id        TEXT,
-      last_modified_at TEXT,
-      file_size        INTEGER DEFAULT 0,
-      status           TEXT DEFAULT 'synced',
-      inserted_at      TEXT NOT NULL,
-      updated_at       TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_docs_user    ON documents(user_id);
-    CREATE INDEX IF NOT EXISTS idx_docs_updated ON documents(updated_at);
-
-    -- ── Epoch keypairs (rotating server x25519 keys for vault CAS decryption) ──
-    CREATE TABLE IF NOT EXISTS epoch_keys (
-      epoch_id            INTEGER PRIMARY KEY,
-      public_key_b64      TEXT    NOT NULL,
-      enc_private_key_b64 TEXT,            -- NULL after grace period (forward secrecy)
-      started_at          TEXT    NOT NULL,
-      expires_at          TEXT    NOT NULL,
-      grace_until         TEXT,
-      is_current          INTEGER DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_epoch_current ON epoch_keys(is_current);
-    """
-
-    case execute(sql) do
-      :ok -> Logger.info("[sqld] ✅ Schema ready")
-      {:error, reason} -> Logger.error("[sqld] ❌ Schema bootstrap failed: #{inspect(reason)}")
+    if Enum.all?(results, &(&1 == :ok)) do
+      Logger.info("[sqld] ✅ Schema ready")
+    else
+      Logger.error("[sqld] ❌ Schema partially failed. Results: #{inspect(results)}")
     end
   end
 

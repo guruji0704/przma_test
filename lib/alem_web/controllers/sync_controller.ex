@@ -124,6 +124,7 @@ defmodule AlemWeb.SyncController do
           # Metadata Ingest (Arrow)
           arrow_ipc = normalize_binary(Map.get(params, "arrow_metadata_ipc"))
           if is_binary(arrow_ipc) and byte_size(arrow_ipc) > 0 do
+            Logger.info("[Sync] Detected Arrow IPC metadata (#{byte_size(arrow_ipc)} bytes) — triggering analytics ingest.")
             Task.start(fn -> Alem.Analytics.MetadataStore.ingest(arrow_ipc, user.id, doc_id) end)
           end
 
@@ -178,21 +179,57 @@ defmodule AlemWeb.SyncController do
       case ExAws.S3.complete_multipart_upload(bucket, s3_key, upload_id, parts)
            |> ExAws.request(virtual_host: false) do
         {:ok, _} ->
+          # Process metadata and CAS in a single background task to ensure ordering
+          epoch_id = Map.get(params, "epoch_id")
+          ctx = %{
+            user_id: user.id,
+            namespace_key: user.id, # Postgres PK
+            actor_did: user.did_id,
+            device_id: Map.get(params, "device_id", "unknown"),
+            filename: filename
+          }
+
           Task.start(fn ->
+            # 1. Update metadata in both SQLD and Postgres
             upsert_document_metadata(%{
               id: doc_id, user_id: user.id, filename: filename, s3_content_key: s3_key,
-              status: "synced", automerge_state: <<>>, device_id: Map.get(params, "device_id", "unknown"),
+              status: "synced", automerge_state: <<>>, device_id: ctx.device_id,
               last_modified_at: Map.get(params, "last_modified_at", ""),
               file_size: Map.get(params, "file_size", 0),
-              epoch_id: Map.get(params, "epoch_id")
+              epoch_id: epoch_id
             }, @sqld_fallback)
-          end)
 
-          # Async CAS extraction
-          epoch_id = Map.get(params, "epoch_id")
-          if is_integer(epoch_id) do
-            Task.start(fn -> extract_vault_content_async(doc_id, s3_key, bucket, epoch_id, @sqld_fallback) end)
-          end
+            # 2. Trigger CAS extraction if applicable
+            if is_integer(epoch_id) do
+              extract_vault_content_async(doc_id, s3_key, bucket, epoch_id, @sqld_fallback, ctx)
+            else
+              Logger.warning("[CAS] Skipping extraction for doc=#{doc_id}: Vault V1 (No Epoch ID)")
+              
+              # Record skipped activity
+              {:ok, activity} = Alem.Cas.create_activity(%{
+                tenant_id: "default",
+                namespace_key: ctx.namespace_key,
+                actor_did: ctx.actor_did,
+                user_id: ctx.user_id,
+                verb: "Sync",
+                object_type: "document",
+                object_id: doc_id,
+                object_path: s3_key,
+                device_id: ctx.device_id
+              })
+
+              Alem.Cas.create_event(%{
+                tenant_id: "default",
+                namespace_key: ctx.namespace_key,
+                actor_did: ctx.actor_did,
+                activity_id: activity.activity_id,
+                event_category: "sync",
+                event_type: "sync.skipped",
+                is_success: false,
+                metadata: %{reason: "Vault V1 (E2EE only)"}
+              })
+            end
+          end)
 
           json(conn, %{success: true, s3_key: s3_key})
 
@@ -235,54 +272,108 @@ defmodule AlemWeb.SyncController do
   # HELPERS
   # ══════════════════════════════════════════════════════════════════════════
 
-  def extract_vault_content_async(doc_id, s3_key, bucket, epoch_id, sqld_url) do
-    Logger.info("[CAS] Starting extraction for doc=#{doc_id}")
-    with {:ok, %{body: vault_bytes}} <- ExAws.S3.get_object(bucket, s3_key) |> ExAws.request(virtual_host: false),
-         {:ok, header}               <- parse_vault_header_v2(vault_bytes),
+  def extract_vault_content_async(doc_id, s3_key, bucket, epoch_id, sqld_url, ctx) do
+    Logger.info("[CAS] Starting extraction for doc=#{doc_id} using epoch=#{epoch_id}")
+    tenant_id = "default"
+    
+    {:ok, activity} = Alem.Cas.create_activity(%{
+      tenant_id: tenant_id,
+      namespace_key: ctx.namespace_key,
+      actor_did: ctx.actor_did,
+      user_id: ctx.user_id,
+      verb: "Sync",
+      object_type: "document",
+      object_id: doc_id,
+      object_path: s3_key,
+      device_id: ctx.device_id
+    })
+
+    record_event = fn type, success, meta ->
+      Alem.Cas.create_event(%{
+        tenant_id: tenant_id,
+        namespace_key: ctx.namespace_key,
+        actor_did: ctx.actor_did,
+        activity_id: activity.activity_id,
+        event_category: "sync",
+        event_type: type,
+        is_success: success,
+        metadata: meta
+      })
+    end
+
+    result = with {:ok, %{body: vault_bytes}} <- ExAws.S3.get_object(bucket, s3_key) |> ExAws.request(virtual_host: false),
+         _                                   <- record_event.("file.fetch", true, %{bytes: byte_size(vault_bytes)}),
+         {:ok, header}                       <- parse_vault_header_v2(vault_bytes),
+         _                                   <- record_event.("vault.parse", true, %{version: 2}),
          {:ok, file_key}             <- Alem.Vault.EpochKeyManager.decrypt_file_key(
                                            epoch_id,
                                            Base.encode64(header.ephemeral_pub),
                                            Base.encode64(header.server_nonce <> header.server_wrapped)
                                          ),
-         {:ok, plaintext}            <- decrypt_vault_chunks(vault_bytes, header.chunks_offset, file_key)
+         _                                   <- record_event.("vault.decrypt_key", true, %{epoch_id: epoch_id}),
+         {:ok, plaintext}            <- decrypt_vault_chunks(vault_bytes, header.chunks_offset, file_key),
+         _                                   <- record_event.("vault.decrypt_content", true, %{bytes: byte_size(plaintext)})
     do
       content_hash = :crypto.hash(:sha256, plaintext) |> Base.encode16(case: :lower)
+      Logger.info("[CAS] Content hash: #{content_hash}")
       
       # Core Dedup Logic: Find existing or register new
       case Alem.Cas.find_or_register_object(content_hash, %{
+        tenant_id: tenant_id,
+        namespace_key: ctx.namespace_key,
+        actor_did: ctx.actor_did,
+        user_id: ctx.user_id,
         storage_key: s3_key, 
         file_size: byte_size(plaintext),
         media_type: "application/octet-stream", 
         storage_backend: "s3"
       }) do
         {:ok, cas_obj} ->
-          # If the CAS object already has a DIFFERENT storage_key, it means this upload is redundant
+          # Register the Reference (Dedup link)
+          Alem.Cas.create_dedup_ref(%{
+            tenant_id: tenant_id,
+            namespace_key: ctx.namespace_key,
+            content_hash: content_hash,
+            document_id: doc_id,
+            user_filename: ctx.filename,
+            actor_did: ctx.actor_did,
+            user_id: ctx.user_id
+          })
+
           if cas_obj.storage_key != s3_key do
              Logger.info("[CAS] Duplicate detected. Redirecting doc=#{doc_id} to master_key=#{cas_obj.storage_key}")
-             
-             # 1. Update document metadata to point to the MASTER storage key
              sqld_execute("UPDATE documents SET status = 'indexed', content_hash = ?, s3_content_key = ? WHERE id = ?", 
                [content_hash, cas_obj.storage_key, doc_id], sqld_url)
-             
-             # 2. DELETE the redundant S3 object from the user's namespace to save space
-             Logger.info("[CAS] Deleting redundant S3 object: #{s3_key}")
              ExAws.S3.delete_object(bucket, s3_key) |> ExAws.request(virtual_host: false)
+             record_event.("cas.deduplicated", true, %{master_key: cas_obj.storage_key})
           else
-             # First time seeing this content — just update status and hash
+             Logger.info("[CAS] New content registered for doc=#{doc_id}")
              sqld_execute("UPDATE documents SET status = 'indexed', content_hash = ? WHERE id = ?", 
-               [content_hash, doc_id], sqld_url)
+                [content_hash, doc_id], sqld_url)
+             record_event.("cas.registered", true, %{hash: content_hash})
           end
           :ok
 
-        error -> 
-          Logger.error("[CAS] Failed to register object: #{inspect(error)}")
+        {:error, changeset} -> 
+          Logger.error("[CAS] Failed to register object in DB: #{inspect(changeset.errors)}")
+          record_event.("cas.error", false, %{error: inspect(changeset.errors)})
           :error
       end
+    else
+      {:error, reason} -> 
+        Logger.error("[CAS] Extraction failed for doc=#{doc_id}: #{inspect(reason)}")
+        record_event.("sync.failure", false, %{reason: inspect(reason)})
+        :error
     end
+    result
   end
 
   defp parse_vault_header_v2(<<"ALEM", 2, _::8-binary, _::4-binary, pub::32-binary, _::12-binary, _::48-binary, snonce::12-binary, swrap::48-binary, _::binary>>) do
     {:ok, %{ephemeral_pub: pub, server_nonce: snonce, server_wrapped: swrap, chunks_offset: 169}}
+  end
+  defp parse_vault_header_v2(bin) do
+    Logger.error("[CAS] Header match failed. First 16 bytes: #{inspect(binary_part(bin, 0, min(16, byte_size(bin))))}")
+    {:error, :invalid_vault_header}
   end
   defp parse_vault_header_v2(_), do: {:error, :invalid_vault}
 
@@ -301,10 +392,26 @@ defmodule AlemWeb.SyncController do
   end
 
   defp upsert_document_metadata(attrs, sqld_url) do
-    now = DateTime.utc_now() |> DateTime.to_iso8601()
-    sql = "INSERT INTO documents (id, user_id, filename, automerge_state, s3_content_key, device_id, last_modified_at, file_size, epoch_id, status, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET filename=excluded.filename, updated_at=excluded.updated_at, status=excluded.status"
-    args = [attrs.id, attrs.user_id, attrs.filename, attrs.automerge_state, attrs.s3_content_key, attrs.device_id, attrs.last_modified_at, attrs.file_size, attrs[:epoch_id], attrs.status, now, now]
-    sqld_execute(sql, args, sqld_url)
+    now_iso = DateTime.utc_now() |> DateTime.to_iso8601()
+    
+    # 1. SQLD (Source of truth for high-scale metadata)
+    sql_sqld = "INSERT INTO documents (id, user_id, filename, automerge_state, s3_content_key, device_id, last_modified_at, file_size, epoch_id, status, inserted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET filename=excluded.filename, updated_at=excluded.updated_at, status=excluded.status"
+    args_sqld = [attrs.id, attrs.user_id, attrs.filename, attrs.automerge_state, attrs.s3_content_key, attrs.device_id, attrs.last_modified_at, attrs.file_size, attrs[:epoch_id], attrs.status, now_iso, now_iso]
+    sqld_execute(sql_sqld, args_sqld, sqld_url)
+
+    # 2. Postgres (Required for CAS foreign key constraints)
+    %Alem.Schemas.Document{}
+    |> Alem.Schemas.Document.changeset(%{
+      id: attrs.id,
+      tenant_id: "default",
+      user_id: attrs.user_id,
+      filename: attrs.filename,
+      object_key: attrs.s3_content_key,
+      status: attrs.status
+    })
+    |> Alem.Repo.insert(on_conflict: :nothing)
+
+    :ok
   end
 
   defp sqld_execute(sql, args, sqld_url) do
@@ -333,6 +440,7 @@ defmodule AlemWeb.SyncController do
   defp get_s3_bucket, do: System.get_env("AWS_S3_BUCKET", "perkeep")
   defp normalize_binary(nil), do: <<>>
   defp normalize_binary(b) when is_binary(b), do: b
+  defp normalize_binary(l) when is_list(l), do: :binary.list_to_bin(l)
   defp normalize_binary(_), do: <<>>
   defp decode_crdt_state(%{"automerge_state" => b}) when is_binary(b), do: b
   defp decode_crdt_state(_), do: <<>>

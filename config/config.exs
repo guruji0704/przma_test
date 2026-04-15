@@ -34,20 +34,20 @@ config :alem, AlemWeb.Endpoint,
     ]
   ]
 
-config :alem, Alem.Mailer,
-  adapter: Swoosh.Adapters.SMTP,
-  relay: "przma.com",
-  port: 465,
-  username: "noreply@przma.com",
-  password: "dev.mail@12345",
-  ssl: true,
-  auth: :always,
-  retries: 2,
-  no_mx_lookups: true,
-  sockopts: [
-    {:verify, :verify_none},
-    {:versions, [:"tlsv1.2"]}
-  ]
+#config :alem, Alem.Mailer,
+  #adapter: Swoosh.Adapters.SMTP,
+  #relay: "przma.com",
+  #port: 465,
+  #username: "noreply@przma.com",
+  #password: "dev.mail@12345",
+  #ssl: true,
+  #auth: :always,
+  #retries: 2,
+  #no_mx_lookups: true,
+  #sockopts: [
+  #  {:verify, :verify_none},
+ #   {:versions, [:"tlsv1.2"]}
+#  ]
 
 
 # config :swoosh, :api_client, Swoosh.ApiClient.Finch

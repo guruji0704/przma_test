@@ -176,34 +176,48 @@ defmodule Alem.Vault.EpochKeyManager do
          {:ok, ephemeral_pub}  <- Base.decode64(ephemeral_pub_b64),
          {:ok, server_wrapped} <- Base.decode64(server_wrapped_b64)
     do
-      # 1. Unwrap epoch private key (ChaCha20-Poly1305 with server master key)
+      Logger.debug("[EpochKeyManager] ephemeral_pub length: #{byte_size(ephemeral_pub)}")
+      Logger.debug("[EpochKeyManager] server_wrapped length: #{byte_size(server_wrapped)}")
+      
+      # 1. Unwrap epoch private key
       <<priv_nonce::binary-12, priv_rest::binary>> = enc_private
       data_len = byte_size(priv_rest) - 16
       <<priv_ciphertext::binary-size(data_len), priv_tag::binary-16>> = priv_rest
 
       master_key   = server_master_key()
-      epoch_private = :crypto.crypto_one_time_aead(
+      case :crypto.crypto_one_time_aead(
         :chacha20_poly1305, master_key, priv_nonce, priv_ciphertext, "", priv_tag, false
-      )
+      ) do
+        :error -> 
+          Logger.error("[EpochKeyManager] Master key failed to decrypt epoch private key! Check EPOCH_MASTER_KEY.")
+          {:error, :master_key_decrypt_failed}
 
-      # 2. ECDH: epoch_private × ephemeral_public → shared_secret
-      shared_secret = :crypto.compute_key(:ecdh, ephemeral_pub, epoch_private, :x25519)
+        epoch_private ->
+          # 2. ECDH: epoch_private × ephemeral_public → shared_secret
+          # Note: epoch_private is the actual raw private key bytes
+          shared_secret = :crypto.compute_key(:ecdh, ephemeral_pub, epoch_private, :x25519)
+          Logger.debug("[EpochKeyManager] shared_secret derived (32 bytes)")
 
-      # 3. HKDF-SHA256: shared_secret → 32-byte server wrapper key
-      #    Matches Rust: Hkdf::<Sha256>::new(None, shared_secret).expand("przma-vault-server-v2")
-      server_wrap_key = hkdf_expand_sha256(shared_secret, "przma-vault-server-v2", 32)
+          # 3. HKDF-SHA256
+          server_wrap_key = hkdf_expand_sha256(shared_secret, "przma-vault-server-v2", 32)
+          Logger.debug("[EpochKeyManager] server_wrap_key expanded")
 
-      # 4. Unwrap file_key from server_wrapped_key
-      #    server_wrapped = [12-byte nonce][32-byte file_key ciphertext][16-byte tag]
-      <<key_nonce::binary-12, key_rest::binary>> = server_wrapped
-      key_data_len = byte_size(key_rest) - 16
-      <<key_ciphertext::binary-size(key_data_len), key_tag::binary-16>> = key_rest
+          # 4. Unwrap file_key from server_wrapped_key
+          <<key_nonce::binary-12, key_rest::binary>> = server_wrapped
+          key_data_len = byte_size(key_rest) - 16
+          <<key_ciphertext::binary-size(key_data_len), key_tag::binary-16>> = key_rest
 
-      file_key = :crypto.crypto_one_time_aead(
-        :chacha20_poly1305, server_wrap_key, key_nonce, key_ciphertext, "", key_tag, false
-      )
-
-      {:ok, file_key}
+          case :crypto.crypto_one_time_aead(
+            :chacha20_poly1305, server_wrap_key, key_nonce, key_ciphertext, "", key_tag, false
+          ) do
+            :error -> 
+               Logger.error("[EpochKeyManager] Failed to decrypt file key! Possible epoch key mismatch or HKDF drift.")
+               {:error, :file_key_decrypt_failed}
+            file_key ->
+               Logger.info("[EpochKeyManager] Successfully decrypted file key (32 bytes)")
+               {:ok, file_key}
+          end
+      end
     else
       :error       -> {:error, "base64 decode failed"}
       error        -> {:error, "decrypt_file_key failed: #{inspect(error)}"}
@@ -251,7 +265,7 @@ defmodule Alem.Vault.EpochKeyManager do
     case sqld_query(sql, [], sqld_url) do
       {:ok, [%{"epoch_id" => epoch_id, "public_key_b64" => pub_b64,
                "enc_private_key_b64" => enc_priv_b64, "expires_at" => exp_str}]} ->
-        {:ok, expires_at} = DateTime.from_iso8601(exp_str)
+        {:ok, expires_at, _offset} = DateTime.from_iso8601(exp_str)
         {:ok, %{
           current_epoch_id:       epoch_id,
           current_public_key_b64: pub_b64,

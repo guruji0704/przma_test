@@ -109,7 +109,8 @@ defmodule Alem.MixProject do
       {:msgpax, "~> 2.4"},
 
       # GraphQL — Absinthe
-      {:absinthe,         "~> 1.7"},
+      {:absinthe, "~> 1.7"},
+      {:broadway, "~> 1.0"},
       {:absinthe_plug,    "~> 1.5"},
       {:absinthe_phoenix, "~> 2.0"}
     ]

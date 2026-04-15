@@ -89,7 +89,7 @@ defmodule Alem.Namespace.Manager do
               tenant_id:          ns.tenant_id,
               did:                ns.did,
               identity_type:      ns.identity_type,
-              pleroma_account_id: ns.pleroma_account_id,
+              identity_type:      ns.identity_type,
               started_at:         ns.inserted_at,
               health_status:      :persisted_offline,
               services:           [],
@@ -124,19 +124,13 @@ defmodule Alem.Namespace.Manager do
       DID.valid?(identifier) ->
         Repo.one(from n in Namespace, where: n.did == ^identifier)
 
-      true ->
-        case Repo.get(Namespace, identifier) do
-          nil -> Repo.one(from n in Namespace, where: n.pleroma_account_id == ^identifier)
-          ns  -> ns
-        end
+      true -> Repo.get(Namespace, identifier)
     end
   end
 
   def find_by_did(did),
     do: Repo.one(from n in Namespace, where: n.did == ^did)
 
-  def find_by_pleroma_account(pleroma_account_id),
-    do: Repo.one(from n in Namespace, where: n.pleroma_account_id == ^pleroma_account_id)
 
   # ── GenServer callbacks ────────────────────────────────────────────────────
 
@@ -283,13 +277,11 @@ defmodule Alem.Namespace.Manager do
 
   defp ensure_namespace_in_db(user_id, tenant_id, config) do
     did                = get_in(config, [:did])
-    pleroma_account_id = get_in(config, [:pleroma, :pleroma_account_id])
-    identity_type      = determine_identity_type(did, pleroma_account_id)
+    identity_type      = determine_identity_type(did)
 
     namespace =
       find_namespace(user_id)
       || (if did, do: find_by_did(did))
-      || (if pleroma_account_id, do: find_by_pleroma_account(pleroma_account_id))
 
     case namespace do
       nil ->
@@ -297,7 +289,6 @@ defmodule Alem.Namespace.Manager do
           %{id: user_id, tenant_id: tenant_id, config: config,
             status: "active", identity_type: identity_type}
           |> maybe_put(:did, did)
-          |> maybe_put(:pleroma_account_id, pleroma_account_id)
 
         %Namespace{} |> Namespace.changeset(attrs) |> Repo.insert()
 
@@ -305,9 +296,6 @@ defmodule Alem.Namespace.Manager do
         merged = Map.merge(existing.config || %{}, config)
         attrs  = %{config: merged}
           |> maybe_put(:did, if(did && existing.did != did, do: did))
-          |> maybe_put(:pleroma_account_id,
-              if(pleroma_account_id && existing.pleroma_account_id != pleroma_account_id,
-                do: pleroma_account_id))
 
         if map_size(attrs) > 1 do
           existing |> Namespace.changeset(attrs) |> Repo.update()
@@ -320,13 +308,8 @@ defmodule Alem.Namespace.Manager do
   defp maybe_put(map, _key, nil),   do: map
   defp maybe_put(map, key, value),  do: Map.put(map, key, value)
 
-  defp determine_identity_type(did, pleroma_account_id) do
-    cond do
-      did && pleroma_account_id -> "hybrid"
-      did                       -> "did"
-      pleroma_account_id        -> "pleroma"
-      true                      -> "did"
-    end
+  defp determine_identity_type(did) do
+    if did, do: "did", else: "legacy"
   end
 
   defp start_core_services(user_id, tenant_id, config) do
