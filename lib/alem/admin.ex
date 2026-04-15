@@ -149,6 +149,60 @@ defmodule Alem.Admin do
     %{users: users_final, total: total, page: page, per: per, pages: ceil(total / per)}
   end
 
+  # ── Document List ────────────────────────────────────────────────────────
+
+  def list_documents(opts \\ %{}) do
+    search = Map.get(opts, :search, "")
+    filter = Map.get(opts, :filter, "all")
+    page   = Map.get(opts, :page, 1)
+    per    = 25
+
+    query = from d in Document
+
+    query =
+      if search != "" do
+        term = "%#{search}%"
+        where(query, [d], ilike(d.filename, ^term) or ilike(d.id, ^term) or ilike(d.user_id, ^term))
+      else
+        query
+      end
+
+    query =
+      case filter do
+        "processing" -> where(query, [d], d.status == "processing")
+        "synced"     -> where(query, [d], d.status == "synced")
+        "errors"     -> where(query, [d], d.status == "error")
+        _            -> query
+      end
+
+    total = Repo.aggregate(query, :count, :id)
+
+    query = order_by(query, [d], desc: d.inserted_at)
+
+    documents = query |> limit(^per) |> offset(^((page - 1) * per)) |> Repo.all()
+
+    total_bytes =
+      from(d in Document, select: coalesce(sum(d.file_size), 0))
+      |> Repo.one() || 0
+
+    avg_size =
+      if total > 0 do
+        format_bytes(div(total_bytes, total))
+      else
+        "—"
+      end
+
+    %{
+      items: documents,
+      total: total,
+      page: page,
+      per: per,
+      pages: ceil(total / per),
+      total_bytes: total_bytes,
+      avg_size: avg_size
+    }
+  end
+
   # ── User Detail ──────────────────────────────────────────────────────────
 
   def get_user_detail(user_id) do

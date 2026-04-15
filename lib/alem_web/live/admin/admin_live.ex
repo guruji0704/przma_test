@@ -46,6 +46,7 @@ defmodule AlemWeb.AdminLive do
       |> assign(:stats,            Admin.dashboard_stats())
       |> assign(:users,            %{users: [], total: 0, page: 1, per: 20, pages: 0})
       |> assign(:user_detail,      nil)
+      |> assign(:documents,        %{items: [], total: 0, page: 1, per: 25, pages: 0, total_bytes: 0, avg_size: "—"})
       |> assign(:cas_objects,      %{items: [], total: 0, page: 1, per: 25, pages: 0})
       |> assign(:s3_tree,          [])
       |> assign(:duplicates,       %{duplicates: [], total_wasted: 0})
@@ -57,6 +58,8 @@ defmodule AlemWeb.AdminLive do
       |> assign(:search,           "")
       |> assign(:user_filter,      "all")
       |> assign(:user_sort,        "newest")
+      |> assign(:doc_search,       "")
+      |> assign(:doc_filter,       "all")
       |> assign(:cas_filter,       "all")
       |> assign(:cas_search,       "")
       |> assign(:s3_search,        "")
@@ -109,6 +112,7 @@ defmodule AlemWeb.AdminLive do
   defp reload_page_for_params(socket, page) do
     case page do
       :users             -> assign(socket, :users, Admin.list_users(%{search: socket.assigns.search, filter: socket.assigns.user_filter, sort: socket.assigns.user_sort}))
+      :documents         -> assign(socket, :documents, Admin.list_documents(%{search: socket.assigns.doc_search, filter: socket.assigns.doc_filter}))
       :monitoring        -> assign(socket, :monitoring, Admin.monitoring_stats())
       :vault             -> socket |> assign(:cas_objects, Admin.list_cas_objects(%{})) |> assign(:s3_tree, Admin.s3_folder_tree())
       :admin_mgmt        -> assign(socket, :admin_users, Admin.list_admin_users())
@@ -217,6 +221,13 @@ defmodule AlemWeb.AdminLive do
         })
         assign(socket, :users, users)
 
+      :documents ->
+        documents = Admin.list_documents(%{
+          search: socket.assigns.doc_search,
+          filter: socket.assigns.doc_filter
+        })
+        assign(socket, :documents, documents)
+
       :vault ->
         socket
         |> assign(:cas_objects, Admin.list_cas_objects(%{}))
@@ -280,6 +291,27 @@ defmodule AlemWeb.AdminLive do
       |> assign(:page, :user_detail)
       |> assign(:nav_history, history)
       |> assign(:flash_msg, nil)}
+  end
+
+  # ── Documents ──────────────────────────────────────────────────────────────
+
+  def handle_event("search_documents", %{"search" => q}, socket) do
+    documents = Admin.list_documents(%{search: q, filter: socket.assigns.doc_filter})
+    {:noreply, socket |> assign(:doc_search, q) |> assign(:documents, documents)}
+  end
+
+  def handle_event("filter_documents", %{"filter" => f}, socket) do
+    documents = Admin.list_documents(%{search: socket.assigns.doc_search, filter: f})
+    {:noreply, socket |> assign(:doc_filter, f) |> assign(:documents, documents)}
+  end
+
+  def handle_event("doc_page", %{"page" => p}, socket) do
+    documents = Admin.list_documents(%{
+      search: socket.assigns.doc_search,
+      filter: socket.assigns.doc_filter,
+      page:   String.to_integer(p)
+    })
+    {:noreply, assign(socket, :documents, documents)}
   end
 
   # ── Permissions ───────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ defmodule AlemWeb.AdminSessionController do
   alias Alem.Pleroma.User
   alias Alem.Repo
 
-  # Track login attempts per IP (in-memory, resets on restart)
+  # Track login attempts per user+IP (in-memory, resets on restart)
   # For production use a proper rate limiter like Hammer
   @max_attempts 5
   @lockout_seconds 300
@@ -16,33 +16,41 @@ defmodule AlemWeb.AdminSessionController do
     |> send_resp(200, login_page_html(flash_error, flash_info, get_csrf_token(conn)))
   end
 
-  def create(conn, %{"email" => email, "password" => password}) do
-    ip = conn.remote_ip |> Tuple.to_list() |> Enum.join(".")
+  def create(conn, %{"email" => email, "password" => password} = params) do
+    ip = get_client_ip(conn)
+    email_trimmed = String.trim(email)
 
-    if rate_limited?(ip) do
+    # Rate limit by email + IP
+    rate_limit_key = "#{email_trimmed}:#{ip}"
+
+    if rate_limited?(rate_limit_key) do
       redirect_login_with_error(conn, "Too many attempts. Try again in 5 minutes.")
     else
-      case Repo.get_by(User, email: String.trim(email)) do
+      case Repo.get_by(User, email: email_trimmed) do
         %User{is_admin: true} = user ->
           if User.verify_password(user, password) do
-            clear_attempts(ip)
+            clear_attempts(rate_limit_key)
+            remember_me = params["remember_me"] == "1"
+
             conn
             |> configure_session(renew: true)
             |> put_session(:admin_user_id, user.id)
             |> put_session(:admin_login_at, System.system_time(:second))
+            |> put_session(:admin_ip, ip)
+            |> put_session(:remember_me, remember_me)
             |> redirect(to: "/admin")
           else
-            record_attempt(ip)
+            record_attempt(rate_limit_key)
             redirect_login_with_error(conn, "Invalid email or password.")
           end
 
         %User{is_admin: false} ->
-          record_attempt(ip)
+          record_attempt(rate_limit_key)
           redirect_login_with_error(conn, "This account does not have admin access.")
 
         nil ->
           Pbkdf2.no_user_verify()
-          record_attempt(ip)
+          record_attempt(rate_limit_key)
           redirect_login_with_error(conn, "Invalid email or password.")
       end
     end
@@ -52,42 +60,48 @@ defmodule AlemWeb.AdminSessionController do
     conn
     |> delete_session(:admin_user_id)
     |> delete_session(:admin_login_at)
+    |> delete_session(:admin_ip)
+    |> delete_session(:remember_me)
     |> redirect(to: "/admin/login")
   end
 
   # ── Rate limiting (simple ETS-based) ─────────────────────────────────────
 
-  defp rate_limited?(ip) do
+  defp rate_limited?(key) do
     case :ets.whereis(:admin_login_attempts) do
       :undefined ->
         :ets.new(:admin_login_attempts, [:named_table, :public, :set])
         false
+
       _ ->
-        case :ets.lookup(:admin_login_attempts, ip) do
-          [{^ip, count, ts}] ->
+        case :ets.lookup(:admin_login_attempts, key) do
+          [{^key, count, ts}] ->
             now = System.system_time(:second)
             if now - ts < @lockout_seconds && count >= @max_attempts, do: true, else: false
-          _ -> false
+
+          _ ->
+            false
         end
     end
   rescue
     _ -> false
   end
 
-  defp record_attempt(ip) do
+  defp record_attempt(key) do
     ensure_ets()
     now = System.system_time(:second)
-    case :ets.lookup(:admin_login_attempts, ip) do
-      [{^ip, count, _ts}] -> :ets.insert(:admin_login_attempts, {ip, count + 1, now})
-      _                   -> :ets.insert(:admin_login_attempts, {ip, 1, now})
+
+    case :ets.lookup(:admin_login_attempts, key) do
+      [{^key, count, _ts}] -> :ets.insert(:admin_login_attempts, {key, count + 1, now})
+      _ -> :ets.insert(:admin_login_attempts, {key, 1, now})
     end
   rescue
     _ -> :ok
   end
 
-  defp clear_attempts(ip) do
+  defp clear_attempts(key) do
     ensure_ets()
-    :ets.delete(:admin_login_attempts, ip)
+    :ets.delete(:admin_login_attempts, key)
   rescue
     _ -> :ok
   end
@@ -101,6 +115,19 @@ defmodule AlemWeb.AdminSessionController do
   end
 
   # ── Helpers ────────────────────────────────────────────────────────────────
+
+  defp get_client_ip(conn) do
+    conn
+    |> Plug.Conn.get_req_header("x-forwarded-for")
+    |> case do
+      [ip | _] -> String.trim(ip)
+      [] ->
+        case conn.remote_ip do
+          {a, b, c, d} -> "#{a}.#{b}.#{c}.#{d}"
+          _ -> "unknown"
+        end
+    end
+  end
 
   defp redirect_login_with_error(conn, message) do
     conn
@@ -137,18 +164,22 @@ defmodule AlemWeb.AdminSessionController do
     <head>
       <meta charset="utf-8"/>
       <meta name="viewport" content="width=device-width, initial-scale=1"/>
+      <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
       <title>PRZMA Control Plane</title>
       <style>
         *{margin:0;padding:0;box-sizing:border-box}
+        html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
         body{
           background:#080b12;
           color:#cdd9e5;
           font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',sans-serif;
           display:flex;align-items:center;justify-content:center;min-height:100vh;
+          padding:16px
         }
         .bg{position:fixed;inset:0;background:radial-gradient(ellipse at 20% 50%,rgba(88,166,255,.04) 0%,transparent 60%),radial-gradient(ellipse at 80% 20%,rgba(188,140,255,.03) 0%,transparent 60%)}
-        .wrap{position:relative;z-index:1;width:100%;max-width:400px;padding:20px}
+        .wrap{position:relative;z-index:1;width:100%;max-width:400px}
         .card{background:#0d1117;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:40px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+        @media(max-width:480px){.card{padding:24px}}
         .logo{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:8px}
         .logo-hex{font-size:26px;background:linear-gradient(135deg,#58a6ff,#bc8cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
         .logo-name{font-size:16px;font-weight:800;letter-spacing:3px;background:linear-gradient(135deg,#58a6ff,#bc8cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
@@ -157,20 +188,22 @@ defmodule AlemWeb.AdminSessionController do
         .sub{font-size:12px;color:#8b949e;text-align:center;margin-bottom:24px}
         label{display:block;font-size:11px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
         .field{position:relative;margin-bottom:14px}
-        input{width:100%;background:#161b22;border:1px solid rgba(255,255,255,.08);border-radius:7px;padding:10px 12px;color:#e6edf3;font-size:13px;outline:none;transition:border-color .15s;font-family:inherit}
+        input{width:100%;background:#161b22;border:1px solid rgba(255,255,255,.08);border-radius:7px;padding:10px 12px;color:#e6edf3;font-size:13px;outline:none;transition:border-color .15s,background-color .15s;font-family:inherit}
         input:focus{border-color:#58a6ff;background:#1c2128}
         input::placeholder{color:#484f58}
+        input:disabled{opacity:.5;cursor:not-allowed}
         .pw-wrap{position:relative}
         .pw-wrap input{padding-right:40px}
         .eye{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:#484f58;font-size:15px;padding:0;line-height:1;transition:color .15s}
         .eye:hover{color:#8b949e}
+        .eye:active{color:#58a6ff}
         .remember{display:flex;align-items:center;gap:8px;margin-bottom:20px;cursor:pointer;font-size:12px;color:#8b949e}
         .remember input[type=checkbox]{width:auto;margin-bottom:0;accent-color:#58a6ff;cursor:pointer}
         .submit{width:100%;background:linear-gradient(135deg,#58a6ff,#bc8cff);color:#fff;border:none;border-radius:7px;padding:11px;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s;letter-spacing:.3px;position:relative}
-        .submit:hover{opacity:.9}
-        .submit:active{opacity:.8}
-        .submit.loading{opacity:.7;cursor:wait}
-        .err{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.2);border-radius:7px;padding:10px 12px;font-size:12px;color:#f85149;margin-bottom:14px}
+        .submit:hover:not(:disabled){opacity:.9}
+        .submit:active:not(:disabled){opacity:.8}
+        .submit:disabled{opacity:.7;cursor:not-allowed}
+        .err{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.2);border-radius:7px;padding:10px 12px;font-size:12px;color:#f85149;margin-bottom:14px;word-break:break-word}
         .inf{background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.2);border-radius:7px;padding:10px 12px;font-size:12px;color:#3fb950;margin-bottom:14px}
         .divider{display:flex;align-items:center;gap:10px;margin:20px 0;color:#484f58;font-size:11px}
         .divider::before,.divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.06)}
@@ -215,7 +248,7 @@ defmodule AlemWeb.AdminSessionController do
             </div>
 
             <label class="remember">
-              <input type="checkbox" name="remember_me" value="1"/>
+              <input type="checkbox" name="remember_me" id="remember_me" value="1"/>
               Keep me signed in for 7 days
             </label>
 
@@ -248,7 +281,16 @@ defmodule AlemWeb.AdminSessionController do
           btn.classList.add('loading');
           btn.innerHTML = 'Signing in&hellip;';
           btn.disabled = true;
+          return true;
         }
+
+        // Restore password visibility state if user tabs back
+        document.getElementById('password').addEventListener('blur', function() {
+          if (this.type === 'text') {
+            this.type = 'password';
+            document.getElementById('eyeBtn').innerHTML = '&#9679;';
+          }
+        });
       </script>
     </body>
     </html>
