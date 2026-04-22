@@ -8,29 +8,12 @@ pub async fn sync_now(
 ) -> Result<String, String> {
     log::info!("🔄 [Manual Sync] User triggered sync");
 
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
     // Guard: must be logged in with a server URL before syncing
-    let mut auth_rows = conn
-        .query(
-            "SELECT access_token, server_url FROM local_identity WHERE id = 'singleton'",
-            (),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    let url = state.lancedb.get_server_url().await?.ok_or_else(|| "Server URL not configured".to_string())?;
+    let in_keyring = crate::vault::load_token_from_keyring()?.is_some();
 
-    if let Some(row) = auth_rows.next().await.map_err(|e| e.to_string())? {
-        let has_token = matches!(row.get_value(0).ok(), Some(libsql::Value::Text(s)) if !s.is_empty());
-        let has_url   = matches!(row.get_value(1).ok(), Some(libsql::Value::Text(s)) if !s.is_empty());
-
-        if !has_token {
-            return Err("Not logged in — no access token".to_string());
-        }
-        if !has_url {
-            return Err("Server URL not configured".to_string());
-        }
-    } else {
-        return Err("No identity found — please login".to_string());
+    if !in_keyring {
+        return Err("Not logged in — no access token".to_string());
     }
 
     // Actually run the sync cycle (push + pull)
@@ -48,21 +31,19 @@ pub async fn sync_now(
 
 #[tauri::command]
 pub async fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
-    let mut rows = conn
-        .query("SELECT COUNT(*) FROM documents WHERE needs_upload = 1", ())
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let pending = if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        match row.get_value(0).ok() {
-            Some(libsql::Value::Integer(i)) => i,
-            _ => 0,
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    
+    // Count documents where status = 'pending_upload' or similar. 
+    // Wait, earlier LanceDB schema documents table had 'status'.
+    // If 'needs_upload' was the old SQLite way, we just look up 'status'.
+    let mut stream = table.query().filter("status = 'pending'").execute().await.map_err(|e| e.to_string())?;
+    
+    let mut pending: i64 = 0;
+    while let Some(batch) = stream.next().await {
+        if let Ok(b) = batch {
+            pending += b.num_rows() as i64;
         }
-    } else {
-        0
-    };
+    }
 
     Ok(SyncStatus {
         pending_uploads: pending,

@@ -6,6 +6,9 @@ use std::fs;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use serde::{Deserialize, Serialize};
 use rayon::prelude::*;
+use arrow::record_batch::{RecordBatch, RecordBatchIterator};
+use arrow::array::{StringArray, BinaryArray, Int64Array, Float32Array, FixedSizeListArray};
+use arrow::datatypes::{Schema, Field, DataType};
 
 // ══════════════════════════════════════════════════════════════════════════
 // Structs
@@ -40,6 +43,7 @@ pub struct DocumentInfo {
     pub content_type: String,
     pub version: i64,
     pub file_size: i64,
+    pub vault_category: String,
     pub conflict_copy_of: Option<String>,
 }
 
@@ -49,33 +53,40 @@ pub struct DocumentInfo {
 
 #[tauri::command]
 pub async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<DocumentInfo>, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
-    let mut rows = conn.query(
-        "SELECT id, filename, text_content, is_synced, status, created_at, updated_at,
-                COALESCE(NULLIF(content_type, ''), 'text/plain') as content_type,
-                COALESCE(version, 1) as version,
-                COALESCE(file_size, 0) as file_size,
-                conflict_copy_of
-         FROM documents ORDER BY created_at DESC",
-        (),
-    ).await.map_err(|e| e.to_string())?;
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let mut stream = table.query().execute().await.map_err(|e| e.to_string())?;
 
     let mut docs = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        docs.push(DocumentInfo {
-            id:               get_text(&row, 0),
-            filename:         get_text(&row, 1),
-            text_content:     get_text(&row, 2),
-            is_synced:        get_int(&row, 3),
-            status:           get_text(&row, 4),
-            created_at:       get_text(&row, 5),
-            updated_at:       get_text(&row, 6),
-            content_type:     get_text(&row, 7),
-            version:          get_int(&row, 8),
-            file_size:        get_int(&row, 9),
-            conflict_copy_of: get_opt_text(&row, 10),
-        });
+    while let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        
+        let id_col = batch.column(0).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        let name_col = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        let text_col = batch.column(3).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        let status_col = batch.column(13).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        let created_col = batch.column(9).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        let updated_col = batch.column(10).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        let type_col = batch.column(5).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        let ver_col = batch.column(8).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap();
+        let size_col = batch.column(11).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap();
+        let cat_col = batch.column(12).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+
+        for i in 0..batch.num_rows() {
+            docs.push(DocumentInfo {
+                id:               id_col.value(i).to_string(),
+                filename:         name_col.value(i).to_string(),
+                text_content:     if text_col.is_null(i) { String::new() } else { text_col.value(i).to_string() },
+                is_synced:        if status_col.value(i) == "synced" { 1 } else { 0 },
+                status:           status_col.value(i).to_string(),
+                created_at:       created_col.value(i).to_string(),
+                updated_at:       updated_col.value(i).to_string(),
+                content_type:     type_col.value(i).to_string(),
+                version:          ver_col.value(i),
+                file_size:        size_col.value(i),
+                vault_category:   cat_col.value(i).to_string(),
+                conflict_copy_of: None, // Handle conflicts later
+            });
+        }
     }
     Ok(docs)
 }
@@ -92,9 +103,8 @@ pub async fn upload_file(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let doc_id = Uuid::new_v4().to_string();
-    let device_id = device::get_or_create_device_id(&conn).await?;
+    let device_id = device::get_or_create_device_id(&state.lancedb).await?;
 
     let raw_bytes = base64::engine::general_purpose::STANDARD
         .decode(&file_data_b64)
@@ -118,26 +128,37 @@ pub async fn upload_file(
 
     let now = chrono::Utc::now().to_rfc3339();
 
-    conn.execute(
-        "INSERT INTO documents (
-            id, filename, automerge_state, binary_content, content_type,
-            text_content, device_id, last_modified_at, updated_at,
-            status, needs_upload, is_synced, version, file_size
-        ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', 1, 0, 1, ?)",
-        libsql::params![
-            doc_id.clone(),
-            filename.clone(),
-            crdt_doc.automerge_state,
-            binary_data,
-            safe_content_type,
-            device_id,
-            now.clone(),
-            now,
-            raw_bytes.len() as i64,
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let schema = table.schema().await.map_err(|e| e.to_string())?;
+    
+    let batch = arrow::array::RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(arrow::array::StringArray::from(vec![doc_id.clone()])),
+            Arc::new(arrow::array::StringArray::from(vec![filename.clone()])),
+            Arc::new(arrow::array::BinaryArray::from(vec![crdt_doc.automerge_state.as_slice()])),
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // text_content
+            Arc::new(arrow::array::BinaryArray::from(vec![Some(binary_data.as_slice())])),
+            Arc::new(arrow::array::StringArray::from(vec![safe_content_type])),
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // vault_path
+            Arc::new(arrow::array::StringArray::from(vec![device_id])),
+            Arc::new(arrow::array::Int64Array::from(vec![1])), // version
+            Arc::new(arrow::array::StringArray::from(vec![now.clone()])),
+            Arc::new(arrow::array::StringArray::from(vec![now])),
+            Arc::new(arrow::array::Int64Array::from(vec![raw_bytes.len() as i64])),
+            Arc::new(arrow::array::StringArray::from(vec!["personal"])),
+            Arc::new(arrow::array::StringArray::from(vec!["pending"])),
+            Arc::new(arrow::array::FixedSizeListArray::try_new(
+                Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
+                 128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // hash
         ],
-    ).await.map_err(|e| e.to_string())?;
+    ).map_err(|e| e.to_string())?;
 
-    log::info!("✅ [Binary] Uploaded {} ({})", filename, doc_id);
+    let reader = arrow::record_batch::RecordBatchIterator::new(vec![Ok(batch)], schema);
+    table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
+
+    log::info!("✅ [Binary] Uploaded {} ({}) to LanceDB", filename, doc_id);
     tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
     Ok(())
 }
@@ -189,6 +210,7 @@ fn mime_from_path(path: &std::path::Path) -> &'static str {
 #[tauri::command]
 pub async fn upload_files_from_paths(
     paths: Vec<String>,
+    category: vault::przma_vault::VaultCategory,
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<Vec<UploadResult>, String> {
@@ -226,7 +248,13 @@ pub async fn upload_files_from_paths(
         content_type:  String,
         vault_path:    std::path::PathBuf,
         original_size: u64,
+        hash:          String,
     }
+
+    // Extract things from state that we need in the blocking thread.
+    // tauri::State itself cannot be moved into spawn_blocking because it's not 'static.
+    let ldb_arc = Arc::clone(&state.lancedb);
+    let db_path = state.db.clone(); // String or similar config
 
     let phase1: Vec<Result<ReadyFile, UploadResult>> =
         tokio::task::spawn_blocking(move || {
@@ -243,16 +271,47 @@ pub async fn upload_files_from_paths(
                         .to_string();
                     let content_type = mime_from_path(path).to_string();
 
-                    // Generate doc_id in Phase 1 so vault filename matches
-                    let doc_id     = Uuid::new_v4().to_string();
+                    // ── Phase 1.1: Local CAS Check (Deduplication) ──────────────
+                    let hash = match vault::cas::LocalCAS::compute_hash(path) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            let err = format!("Hash failed: {}", e);
+                            return Err(UploadResult { filename, status: "error".into(), error: Some(err) });
+                        }
+                    };
+
+                    // Check if this hash + category already exists in LanceDB (blocking on async for simplicity in Rayon thread)
+                    let ldb = Arc::clone(&ldb_arc);
+                    let hash_for_query = hash.clone();
+                    let existing_vault = tauri::async_runtime::block_on(async move {
+                        vault::cas::LocalCAS::find_existing_vault(&hash_for_query, &ldb).await.ok().flatten()
+                    });
+
+                    let file_size_hint = path.metadata().map(|m| m.len()).unwrap_or(0);
+                    let doc_id = if let Some(ref path) = existing_vault {
+                        // Reuse doc_id from the filename if possible, otherwise generate new
+                        path.file_stem().and_then(|s| s.to_str()).unwrap_or(&Uuid::new_v4().to_string()).to_string()
+                    } else {
+                        Uuid::new_v4().to_string()
+                    };
                     let vault_path = vault_dir_c.join(format!("{}.vault", doc_id));
+
+                    if let Some(path) = existing_vault {
+                        log::info!("[CAS] ♻️  Deduplicated: '{}' (hash: {})", filename, &hash[..8]);
+                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        let _ = app_emit.emit("fs-batch-progress", serde_json::json!({
+                            "files_done":  done,
+                            "files_total": total,
+                            "percent":     (done * 100 / total.max(1)),
+                        }));
+                        return Ok(ReadyFile { doc_id, path_str, filename, content_type, vault_path: path, original_size: file_size_hint, hash });
+                    }
 
                     // ── Streaming encrypt → .vault file ──────────────────
                     //
                     // For files >50 MB we emit `vault-encrypt-progress` events so
                     // the frontend can show a per-file progress bar.  Smaller files
                     // are fast enough that a single "done" event is sufficient.
-                    let file_size_hint = path.metadata().map(|m| m.len()).unwrap_or(0);
                     let large_file = file_size_hint > 50 * 1024 * 1024;
 
                     let cb_app      = app_emit.clone();
@@ -293,6 +352,7 @@ pub async fn upload_files_from_paths(
                             vault::encrypt_file(path, &vault_path, &vault_key, progress_cb)
                         },
                     };
+
                     let original_size = match encrypt_result {
                         Ok(n)  => n,
                         Err(e) => {
@@ -316,6 +376,8 @@ pub async fn upload_files_from_paths(
                         "filename":     filename,
                         "content_type": content_type,
                         "size":         original_size,
+                        "hash":         hash,
+                        "category":     category,
                         "created_at":   chrono::Utc::now().to_rfc3339(),
                     });
                     let _ = std::fs::write(&meta_path, metadata.to_string());
@@ -329,41 +391,24 @@ pub async fn upload_files_from_paths(
                     }));
 
                     log::info!("[Vault] ✅ '{}' → {}.vault ({} bytes)", filename, doc_id, original_size);
-                    Ok(ReadyFile { doc_id, path_str, filename, content_type, vault_path, original_size })
+                    Ok(ReadyFile { doc_id, path_str, filename, content_type, vault_path, original_size, hash })
                 })
                 .collect()
         })
         .await
         .map_err(|e| format!("Parallel encrypt failed: {}", e))?;
 
-    // ── Phase 2: Sequential SQLite writes (single-writer rule) ───────────
+    // ── Phase 2: Sequential LanceDB writes ───────────
     let mut results: Vec<UploadResult> = Vec::new();
+
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let schema = table.schema().await.map_err(|e| e.to_string())?;
+    let device_id = device::get_or_create_device_id(&state.lancedb).await?;
 
     for item in phase1 {
         let ready = match item {
             Err(r) => { results.push(r); continue; }
             Ok(r)  => r,
-        };
-
-        let conn = match crate::db::connect(&state.db).await {
-            Ok(c)  => c,
-            Err(e) => {
-                results.push(UploadResult {
-                    filename: ready.filename, status: "error".into(),
-                    error: Some(format!("DB connect: {}", e)),
-                });
-                continue;
-            }
-        };
-
-        let device_id = match device::get_or_create_device_id(&conn).await {
-            Ok(d)  => d,
-            Err(e) => {
-                results.push(UploadResult {
-                    filename: ready.filename, status: "error".into(), error: Some(e),
-                });
-                continue;
-            }
         };
 
         let crdt_doc = match CRDTDocument::new(
@@ -384,27 +429,37 @@ pub async fn upload_files_from_paths(
         let now        = chrono::Utc::now().to_rfc3339();
         let vault_path = ready.vault_path.to_string_lossy().to_string();
 
-        match conn.execute(
-            "INSERT INTO documents (
-                id, filename, automerge_state, vault_path, content_type,
-                text_content, device_id, last_modified_at, updated_at,
-                status, needs_upload, is_synced, version, epoch_id, file_size
-            ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', 1, 0, 1, ?, ?)",
-            libsql::params![
-                ready.doc_id.clone(),
-                ready.filename.clone(),
-                crdt_doc.automerge_state,
-                vault_path,
-                ready.content_type,
-                device_id,
-                now.clone(),
-                now,
-                epoch_id,
-                ready.original_size as i64,
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow::array::StringArray::from(vec![ready.doc_id.clone()])),
+                Arc::new(arrow::array::StringArray::from(vec![ready.filename.clone()])),
+                Arc::new(arrow::array::BinaryArray::from(vec![crdt_doc.automerge_state.as_slice()])),
+                Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // text_content
+                Arc::new(arrow::array::BinaryArray::from(vec![None as Option<&[u8]>])), // binary_content (stored in vault_path)
+                Arc::new(arrow::array::StringArray::from(vec![ready.content_type])),
+                Arc::new(arrow::array::StringArray::from(vec![Some(vault_path.as_str())])),
+                Arc::new(arrow::array::StringArray::from(vec![device_id.clone()])),
+                Arc::new(arrow::array::Int64Array::from(vec![1])), // version
+                Arc::new(arrow::array::StringArray::from(vec![now.clone()])),
+                Arc::new(arrow::array::StringArray::from(vec![now])),
+                Arc::new(arrow::array::Int64Array::from(vec![ready.original_size as i64])),
+                Arc::new(arrow::array::StringArray::from(vec![category.to_string()])),
+                Arc::new(arrow::array::StringArray::from(vec!["pending"])),
+                Arc::new(arrow::array::FixedSizeListArray::try_new(
+                    Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
+                     128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
+                Arc::new(arrow::array::StringArray::from(vec![Some(ready.hash.as_str())])),
             ],
-        ).await {
+        ).map_err(|e| e.to_string())?;
+
+        let reader = arrow::record_batch::RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+        match table.add(Box::new(reader)).execute().await {
             Ok(_) => {
-                log::info!("[Vault] ✅ '{}' stored (vault file)", ready.filename);
+                // Also update LanceDB index for future deduplication
+                let _ = state.lancedb.add_vault_item(&ready.hash, &vault_path, &category.to_string()).await;
+                
+                log::info!("[Vault] ✅ '{}' stored in LanceDB category '{}'", ready.filename, category);
                 let _ = app.emit("fs-upload-progress", serde_json::json!({
                     "path": ready.path_str, "filename": ready.filename,
                     "status": "done", "progress": 100,
@@ -414,7 +469,7 @@ pub async fn upload_files_from_paths(
                 });
             }
             Err(e) => {
-                let err = format!("DB insert: {}", e);
+                let err = format!("LanceDB insert: {}", e);
                 log::error!("[Vault] ❌ '{}': {}", ready.filename, err);
                 let _ = app.emit("fs-upload-progress", serde_json::json!({
                     "path": ready.path_str, "filename": ready.filename,
@@ -559,9 +614,8 @@ pub async fn create_document(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
     let doc_id = Uuid::new_v4().to_string();
-    let device_id = device::get_or_create_device_id(&conn).await?;
+    let device_id = device::get_or_create_device_id(&state.lancedb).await?;
 
     let crdt_doc = CRDTDocument::new(
         doc_id.clone(),
@@ -570,29 +624,38 @@ pub async fn create_document(
         device_id.clone(),
     )?;
 
-    let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
     let now = chrono::Utc::now().to_rfc3339();
-
-    conn.execute(
-        "INSERT INTO documents (
-            id, filename, automerge_state, text_content, content_type,
-            device_id, last_modified_at, updated_at,
-            status, needs_upload, is_synced, version, tags, file_size
-        ) VALUES (?, ?, ?, ?, 'text/plain', ?, ?, ?, 'pending', 1, 0, 1, ?, ?)",
-        libsql::params![
-            doc_id.clone(),
-            filename,
-            crdt_doc.automerge_state,
-            text_content.clone(),
-            device_id,
-            now.clone(),
-            now,
-            tags_json,
-            text_content.len() as i64,
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let schema = table.schema().await.map_err(|e| e.to_string())?;
+    
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(arrow::array::StringArray::from(vec![doc_id.clone()])),
+            Arc::new(arrow::array::StringArray::from(vec![filename])),
+            Arc::new(arrow::array::BinaryArray::from(vec![crdt_doc.automerge_state.as_slice()])),
+            Arc::new(arrow::array::StringArray::from(vec![Some(text_content.as_str())])),
+            Arc::new(arrow::array::BinaryArray::from(vec![None as Option<&[u8]>])), // binary_content
+            Arc::new(arrow::array::StringArray::from(vec!["text/plain"])),
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // vault_path
+            Arc::new(arrow::array::StringArray::from(vec![device_id])),
+            Arc::new(arrow::array::Int64Array::from(vec![1])), // version
+            Arc::new(arrow::array::StringArray::from(vec![now.clone()])),
+            Arc::new(arrow::array::StringArray::from(vec![now])),
+            Arc::new(arrow::array::Int64Array::from(vec![text_content.len() as i64])),
+            Arc::new(arrow::array::StringArray::from(vec!["personal"])),
+            Arc::new(arrow::array::StringArray::from(vec!["pending"])),
+            Arc::new(arrow::array::FixedSizeListArray::try_new(
+                Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
+                 128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // hash
         ],
-    ).await.map_err(|e| e.to_string())?;
+    ).map_err(|e| e.to_string())?;
 
-    log::info!("✅ [Text] Document created (ID: {})", doc_id);
+    let reader = arrow::record_batch::RecordBatchIterator::new(vec![Ok(batch)], schema);
+    table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
+
+    log::info!("✅ [Text] Document created in LanceDB (ID: {})", doc_id);
     tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
     Ok(())
 }
@@ -608,28 +671,21 @@ pub async fn update_document(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let device_id = device::get_or_create_device_id(&conn).await?;
+    let device_id = device::get_or_create_device_id(&state.lancedb).await?;
+    log::info!("✏️  [CRDT] Updating document '{}' in LanceDB", id);
 
-    log::info!("✏️  [CRDT] Updating document '{}'", id);
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let mut stream = table.query().filter(format!("id = '{}'", id)).execute().await.map_err(|e| e.to_string())?;
 
-    let mut rows = conn.query(
-        "SELECT automerge_state, filename FROM documents WHERE id = ?",
-        libsql::params![id.clone()],
-    ).await.map_err(|e| e.to_string())?;
-
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        let automerge_state = match row.get_value(0).ok() {
-            Some(libsql::Value::Blob(b)) => b,
-            _ => vec![],
-        };
-        let filename = match row.get_value(1).ok() {
-            Some(libsql::Value::Text(s)) => s,
-            _ => return Err("Filename not found".to_string()),
-        };
+    if let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        if batch.num_rows() == 0 { return Err("Document not found".to_string()); }
+        
+        let automerge_state = batch.column(2).as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap().value(0).to_vec();
+        let filename = batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0).to_string();
+        let version = batch.column(8).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(0);
 
         let now = chrono::Utc::now().to_rfc3339();
-
         let new_automerge_state = if automerge_state.is_empty() {
             let crdt_doc = CRDTDocument::new(id.clone(), filename.clone(), text_content.clone(), device_id.clone())?;
             crdt_doc.automerge_state
@@ -641,22 +697,39 @@ pub async fn update_document(
             crdt_doc.automerge_state
         };
 
-        conn.execute(
-            "UPDATE documents SET
-                automerge_state  = ?,
-                text_content     = ?,
-                content_type     = 'text/plain',
-                last_modified_at = ?,
-                updated_at       = datetime('now'),
-                version          = version + 1,
-                needs_upload     = 1,
-                is_synced        = 0,
-                status           = 'pending'
-             WHERE id = ?",
-            libsql::params![new_automerge_state, text_content, now, id],
-        ).await.map_err(|e| e.to_string())?;
+        // LanceDB update is actually a delete + insert for now (or use update API if available)
+        // Let's use delete and add for safety in this version of lancedb-rs
+        table.delete(format!("id = '{}'", id)).await.map_err(|e| e.to_string())?;
+        
+        let schema = table.schema().await.map_err(|e| e.to_string())?;
+        let new_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow::array::StringArray::from(vec![id.clone()])),
+                Arc::new(arrow::array::StringArray::from(vec![batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])),
+                Arc::new(arrow::array::BinaryArray::from(vec![new_automerge_state.as_slice()])),
+                Arc::new(arrow::array::StringArray::from(vec![Some(text_content.as_str())])),
+                Arc::new(arrow::array::BinaryArray::from(vec![None as Option<&[u8]>])), // binary_content
+                Arc::new(arrow::array::StringArray::from(vec!["text/plain"])),
+                Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // vault_path
+                Arc::new(arrow::array::StringArray::from(vec![device_id])),
+                Arc::new(arrow::array::Int64Array::from(vec![version + 1])),
+                Arc::new(arrow::array::StringArray::from(vec![batch.column(9).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])),
+                Arc::new(arrow::array::StringArray::from(vec![now])),
+                Arc::new(arrow::array::Int64Array::from(vec![text_content.len() as i64])),
+                Arc::new(arrow::array::StringArray::from(vec![batch.column(12).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])),
+                Arc::new(arrow::array::StringArray::from(vec!["pending"])),
+                Arc::new(arrow::array::FixedSizeListArray::try_new(
+                    Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
+                     128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
+                Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // hash
+            ],
+        ).map_err(|e| e.to_string())?;
 
-        log::info!("✅ [CRDT] Document updated");
+        let reader = arrow::record_batch::RecordBatchIterator::new(vec![Ok(new_batch)], schema);
+        table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
+
+        log::info!("✅ [CRDT] Document updated in LanceDB");
         tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
         Ok(())
     } else {
@@ -673,11 +746,9 @@ pub async fn delete_document(
     id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM documents WHERE id = ?", libsql::params![id])
-        .await
-        .map_err(|e| e.to_string())?;
-    log::info!("🗑️  Document deleted");
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    table.delete(format!("id = '{}'", id)).await.map_err(|e| e.to_string())?;
+    log::info!("🗑️  Document deleted from LanceDB");
     Ok(())
 }
 
@@ -692,25 +763,38 @@ pub async fn rename_document(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    
-    log::info!("✏️  Renaming document {} to '{}'", id, new_name);
+    log::info!("✏️  Renaming document {} to '{}' in LanceDB", id, new_name);
 
-    conn.execute(
-        "UPDATE documents SET 
-            filename = ?, 
-            updated_at = datetime('now'),
-            version = version + 1,
-            needs_upload = 1,
-            is_synced = 0,
-            status = 'pending'
-         WHERE id = ?",
-        libsql::params![new_name, id],
-    ).await.map_err(|e| e.to_string())?;
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let mut stream = table.query().filter(format!("id = '{}'", id)).execute().await.map_err(|e| e.to_string())?;
 
-    log::info!("✅ Document renamed");
-    tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
-    Ok(())
+    if let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        if batch.num_rows() == 0 { return Err("Document not found".to_string()); }
+        
+        // LanceDB doesn't support easy column updates yet, so we delete and re-insert
+        table.delete(format!("id = '{}'", id)).await.map_err(|e| e.to_string())?;
+        
+        let schema = table.schema().await.map_err(|e| e.to_string())?;
+        let mut columns = batch.columns().to_vec();
+        
+        // Update filename (idx 1), updated_at (idx 10), version (idx 8), status (idx 13)
+        columns[1] = Arc::new(arrow::array::StringArray::from(vec![new_name]));
+        columns[10] = Arc::new(arrow::array::StringArray::from(vec![chrono::Utc::now().to_rfc3339()]));
+        let old_ver = batch.column(8).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(0);
+        columns[8] = Arc::new(arrow::array::Int64Array::from(vec![old_ver + 1]));
+        columns[13] = Arc::new(arrow::array::StringArray::from(vec!["pending"]));
+
+        let new_batch = RecordBatch::try_new(schema.clone(), columns).map_err(|e| e.to_string())?;
+        let reader = arrow::record_batch::RecordBatchIterator::new(vec![Ok(new_batch)], schema);
+        table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
+
+        log::info!("✅ Document renamed in LanceDB");
+        tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
+        Ok(())
+    } else {
+        Err("Document not found".to_string())
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -723,33 +807,30 @@ pub async fn get_file_bytes(
     id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<u8>, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let mut stream = table.query().filter(format!("id = '{}'", id)).execute().await.map_err(|e| e.to_string())?;
 
-    let mut rows = conn.query(
-        "SELECT binary_content, vault_path FROM documents WHERE id = ?",
-        libsql::params![id.clone()],
-    ).await.map_err(|e| e.to_string())?;
+    if let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        if batch.num_rows() == 0 { return Err("File not found".to_string()); }
 
-    let row = rows.next().await.map_err(|e| e.to_string())?
-        .ok_or_else(|| "File not found".to_string())?;
+        let binary_col = batch.column(4).as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap();
+        let path_col = batch.column(6).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
 
-    let binary_content = match row.get_value(0).ok() {
-        Some(libsql::Value::Blob(b)) if !b.is_empty() => Some(b),
-        _ => None,
-    };
-    let vault_path_str = match row.get_value(1).ok() {
-        Some(libsql::Value::Text(s)) if !s.is_empty() => Some(s),
-        _ => None,
-    };
+        let binary_content = if !binary_col.is_null(0) { Some(binary_col.value(0).to_vec()) } else { None };
+        let vault_path_str = if !path_col.is_null(0) { Some(path_col.value(0).to_string()) } else { None };
 
-    if let Some(vp) = vault_path_str {
-        vault::decrypt_file_any(std::path::Path::new(&vp), &state.vault_key)
-            .map_err(|e| format!("Decrypt failed: {}", e))
-    } else if let Some(enc) = binary_content {
-        state.vault_key.decrypt(&enc)
-            .map_err(|e| format!("Decrypt failed: {}", e))
+        if let Some(vp) = vault_path_str {
+            vault::decrypt_file_any(std::path::Path::new(&vp), &state.vault_key)
+                .map_err(|e| format!("Decrypt failed: {}", e))
+        } else if let Some(enc) = binary_content {
+            state.vault_key.decrypt(&enc)
+                .map_err(|e| format!("Decrypt failed: {}", e))
+        } else {
+            Err("No file content found".to_string())
+        }
     } else {
-        Err("No file content found".to_string())
+        Err("Document not found".to_string())
     }
 }
 
@@ -764,47 +845,44 @@ pub async fn open_file_for_edit(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let mut stream = table.query().filter(format!("id = '{}'", id)).execute().await.map_err(|e| e.to_string())?;
 
-    let mut rows = conn.query(
-        "SELECT binary_content, vault_path FROM documents WHERE id = ?",
-        libsql::params![id.clone()],
-    ).await.map_err(|e| e.to_string())?;
+    if let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        if batch.num_rows() == 0 { return Err("File not found. Please sync first.".to_string()); }
 
-    let row = rows.next().await.map_err(|e| e.to_string())?
-        .ok_or_else(|| "File not found. Please sync first.".to_string())?;
+        let binary_col = batch.column(4).as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap();
+        let path_col = batch.column(6).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
 
-    let binary_content = match row.get_value(0).ok() {
-        Some(libsql::Value::Blob(b)) if !b.is_empty() => Some(b),
-        _ => None,
-    };
-    let vault_path_str = match row.get_value(1).ok() {
-        Some(libsql::Value::Text(s)) if !s.is_empty() => Some(s),
-        _ => None,
-    };
+        let binary_content = if !binary_col.is_null(0) { Some(binary_col.value(0).to_vec()) } else { None };
+        let vault_path_str = if !path_col.is_null(0) { Some(path_col.value(0).to_string()) } else { None };
 
-    // Decrypt: prefer vault file (streaming), fall back to legacy blob
-    let bytes = if let Some(vp) = vault_path_str {
-        vault::decrypt_file_any(std::path::Path::new(&vp), &state.vault_key)
-            .map_err(|e| format!("Vault decrypt failed: {}", e))?
-    } else if let Some(enc) = binary_content {
-        state.vault_key.decrypt(&enc)
-            .map_err(|e| format!("Vault decrypt failed: {}", e))?
+        // Decrypt: prefer vault file (streaming), fall back to legacy blob
+        let bytes = if let Some(vp) = vault_path_str {
+            vault::decrypt_file_any(std::path::Path::new(&vp), &state.vault_key)
+                .map_err(|e| format!("Vault decrypt failed: {}", e))?
+        } else if let Some(enc) = binary_content {
+            state.vault_key.decrypt(&enc)
+                .map_err(|e| format!("Vault decrypt failed: {}", e))?
+        } else {
+            return Err("No file content found for this document.".to_string());
+        };
+
+        let app_dir   = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let cache_dir = app_dir.join("cache");
+        fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+
+        let local_path = cache_dir.join(format!("{}_{}", id, filename));
+        fs::write(&local_path, bytes).map_err(|e| e.to_string())?;
+
+        opener::open(&local_path).map_err(|e| e.to_string())?;
+
+        log::info!("📂 Opened for editing from LanceDB: {:?}", local_path);
+        Ok(local_path.to_string_lossy().to_string())
     } else {
-        return Err("No file content found for this document.".to_string());
-    };
-
-    let app_dir   = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let cache_dir = app_dir.join("cache");
-    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-
-    let local_path = cache_dir.join(format!("{}_{}", id, filename));
-    fs::write(&local_path, bytes).map_err(|e| e.to_string())?;
-
-    opener::open(&local_path).map_err(|e| e.to_string())?;
-
-    log::info!("📂 Opened for editing: {:?}", local_path);
-    Ok(local_path.to_string_lossy().to_string())
+        Err("Document not found".to_string())
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -819,129 +897,102 @@ pub async fn save_edited_file(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
     let new_bytes = fs::read(&local_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    let mut rows = conn.query(
-        "SELECT binary_content, version, vault_path FROM documents WHERE id = ?",
-        libsql::params![id.clone()]
-    ).await.map_err(|e| e.to_string())?;
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let mut stream = table.query().filter(format!("id = '{}'", id)).execute().await.map_err(|e| e.to_string())?;
 
-    let (binary_content_opt, server_version, vault_path_opt) =
-        if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-            let blob = match row.get_value(0).ok() {
-                Some(libsql::Value::Blob(b)) if !b.is_empty() => Some(b),
-                _ => None,
-            };
-            let ver = get_int(&row, 1);
-            let vp  = match row.get_value(2).ok() {
-                Some(libsql::Value::Text(s)) if !s.is_empty() => Some(s),
-                _ => None,
-            };
-            (blob, ver, vp)
+    if let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        if batch.num_rows() == 0 { return Err("Document deleted".to_string()); }
+
+        let binary_col = batch.column(4).as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap();
+        let path_col = batch.column(6).as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+        let version_col = batch.column(8).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap();
+
+        let binary_content_opt = if !binary_col.is_null(0) { Some(binary_col.value(0).to_vec()) } else { None };
+        let server_version = version_col.value(0);
+        let vault_path_opt = if !path_col.is_null(0) { Some(path_col.value(0).to_string()) } else { None };
+
+        // Decrypt current version for comparison
+        let current_bytes = if let Some(ref vp) = vault_path_opt {
+            vault::decrypt_file_any(std::path::Path::new(vp), &state.vault_key)
+                .map_err(|e| format!("Vault decrypt failed: {}", e))?
+        } else if let Some(enc) = binary_content_opt {
+            state.vault_key.decrypt(&enc)
+                .map_err(|e| format!("Vault decrypt failed: {}", e))?
         } else {
-            return Err("Document deleted".to_string());
+            return Err("No binary content found in LanceDB".to_string());
         };
 
-    // Decrypt current version for comparison
-    let current_bytes = if let Some(ref vp) = vault_path_opt {
-        vault::decrypt_file_any(std::path::Path::new(vp), &state.vault_key)
-            .map_err(|e| format!("Vault decrypt failed: {}", e))?
-    } else if let Some(enc) = binary_content_opt {
-        state.vault_key.decrypt(&enc)
-            .map_err(|e| format!("Vault decrypt failed: {}", e))?
+        if current_bytes == new_bytes {
+            return Ok("NO_CHANGES".to_string());
+        }
+
+        if server_version != current_version {
+            return handle_conflict(&state.lancedb, &id, &local_path, current_version, &state.vault_key).await;
+        }
+
+        let new_version = current_version + 1;
+
+        // Re-encrypt: vault file if available, otherwise blob
+        if let Some(ref vp) = vault_path_opt {
+            let epoch_snap = *state.epoch_key.read().await;
+            match epoch_snap {
+                Some(ref ek) => vault::encrypt_file_v2(
+                    std::path::Path::new(&local_path),
+                    std::path::Path::new(vp),
+                    &state.vault_key, ek, |_, _| {},
+                ).map(|_| ()).map_err(|e| format!("Re-encrypt failed: {}", e))?,
+                None => vault::encrypt_file(
+                    std::path::Path::new(&local_path),
+                    std::path::Path::new(vp),
+                    &state.vault_key, |_, _| {},
+                ).map(|_| ()).map_err(|e| format!("Re-encrypt failed: {}", e))?,
+            };
+        }
+
+        // Update in LanceDB (delete + insert)
+        table.delete(format!("id = '{}' AND version = {}", id, current_version)).await.map_err(|e| e.to_string())?;
+        
+        let schema = table.schema().await.map_err(|e| e.to_string())?;
+        let mut columns = batch.columns().to_vec();
+        
+        if vault_path_opt.is_none() {
+            let encrypted_new = state.vault_key.encrypt(&new_bytes);
+            columns[4] = Arc::new(BinaryArray::from(vec![Some(encrypted_new.as_slice())]));
+        }
+        
+        columns[8] = Arc::new(Int64Array::from(vec![new_version]));
+        columns[10] = Arc::new(StringArray::from(vec![chrono::Utc::now().to_rfc3339()]));
+        columns[13] = Arc::new(StringArray::from(vec!["pending"]));
+        columns[11] = Arc::new(Int64Array::from(vec![new_bytes.len() as i64]));
+
+        let new_batch = RecordBatch::try_new(schema.clone(), columns).map_err(|e| e.to_string())?;
+        let reader = RecordBatchIterator::new(vec![Ok(new_batch)], schema);
+        table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
+
+        log::info!("✅ [Edit] Saved version {} to LanceDB", new_version);
+        tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
+        Ok("SUCCESS".to_string())
     } else {
-        return Err("No binary content found in DB".to_string());
-    };
-
-    if current_bytes == new_bytes {
-        return Ok("NO_CHANGES".to_string());
+        Err("Document not found".to_string())
     }
-
-    if server_version != current_version {
-        return handle_conflict(&conn, &id, &local_path, current_version, &state.vault_key).await;
-    }
-
-    let new_version = current_version + 1;
-
-    // Re-encrypt: vault file if available, otherwise blob
-    let rows_affected = if let Some(ref vp) = vault_path_opt {
-        // Overwrite the existing vault file with new encrypted content
-        // Use v2 if epoch key is available; otherwise v1
-        let epoch_snap = *state.epoch_key.read().await;
-        match epoch_snap {
-            Some(ref ek) => vault::encrypt_file_v2(
-                std::path::Path::new(&local_path),
-                std::path::Path::new(vp),
-                &state.vault_key, ek, |_, _| {},
-            ).map(|_| ()).map_err(|e| format!("Re-encrypt failed: {}", e))?,
-            None => vault::encrypt_file(
-                std::path::Path::new(&local_path),
-                std::path::Path::new(vp),
-                &state.vault_key, |_, _| {},
-            ).map(|_| ()).map_err(|e| format!("Re-encrypt failed: {}", e))?,
-        };
-
-        conn.execute(
-            "UPDATE documents SET
-                last_modified_at = ?,
-                needs_upload     = 1,
-                is_synced        = 0,
-                status           = 'pending',
-                version          = ?
-             WHERE id = ? AND version = ?",
-            libsql::params![
-                chrono::Utc::now().to_rfc3339(),
-                new_version,
-                id.clone(),
-                current_version
-            ]
-        ).await.map_err(|e| e.to_string())?
-    } else {
-        let encrypted_new = state.vault_key.encrypt(&new_bytes);
-        conn.execute(
-            "UPDATE documents SET
-                binary_content   = ?,
-                last_modified_at = ?,
-                needs_upload     = 1,
-                is_synced        = 0,
-                status           = 'pending',
-                version          = ?
-             WHERE id = ? AND version = ?",
-            libsql::params![
-                encrypted_new,
-                chrono::Utc::now().to_rfc3339(),
-                new_version,
-                id.clone(),
-                current_version
-            ]
-        ).await.map_err(|e| e.to_string())?
-    };
-
-    let rows_affected = rows_affected;
-
-    if rows_affected == 0 {
-        return handle_conflict(&conn, &id, &local_path, current_version, &state.vault_key).await;
-    }
-
-    log::info!("✅ [Edit] Saved version {}", new_version);
-    tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
-    Ok("SUCCESS".to_string())
 }
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // handle_conflict
 // ══════════════════════════════════════════════════════════════════════════
 
 async fn handle_conflict(
-    conn: &libsql::Connection,
+    ldb: &crate::db::lancedb::LanceDBManager,
     original_id: &str,
     local_path: &str,
     _base_version: i64,
     vault_key: &crate::vault::VaultKey,
 ) -> Result<String, String> {
-    log::warn!("⚠️ Conflict detected for {}. Creating copy.", original_id);
+    log::warn!("⚠️ Conflict detected for {}. Creating copy in LanceDB.", original_id);
 
     let plaintext = fs::read(local_path).map_err(|e| e.to_string())?;
     let bytes     = vault_key.encrypt(&plaintext);
@@ -949,33 +1000,52 @@ async fn handle_conflict(
     let conflict_id = Uuid::new_v4().to_string();
     let now         = chrono::Utc::now().to_rfc3339();
 
-    let mut rows = conn.query(
-        "SELECT filename, content_type, text_content FROM documents WHERE id = ?",
-        libsql::params![original_id]
-    ).await.map_err(|e| e.to_string())?;
+    let table = ldb.open_table("documents").await.map_err(|e| e.to_string())?;
+    let mut stream = table.query().filter(format!("id = '{}'", original_id)).execute().await.map_err(|e| e.to_string())?;
 
-    let (filename, ctype, text_content) = if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        (get_text(&row, 0), get_text(&row, 1), get_text(&row, 2))
+    let (filename, ctype, text_content, category) = if let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        if batch.num_rows() > 0 {
+            (
+                batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0).to_string(),
+                batch.column(5).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0).to_string(),
+                if batch.column(3).is_null(0) { String::new() } else { batch.column(3).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0).to_string() },
+                batch.column(12).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0).to_string(),
+            )
+        } else {
+            ("conflict_file".to_string(), "application/octet-stream".to_string(), String::new(), "personal".to_string())
+        }
     } else {
-        ("conflict_file".to_string(), "application/octet-stream".to_string(), String::new())
+        ("conflict_file".to_string(), "application/octet-stream".to_string(), String::new(), "personal".to_string())
     };
 
-    conn.execute(
-        "INSERT INTO documents (
-            id, filename, binary_content, content_type, text_content,
-            device_id, last_modified_at, status, needs_upload, is_synced,
-            version, conflict_copy_of
-        ) VALUES (?, ?, ?, ?, ?, 'conflict_resolver', ?, 'pending', 1, 0, 1, ?)",
-        libsql::params![
-            conflict_id.clone(),
-            format!("{} (Conflict Copy)", filename),
-            bytes,
-            ctype,
-            text_content,
-            now,
-            original_id
+    let schema = table.schema().await.map_err(|e| e.to_string())?;
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec![conflict_id.clone()])),
+            Arc::new(StringArray::from(vec![format!("{} (Conflict Copy)", filename)])),
+            Arc::new(BinaryArray::from(vec![None as Option<&[u8]>])), // automerge
+            Arc::new(StringArray::from(vec![Some(text_content.as_str())])),
+            Arc::new(BinaryArray::from(vec![Some(bytes.as_slice())])),
+            Arc::new(StringArray::from(vec![ctype])),
+            Arc::new(StringArray::from(vec![None as Option<&str>])), // vault_path
+            Arc::new(StringArray::from(vec!["conflict_resolver"])),
+            Arc::new(Int64Array::from(vec![1])), // version
+            Arc::new(StringArray::from(vec![now.clone()])),
+            Arc::new(StringArray::from(vec![now])),
+            Arc::new(Int64Array::from(vec![plaintext.len() as i64])),
+            Arc::new(StringArray::from(vec![category])),
+            Arc::new(StringArray::from(vec!["pending"])),
+            Arc::new(FixedSizeListArray::try_new(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                 128, Arc::new(Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
+            Arc::new(StringArray::from(vec![None as Option<&str>])), // hash
         ],
-    ).await.map_err(|e| e.to_string())?;
+    ).map_err(|e| e.to_string())?;
+
+    let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
 
     Err(format!("CONFLICT: Created copy {}", conflict_id))
 }
@@ -1006,9 +1076,8 @@ pub struct PullResult {
 
 #[tauri::command]
 pub async fn get_sync_stats(state: tauri::State<'_, AppState>) -> Result<SyncStats, String> {
-    let conn  = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let token = get_local_token_inner(&conn).await?;
-    let url   = get_server_url_inner(&conn).await?;
+    let token = crate::vault::load_token_from_keyring()?.ok_or_else(|| "Not logged in".to_string())?;
+    let url   = state.lancedb.get_server_url().await?.unwrap_or_else(|| "http://172.235.17.68:4201".to_string());
 
     let resp = reqwest::Client::new()
         .get(format!("{}/api/v1/sync/stats", url))
@@ -1034,9 +1103,8 @@ pub async fn pull_sync(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<PullResult, String> {
-    let conn  = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let token = get_local_token_inner(&conn).await?;
-    let url   = get_server_url_inner(&conn).await?;
+    let token = state.lancedb.get_access_token().await?;
+    let url   = state.lancedb.get_server_url().await?.unwrap_or_else(|| "http://172.235.17.68:4201".to_string());
 
     let since_ts = since.unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
 
@@ -1059,17 +1127,18 @@ pub async fn pull_sync(
     let mut skipped    = 0usize;
     let mut errors     = Vec::new();
 
+    let table = state.lancedb.open_table("documents").await.map_err(|e| e.to_string())?;
+
     for doc in &changes {
         let doc_id   = doc["id"].as_str().unwrap_or("").to_string();
         let filename = doc["filename"].as_str().unwrap_or("unknown").to_string();
 
-        // Skip if we already have this doc locally
-        let exists: bool = conn.query(
-            "SELECT 1 FROM documents WHERE id = ? LIMIT 1",
-            libsql::params![doc_id.clone()],
-        ).await.map_err(|e| e.to_string())?
-        .next().await.map_err(|e| e.to_string())?
-        .is_some();
+        let mut stream = table.query().filter(format!("id = '{}'", doc_id)).execute().await.map_err(|e| e.to_string())?;
+        let exists = if let Some(batch_res) = stream.next().await {
+            batch_res.map(|b| b.num_rows() > 0).unwrap_or(false)
+        } else {
+            false
+        };
 
         if exists {
             skipped += 1;
@@ -1077,7 +1146,7 @@ pub async fn pull_sync(
         }
 
         // Download + store
-        match download_and_store(&conn, doc, &token, &app).await {
+        match download_and_store(&state.lancedb, doc, &token).await {
             Ok(()) => {
                 downloaded += 1;
                 log::info!("[PullSync] Downloaded: {}", filename);
@@ -1099,9 +1168,8 @@ pub async fn download_file(
     state: tauri::State<'_, AppState>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let conn  = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let token = get_local_token_inner(&conn).await?;
-    let url   = get_server_url_inner(&conn).await?;
+    let token = state.lancedb.get_access_token().await?;
+    let url   = state.lancedb.get_server_url().await?.unwrap_or_else(|| "http://172.235.17.68:4201".to_string());
 
     // Get presigned download URL from server
     let resp = reqwest::Client::new()
@@ -1113,18 +1181,16 @@ pub async fn download_file(
 
     let meta: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
-    match download_and_store(&conn, &meta, &token, &app).await {
+    match download_and_store(&state.lancedb, &meta, &token).await {
         Ok(()) => Ok(meta["filename"].as_str().unwrap_or("file").to_string()),
         Err(e) => Err(e),
     }
 }
 
-// Internal: download a file from S3 presigned URL and store it locally
 async fn download_and_store(
-    conn: &libsql::Connection,
+    ldb: &crate::db::lancedb::LanceDBManager,
     doc: &serde_json::Value,
     _token: &str,
-    _app: &AppHandle,
 ) -> Result<(), String> {
     let doc_id       = doc["id"].as_str().unwrap_or("").to_string();
     let filename     = doc["filename"].as_str().unwrap_or("file").to_string();
@@ -1146,87 +1212,49 @@ async fn download_and_store(
 
     let now = chrono::Utc::now().to_rfc3339();
 
-    // Store encrypted bytes locally (vault file stays encrypted at rest)
-    conn.execute(
-        "INSERT INTO documents (
-            id, filename, binary_content, content_type,
-            text_content, status, is_synced, needs_upload,
-            needs_download, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, '', 'synced', 1, 0, 0, 1, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            binary_content = excluded.binary_content,
-            status         = 'synced',
-            is_synced      = 1,
-            needs_download = 0,
-            updated_at     = excluded.updated_at",
-        libsql::params![
-            doc_id,
-            filename,
-            bytes,
-            content_type,
-            now.clone(),
-            now,
+    let table = ldb.open_table("documents").await.map_err(|e| e.to_string())?;
+    
+    // Check if exists to handle conflict/update
+    let mut stream = table.query().filter(format!("id = '{}'", doc_id)).execute().await.map_err(|e| e.to_string())?;
+    let exists = if let Some(batch_res) = stream.next().await {
+        batch_res.map(|b| b.num_rows() > 0).unwrap_or(false)
+    } else {
+        false
+    };
+
+    if exists {
+        table.delete(format!("id = '{}'", doc_id)).await.map_err(|e| e.to_string())?;
+    }
+
+    let schema = table.schema().await.map_err(|e| e.to_string())?;
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(arrow::array::StringArray::from(vec![doc_id])),
+            Arc::new(arrow::array::StringArray::from(vec![filename])),
+            Arc::new(arrow::array::BinaryArray::from(vec![None as Option<&[u8]>])), // automerge
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // text
+            Arc::new(arrow::array::BinaryArray::from(vec![Some(bytes.as_slice())])),
+            Arc::new(arrow::array::StringArray::from(vec![content_type])),
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // vault_path
+            Arc::new(arrow::array::StringArray::from(vec!["server"])),
+            Arc::new(arrow::array::Int64Array::from(vec![1])), // version
+            Arc::new(arrow::array::StringArray::from(vec![now.clone()])),
+            Arc::new(arrow::array::StringArray::from(vec![now])),
+            Arc::new(arrow::array::Int64Array::from(vec![bytes.len() as i64])),
+            Arc::new(arrow::array::StringArray::from(vec!["personal"])),
+            Arc::new(arrow::array::StringArray::from(vec!["synced"])),
+            Arc::new(arrow::array::FixedSizeListArray::try_new(
+                Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
+                 128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // hash
         ],
-    ).await.map_err(|e| format!("Local store failed: {}", e))?;
+    ).map_err(|e| e.to_string())?;
+
+    let reader = arrow::record_batch::RecordBatchIterator::new(vec![Ok(batch)], schema);
+    table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
-// Read server URL from local_identity
-async fn get_server_url_inner(conn: &libsql::Connection) -> Result<String, String> {
-    let mut rows = conn.query(
-        "SELECT server_url FROM local_identity WHERE id = 'singleton' LIMIT 1",
-        libsql::params![],
-    ).await.map_err(|e| e.to_string())?;
-
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        match row.get_value(0).ok() {
-            Some(libsql::Value::Text(s)) if !s.is_empty() => Ok(s),
-            _ => Ok("http://localhost:4201".to_string()),
-        }
-    } else {
-        Ok("http://localhost:4201".to_string())
-    }
-}
-
-// Read access_token from local_identity
-async fn get_local_token_inner(conn: &libsql::Connection) -> Result<String, String> {
-    let mut rows = conn.query(
-        "SELECT access_token FROM local_identity WHERE id = 'singleton' LIMIT 1",
-        libsql::params![],
-    ).await.map_err(|e| e.to_string())?;
-
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        match row.get_value(0).ok() {
-            Some(libsql::Value::Text(s)) if !s.is_empty() => Ok(s),
-            _ => Err("No token — please log in".to_string()),
-        }
-    } else {
-        Err("No token — please log in".to_string())
-    }
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// Helpers
-// ══════════════════════════════════════════════════════════════════════════
-
-fn get_text(row: &libsql::Row, idx: i32) -> String {
-    match row.get_value(idx).ok() {
-        Some(libsql::Value::Text(s)) => s,
-        _ => String::new(),
-    }
-}
-
-fn get_opt_text(row: &libsql::Row, idx: i32) -> Option<String> {
-    match row.get_value(idx).ok() {
-        Some(libsql::Value::Text(s)) if !s.is_empty() => Some(s),
-        _ => None,
-    }
-}
-
-fn get_int(row: &libsql::Row, idx: i32) -> i64 {
-    match row.get_value(idx).ok() {
-        Some(libsql::Value::Integer(i)) => i,
-        _ => 0,
-    }
-}
+// legacy helpers removed

@@ -37,10 +37,10 @@ defmodule Alem.Analytics.MetadataStore do
       ExAws.S3.put_object(@bucket, s3_key, content)
       |> ExAws.request!(virtual_host: false)
 
-      # 5. Cleanup
-      File.rm(temp_path)
+      # 5. Persist to LanceDB (Server-side source of truth)
+      Alem.LanceDB.append_ipc("documents", ipc_binary)
       
-      Logger.info("[Analytics] Metadata persisted to S3: #{s3_key}")
+      Logger.info("[Analytics] Metadata persisted to S3 and LanceDB: #{s3_key}")
       {:ok, s3_key}
     rescue
       e ->

@@ -1,15 +1,23 @@
-use libsql::Connection;
 use uuid::Uuid;
+use crate::db::lancedb::LanceDBManager;
+use arrow::array::{RecordBatch, StringArray};
+use std::sync::Arc;
+use arrow::record_batch::RecordBatchIterator;
+use futures::StreamExt;
 
-pub async fn get_or_create_device_id(conn: &Connection) -> Result<String, String> {
-    let mut rows = conn
-        .query("SELECT device_id FROM device_identity WHERE id = 'singleton'", ())
-        .await
-        .map_err(|e| e.to_string())?;
+pub async fn get_or_create_device_id(db: &LanceDBManager) -> Result<String, String> {
+    let table = db.open_table("device_identity").await.map_err(|e| e.to_string())?;
     
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        if let Ok(libsql::Value::Text(device_id)) = row.get_value(0) {
-            return Ok(device_id);
+    let mut stream = table.query()
+        .filter("id = 'singleton'")
+        .execute().await.map_err(|e| e.to_string())?;
+
+    if let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        if batch.num_rows() > 0 {
+            let col = batch.column(1).as_any().downcast_ref::<StringArray>()
+                .ok_or_else(|| "Invalid device_identity schema".to_string())?;
+            return Ok(col.value(0).to_string());
         }
     }
     
@@ -21,16 +29,22 @@ pub async fn get_or_create_device_id(conn: &Connection) -> Result<String, String
         chrono::Utc::now().format("%Y%m%d")
     );
     
-    // Clone values before moving them
-    let device_name_clone = device_name.clone();
+    let now = chrono::Utc::now().to_rfc3339();
     
-    conn.execute(
-        "INSERT INTO device_identity (id, device_id, device_name) VALUES (?, ?, ?)",
-        libsql::params!["singleton", device_id.clone(), device_name],
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let schema = table.schema().await.map_err(|e| e.to_string())?;
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["singleton"])),
+            Arc::new(StringArray::from(vec![device_id.clone()])),
+            Arc::new(StringArray::from(vec![Some(device_name.as_str())])),
+            Arc::new(StringArray::from(vec![now])),
+        ],
+    ).map_err(|e| e.to_string())?;
+
+    let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
     
-    log::info!("✅ Created device ID: {} ({})", device_id, device_name_clone);
+    log::info!("✅ Created device ID in LanceDB: {} ({})", device_id, device_name);
     Ok(device_id)
 }

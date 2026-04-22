@@ -42,3 +42,6 @@ npm-debug.log
 *.db-wal
 /priv/local_data/
 
+
+# Rust binary artifacts
+/target/

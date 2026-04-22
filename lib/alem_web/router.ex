@@ -153,6 +153,7 @@ defmodule AlemWeb.Router do
     scope "/dev" do
       pipe_through :browser
       live_dashboard "/dashboard", metrics: AlemWeb.Telemetry
+      live "/lancedb", Admin.LanceDBLive, :index
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end

@@ -45,19 +45,9 @@ defmodule Alem.Application do
     # NOTE: PleromaMockServer is REMOVED.
     # Authentication now uses real database via Alem.Auth module.
     # No more fake server on port 4001.
-    # 1. Sync Bootstrap SQLD (Metadata) before services start
-    sqld_url = Application.get_env(:alem, :sqld_url, "http://localhost:8080")
-    try do
-      Alem.Sqld.ensure_schema()
-    rescue
-      e -> Logger.error("[sqld] Bootstrap exception: #{inspect(e)}")
-    end
 
     opts = [strategy: :one_for_one, name: Alem.Supervisor]
     Supervisor.start_link(children, opts)
-     # Bootstrap sqld schema after startup
-
-
   end
 
   @impl true

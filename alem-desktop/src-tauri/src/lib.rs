@@ -10,13 +10,13 @@ use std::sync::Arc;
 use tauri::Manager;
 
 pub struct AppState {
-    pub db:        Arc<libsql::Database>,
     pub vault_key: Arc<vault::VaultKey>,
     /// Server epoch x25519 public key — used by encrypt_file_v2 to wrap the
     /// per-file key so the server can decrypt vault files for CAS extraction.
     /// None if the server was unreachable at startup (falls back to v1 encrypt).
     /// Updated after login and on each sync cycle.
     pub epoch_key: Arc<tokio::sync::RwLock<Option<vault::EpochPublicKey>>>,
+    pub lancedb:   Arc<db::lancedb::LanceDBManager>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -28,51 +28,34 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            log::info!("🚀 Starting ALEM with CRDT support...");
+            log::info!("🚀 Starting ALEM with LanceDB Consolidation...");
             
             let data_dir = app.path().app_data_dir()
                 .expect("Failed to resolve app data dir");
             
             std::fs::create_dir_all(&data_dir)?;
-            let db_path = data_dir.join("przma.db");
             
-            log::info!("📂 Database: {:?}", db_path);
-
-            let database = tauri::async_runtime::block_on(async {
-                db::open(db_path.to_str().expect("Invalid path"))
-                    .await
-                    .expect("Failed to open database")
+            let lancedb_mgr = Arc::new(db::lancedb::LanceDBManager::new(&data_dir));
+            
+            tauri::async_runtime::block_on(async {
+                lancedb_mgr.initialize_all().await.expect("Failed to init LanceDB");
             });
 
-            // Load (or generate) the vault encryption key from local_identity.
-            // This key never leaves the device; the sync engine sends only
-            // encrypted bytes to the server, providing true E2EE.
+            // Load (or generate) the vault encryption key.
+            // Since we removed SQLite, we need to adapt vault::load_or_generate_key to use LanceDB.
+            // For now, I'll keep the signature and pass the manager, but I'll need to update the implementation.
             let vault_key = tauri::async_runtime::block_on(async {
-                vault::load_or_generate_key(&database)
+                vault::load_or_generate_key_lancedb(&lancedb_mgr)
                     .await
                     .expect("Failed to load vault key")
             });
 
-            let db        = Arc::new(database);
             let vault_key = Arc::new(vault_key);
 
             // Try to fetch the server's current epoch public key.
-            // This is a public endpoint — no auth token required.
-            // Fails silently if server is unreachable; vault falls back to v1.
             let epoch_key = tauri::async_runtime::block_on(async {
-                let conn = crate::db::connect(&db).await.expect("db connect");
-                let server_url: Option<String> = async {
-                    let mut rows = conn
-                        .query("SELECT server_url FROM local_identity WHERE id='singleton'", ())
-                        .await
-                        .ok()?;
-                    let row = rows.next().await.ok()??;
-                    if let libsql::Value::Text(s) = row.get_value(0).ok()? {
-                        Some(s)
-                    } else {
-                        None
-                    }
-                }.await;
+                // TODO: Get server_url from LanceDB identity table
+                let server_url: Option<String> = None; // Placeholder
 
                 if let Some(url) = server_url {
                     match vault::epoch::fetch_epoch_key(&url).await {
@@ -92,19 +75,19 @@ pub fn run() {
             });
 
             app.manage(AppState {
-                db:        Arc::clone(&db),
                 vault_key: Arc::clone(&vault_key),
                 epoch_key: Arc::new(tokio::sync::RwLock::new(epoch_key)),
+                lancedb:   Arc::clone(&lancedb_mgr),
             });
 
-            log::info!("🔄 Starting CRDT sync engine...");
+            log::info!("🔄 Starting LanceDB sync engine...");
             
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 sync::engine::start(app_handle).await;
             });
             
-            log::info!("✅ ALEM initialized with CRDT!");
+            log::info!("✅ ALEM initialized with Unified LanceDB!");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -1,6 +1,7 @@
 use tauri::State;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
+use arrow_array::StringArray;
 
 // ══════════════════════════════════════════════════════════════════════════
 // Response Structs
@@ -31,32 +32,20 @@ pub struct RegisterResponse {
 }
 
 #[derive(Serialize)]
+pub struct GenericResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Serialize)]
 pub struct LoginResponse {
     pub success: bool,
     pub did: Option<String>,
     pub access_token: Option<String>,
 }
 
-#[derive(Serialize)]
-pub struct GenericResponse {
-    pub success: bool,
-    pub message: String,
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// Helper
-// ══════════════════════════════════════════════════════════════════════════
-
-async fn get_server_url(_conn: &libsql::Connection) -> String {
-    // DIAGNOSTIC OVERRIDE: Unconditionally use the remote server
-    "http://172.235.17.68:4201".to_string()
-}
-
-fn get_text(row: &libsql::Row, idx: i32) -> String {
-    match row.get_value(idx).ok() {
-        Some(libsql::Value::Text(s)) => s,
-        _ => String::new(),
-    }
+async fn get_server_url(db: &crate::db::lancedb::LanceDBManager) -> String {
+    db.get_server_url().await.unwrap_or(None).unwrap_or_else(|| "http://172.235.17.68:4201".to_string())
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -65,8 +54,7 @@ fn get_text(row: &libsql::Row, idx: i32) -> String {
 
 #[tauri::command]
 pub async fn get_captcha(state: State<'_, AppState>) -> Result<CaptchaResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .get(format!("{}/api/v1/pleroma/captcha", server_url))
@@ -97,8 +85,7 @@ pub async fn register_account(
     captcha_token: String,
     state: State<'_, AppState>,
 ) -> Result<RegisterResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     log::info!("Registering: {} @ {}", nickname, server_url);
 
@@ -147,8 +134,7 @@ pub async fn verify_email(
     code: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/verify_email", server_url))
@@ -178,8 +164,7 @@ pub async fn resend_otp(
     user_id: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/resend_otp", server_url))
@@ -206,8 +191,7 @@ pub async fn forgot_password(
     email: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/forgot_password", server_url))
@@ -219,7 +203,6 @@ pub async fn forgot_password(
     let body = resp.text().await.unwrap_or_default();
     let result: ApiMessageResponse = serde_json::from_str(&body).unwrap_or(ApiMessageResponse { message: None, error: Some(body.clone()), user_id: None, email: None });
 
-    // Always returns 200 OK with generic message to prevent enumeration, according to controller logic
     Ok(GenericResponse {
         success: status.is_success(),
         message: result.message.unwrap_or("If that email is registered, a reset link has been sent.".to_string()),
@@ -234,8 +217,7 @@ pub async fn reset_password(
     confirm: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/reset_password", server_url))
@@ -264,20 +246,14 @@ pub async fn reset_password(
 
 #[tauri::command]
 pub async fn get_stored_did(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
-    let mut rows = conn
-        .query("SELECT did FROM local_identity WHERE id = 'singleton'", ())
-        .await.map_err(|e| e.to_string())?;
-
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        match row.get_value(0).ok() {
-            Some(libsql::Value::Text(s)) if !s.is_empty() => Ok(Some(s)),
-            _ => Ok(None),
+    if let Ok(Some(batch)) = state.lancedb.get_identity().await {
+        let col = batch.column(1).as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| "Invalid identity schema".to_string())?;
+        if col.len() > 0 && !col.is_null(0) {
+            return Ok(Some(col.value(0).to_string()));
         }
-    } else {
-        Ok(None)
     }
+    Ok(None)
 }
 
 #[tauri::command]
@@ -286,8 +262,7 @@ pub async fn login(
     password: String,
     state: State<'_, AppState>,
 ) -> Result<LoginResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     log::info!("Login: {} @ {}", identifier, server_url);
 
@@ -312,8 +287,6 @@ pub async fn login(
 
     let token_data: serde_json::Value = token_resp.json().await
         .map_err(|e| format!("Failed to parse token response: {}", e))?;
-
-    log::info!("Token response: {}", token_data);
 
     let access_token = token_data["access_token"]
         .as_str()
@@ -352,30 +325,31 @@ pub async fn login(
 
     let user_id = did.splitn(3, ':').nth(2).unwrap_or(&identifier).to_string();
 
-    let _sqld_url = token_data["sync_config"]["sqld_url"].as_str().map(|s| s.to_string());
-    let _s3_bucket = token_data["sync_config"]["s3_bucket"].as_str().map(|s| s.to_string());
-    let _s3_prefix = token_data["sync_config"]["s3_prefix"].as_str().map(|s| s.to_string());
 
     log::info!("Login OK  username={} did={} user_id={}", username, did, user_id);
 
-    conn.execute(
-        "INSERT INTO local_identity (
-            id, did, user_id, username, access_token, server_url, updated_at
-         ) VALUES (
-            'singleton', ?, ?, ?, ?, ?, datetime('now')
-         )
-         ON CONFLICT(id) DO UPDATE SET
-            did          = excluded.did,
-            user_id      = excluded.user_id,
-            username     = excluded.username,
-            access_token = excluded.access_token,
-            server_url   = excluded.server_url,
-            updated_at   = excluded.updated_at",
-        libsql::params![did.clone(), user_id, username, access_token.clone(), server_url],
-    )
-    .await
-    .map_err(|e| format!("Failed to save credentials: {}", e))?;
-    log::info!("Credentials saved");
+    // Save the token securely in the OS Keychain — NOT in LanceDB
+    crate::vault::save_token_to_keyring(&access_token)
+        .map_err(|e| format!("Keychain token save failed: {}", e))?;
+
+    use arrow::array::{RecordBatch, StringArray};
+    use std::sync::Arc;
+    let schema = crate::db::lancedb::LanceDBManager::identity_schema();
+    
+    let batch = RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(vec!["singleton"])),
+        Arc::new(StringArray::from(vec![did.clone()])),
+        Arc::new(StringArray::from(vec![user_id])),
+        Arc::new(StringArray::from(vec![username])),
+        Arc::new(StringArray::from(vec![None as Option<&str>])), // email
+        Arc::new(StringArray::from(vec![server_url])),
+        Arc::new(StringArray::from(vec![None as Option<&str>])), // last_sync_at
+        Arc::new(StringArray::from(vec![None as Option<&str>])), // vault_key
+        Arc::new(StringArray::from(vec![None as Option<&str>])), // key_salt
+    ]).map_err(|e| e.to_string())?;
+
+    state.lancedb.save_identity(batch).await.map_err(|e| e.to_string())?;
+    log::info!("Credentials saved to LanceDB");
 
     Ok(LoginResponse {
         success:      true,
@@ -387,32 +361,11 @@ pub async fn login(
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
     log::info!("Logout");
-
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "UPDATE local_identity SET
-            did          = NULL,
-            user_id      = NULL,
-            username     = NULL,
-            email        = NULL,
-            access_token = NULL,
-            sqld_url     = NULL,
-            s3_bucket    = NULL,
-            s3_prefix    = NULL,
-            last_sync_at = NULL,
-            updated_at   = datetime('now')
-         WHERE id = 'singleton'",
-        (),
-    )
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
-
-    conn.execute("DELETE FROM documents", ())
-        .await
-        .map_err(|e| format!("Failed to clear documents: {}", e))?;
-
-    log::info!("Logout successful and local data cleared");
+    // Delete the secure token from the OS keychain
+    crate::vault::delete_token_from_keyring()
+        .map_err(|e| format!("Keychain token delete failed: {}", e))?;
+    state.lancedb.logout().await.map_err(|e| e.to_string())?;
+    log::info!("Logout successful — token cleared from keychain, LanceDB data cleared");
     Ok(())
 }
 
@@ -424,54 +377,38 @@ pub struct UserInfo {
 
 #[tauri::command]
 pub async fn get_current_user(state: State<'_, AppState>) -> Result<UserInfo, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let mut rows = conn
-        .query("SELECT username, did FROM local_identity WHERE id = 'singleton'", ())
-        .await.map_err(|e| e.to_string())?;
-
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        Ok(UserInfo {
-            username: get_text(&row, 0),
-            did:      get_text(&row, 1),
-        })
-    } else {
-        Err("No user logged in".to_string())
+    if let Ok(Some(batch)) = state.lancedb.get_identity().await {
+        let name_col = batch.column(3).as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| "Invalid identity schema".to_string())?;
+        let did_col = batch.column(1).as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| "Invalid identity schema".to_string())?;
+        
+        if name_col.len() > 0 && did_col.len() > 0 {
+            return Ok(UserInfo {
+                username: name_col.value(0).to_string(),
+                did:      did_col.value(0).to_string(),
+            });
+        }
     }
+    Err("No user logged in".to_string())
 }
 
-/// Returns the stored access_token from local_identity so the frontend
-/// can use it for direct fetch() calls (e.g. analytics test in DevTools).
 #[tauri::command]
 pub async fn get_local_token(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let mut rows = conn
-        .query("SELECT access_token FROM local_identity WHERE id = 'singleton'", ())
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        if let Ok(libsql::Value::Text(t)) = row.get_value(0) {
-            return Ok(Some(t));
-        }
+    match crate::vault::load_token_from_keyring() {
+        Ok(opt) => Ok(opt),
+        Err(e) => Err(e),
     }
-    Ok(None)
 }
 
-/// Overwrite the stored server_url in local_identity.
-/// Use this to switch between remote server and localhost for local dev.
 #[tauri::command]
 pub async fn update_server_url(
     url: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO local_identity (id, server_url)
-         VALUES ('singleton', ?)
-         ON CONFLICT(id) DO UPDATE SET server_url = excluded.server_url",
-        libsql::params![url.clone()],
-    ).await.map_err(|e| e.to_string())?;
-    log::info!("[Auth] Server URL updated to: {}", url);
+    state.lancedb.update_server_url(&url).await.map_err(|e| e.to_string())?;
+    log::info!("[Auth] Server URL updated in LanceDB to: {}", url);
     Ok(())
 }

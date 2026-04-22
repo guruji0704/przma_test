@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { tableFromIPC } from "apache-arrow";
 
@@ -20,11 +19,6 @@ interface Doc {
   tags?: string[];
 }
 
-interface Toast {
-  id: number;
-  msg: string;
-  type: "info" | "success" | "error";
-}
 
 function formatFileSize(bytes: number) {
   if (!bytes || bytes === 0) return '0 B';
@@ -227,13 +221,13 @@ const css = `
     cursor: pointer;
     font-size: 14px;
     font-weight: 600;
-    transition: all 0.2s;
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1);
     color: var(--text-secondary);
     display: flex;
     align-items: center;
     gap: 12px;
   }
-  .nav-item:hover { background: var(--border); color: var(--text-primary); }
+  .nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text-primary); }
   .nav-item.active { background: var(--accent-glow); color: var(--accent); }
 
   .main { overflow-y: hidden; background: transparent; display: flex; flex-direction: column; }
@@ -262,19 +256,21 @@ const css = `
   .scroll-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
 
   .card {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 16px;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    backdrop-filter: blur(12px);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 20px;
+    padding: 24px;
+    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1);
+    backdrop-filter: blur(20px) saturate(130%);
     position: relative;
     overflow: hidden;
   }
   .card:hover { 
     transform: translateY(-4px); 
-    border-color: var(--accent);
-    box-shadow: 0 12px   .sort-bar {
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 16px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+  }
+  .sort-bar {
     display: flex;
     gap: 12px;
     margin-bottom: 24px;
@@ -300,17 +296,24 @@ const css = `
   .sort-select:hover { border-color: var(--accent); }
 
   .input {
-    background: rgba(255,255,255,0.05);
-    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
     color: var(--text-primary);
-    padding: 14px 20px;
-    border-radius: 14px;
+    padding: 16px 20px;
+    border-radius: 16px;
     width: 100%;
     outline: none;
-    transition: all 0.2s;
-    font-size: 14px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    font-size: 15px;
   }
-  .input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+  .input::placeholder { color: rgba(255,255,255,0.2); }
+  .input:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.15); }
+  .input:focus { 
+    background: rgba(255,255,255,0.06); 
+    border-color: var(--accent); 
+    box-shadow: 0 0 0 4px var(--accent-glow); 
+    transform: translateY(-1px);
+  }
 
   .input-icon-btn {
     position: absolute;
@@ -328,31 +331,56 @@ const css = `
   .input-icon-btn:hover { color: var(--accent); }
 
   .auth-container {
-    background: rgba(10, 13, 20, 0.7);
-    border: 1px solid var(--border);
-    backdrop-filter: blur(40px);
-    border-radius: 24px;
-    padding: 48px 40px;
-    box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+    background: rgba(10, 13, 20, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(40px) saturate(150%);
+    border-radius: 32px;
+    padding: 56px 48px;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.1);
   }
   [data-theme='light'] .auth-container { background: rgba(255, 255, 255, 0.85); }
 
+  .auth-scroll-area {
+    max-height: 50vh;
+    min-height: 300px;
+    overflow-y: auto;
+    padding-right: 12px;
+    margin-right: -12px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .auth-scroll-area::-webkit-scrollbar { width: 4px; }
+  .auth-scroll-area::-webkit-scrollbar-track { background: transparent; }
+  .auth-scroll-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+
   .btn {
-    padding: 10px 20px;
-    border-radius: 12px;
-    border: 1px solid var(--border);
-    background: transparent;
+    padding: 12px 24px;
+    border-radius: 14px;
+    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.03);
     color: var(--text-primary);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
-    transition: all 0.2s;
+    letter-spacing: 0.2px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .btn:hover { background: var(--border); }
-  .btn-accent { background: var(--accent); color: white; border: none; }
-  .btn-accent:hover { opacity: 0.9; }
-  .btn-danger { color: #FF6B6B; border-color: rgba(255,107,107,0.2); }
-  .btn-danger:hover { background: rgba(255,107,107,0.1); }
+  .btn:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.15); }
+  .btn:active { transform: scale(0.98); }
+  .btn-accent { 
+    background: linear-gradient(135deg, #4A9EFF 0%, #00E0C6 100%); 
+    color: white; 
+    border: none; 
+    box-shadow: 0 8px 24px rgba(74, 158, 255, 0.3);
+  }
+  .btn-accent:hover { 
+    opacity: 0.95; 
+    transform: translateY(-2px); 
+    box-shadow: 0 12px 28px rgba(74, 158, 255, 0.4); 
+    border-color: transparent; 
+  }
+  .btn-danger { color: #FF6B6B; background: rgba(255,107,107,0.05); border-color: rgba(255,107,107,0.15); }
+  .btn-danger:hover { background: rgba(255,107,107,0.15); border-color: rgba(255,107,107,0.3); }
 
   .doc-list {
     display: grid;
@@ -401,10 +429,31 @@ const css = `
   @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
   
   .did-box {
-    padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px;
+    padding: 16px 20px; background: rgba(0,0,0,0.3); border-radius: 14px;
     font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #4A9EFF;
-    word-break: break-all; margin: 20px 0; border: 1px solid rgba(74, 158, 255, 0.1);
+    word-break: break-all; margin: 24px 0; border: 1px solid rgba(74, 158, 255, 0.15);
+    box-shadow: inset 0 2px 12px rgba(0,0,0,0.5);
   }
+
+  /* Auth alignment */
+  .input-group { margin-bottom: 20px; position: relative; width: 100%; }
+  .dob-row { display: flex; gap: 12px; margin-bottom: 20px; align-items: stretch; }
+  .dob-row .input-group { margin-bottom: 0; flex: 1; }
+  .age-badge { display: flex; align-items: center; justify-content: center; background: rgba(255,107,107,0.1); color: #FF6B6B; padding: 0 16px; border-radius: 14px; font-weight: 700; font-size: 13px; height: 50px; }
+  .age-badge.ok { background: rgba(0, 224, 198, 0.1); color: #00E0C6; }
+  
+  .pw-rules { margin-top: 8px; margin-bottom: 24px; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 14px; border: 1px solid var(--border); }
+  .pw-strength-bar { height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden; margin-bottom: 12px; }
+  .pw-strength-fill { height: 100%; transition: all 0.3s ease; }
+  .pw-rules-title { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; }
+  .pw-rule { font-size: 11px; color: var(--text-secondary); display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .pw-rule:last-child { margin-bottom: 0; }
+  .pw-rule.ok { color: #00E0C6; }
+  .pw-rule-icon { font-weight: bold; }
+  
+  .captcha-box { background: rgba(0,0,0,0.2); padding: 16px; border-radius: 14px; border: 1px solid var(--border); margin-bottom: 24px; }
+  .captcha-img { height: 52px; background: white; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .captcha-img svg { max-height: 100%; max-width: 100%; }
 `;
 
 // ── Password strength checker ──────────────────────────────────────────────
@@ -507,8 +556,6 @@ export default function App() {
   const [regMsg, setRegMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [loginMsg, setLoginMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [resetEmail, setResetEmail] = useState("");
-  const [resetMsg, setResetMsg] = useState<{ text: string; type: "success" | "error" } | null>(null);
-  const [resetStep, setResetStep] = useState(1);
 
   const addToast = (msg: string, type: string = "info") => {
     const id = toastId++;
@@ -697,7 +744,7 @@ export default function App() {
     const paths = Array.isArray(selected) ? selected : [selected];
     addToast("Syncing files...", "info");
     try {
-      await invoke("upload_files_from_paths", { paths });
+      await invoke("upload_files_from_paths", { paths, category: "personal" });
       loadDocs();
       addToast("Vault updated", "success");
     } catch (e: any) { addToast(e, "error"); }
@@ -749,21 +796,20 @@ export default function App() {
       <div className="auth-container" style={{ width: 440 }}>
         <div style={{ textAlign: 'center', marginBottom: 40 }}>
           <div className="logo" style={{ fontSize: 40, letterSpacing: -2, background: 'linear-gradient(135deg, #58A6FF 0%, #00E0C6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PRZMA</div>
-          <div style={{ fontSize: 11, opacity: 0.6, marginTop: 8, letterSpacing: 2, fontWeight: 600 }}>DECENTRALIZED IDENTITY SYSTEM</div>
         </div>
 
         {authMode !== "forgot" && regStep !== 3 && (
-          <div style={{ display: 'flex', gap: 6, marginBottom: 32, background: 'var(--bg-secondary)', padding: 6, border: '1px solid var(--border)', borderRadius: 16 }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 32, background: 'rgba(0,0,0,0.3)', padding: 6, border: '1px solid rgba(255,255,255,0.05)', borderRadius: 18, boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.4)' }}>
             <button
-              className={`btn ${authMode === "login" ? "active" : ""}`}
-              style={{ flex: 1, border: 'none', background: authMode === "login" ? 'rgba(74, 158, 255, 0.1)' : 'transparent', color: authMode === "login" ? '#4A9EFF' : 'rgba(255,255,255,0.3)' }}
+              className="btn"
+              style={{ flex: 1, border: 'none', background: authMode === "login" ? 'rgba(255,255,255,0.08)' : 'transparent', color: authMode === "login" ? '#FFF' : 'rgba(255,255,255,0.4)', boxShadow: authMode === "login" ? '0 4px 12px rgba(0,0,0,0.2)' : 'none', fontWeight: authMode === "login" ? 700 : 500 }}
               onClick={() => { setAuthMode("login"); setLoginMsg(null); }}
             >
               Sign In
             </button>
             <button
-              className={`btn ${authMode === "register" ? "active" : ""}`}
-              style={{ flex: 1, border: 'none', background: authMode === "register" ? 'rgba(74, 158, 255, 0.1)' : 'transparent', color: authMode === "register" ? '#4A9EFF' : 'rgba(255,255,255,0.3)' }}
+              className="btn"
+              style={{ flex: 1, border: 'none', background: authMode === "register" ? 'rgba(255,255,255,0.08)' : 'transparent', color: authMode === "register" ? '#FFF' : 'rgba(255,255,255,0.4)', boxShadow: authMode === "register" ? '0 4px 12px rgba(0,0,0,0.2)' : 'none', fontWeight: authMode === "register" ? 700 : 500 }}
               onClick={() => { setAuthMode("register"); setRegMsg(null); if (!captcha) loadCaptcha(); }}
             >
               Create Account
@@ -771,7 +817,7 @@ export default function App() {
           </div>
         )}
 
-        <div style={{ position: 'relative' }}>
+        <div className="auth-scroll-area" style={{ position: 'relative' }}>
           {authMode === "register" && (
             regStep === 2 ? (
               <div>
