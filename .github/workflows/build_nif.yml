@@ -1,0 +1,34 @@
+yaml
+name: Build LanceDB NIF
+
+on:
+  push:
+    branches: [lance]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libssl-dev
+
+      - name: Build LanceDB NIF
+        run: |
+          cd native/lancedb_nif
+          cargo build --release
+
+      - name: Upload compiled NIF
+        uses: actions/upload-artifact@v4
+        with:
+          name: lancedb_nif
+          path: native/lancedb_nif/target/release/liblancedb_nif.so
