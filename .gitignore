@@ -42,3 +42,5 @@ npm-debug.log
 *.db-wal
 /priv/local_data/
 
+priv/native/*.so
+priv/native/*.dll
