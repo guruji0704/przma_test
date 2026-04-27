@@ -26,7 +26,7 @@ defmodule Alem.Application do
       # Email
       # LanceDB HTTP connection pool
       {Finch, name: Alem.Lance.Finch, pools: %{
-        "http://172.235.17.68:8765" => [size: 10]
+        "http://172.235.18.126:8765" => [size: 10]
       }},
 
       # Email / general HTTP
