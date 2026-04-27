@@ -112,14 +112,6 @@ config :logger, :console,
 
 config :phoenix, :json_library, Jason
 
-config :alem, Alem.LocalFirst.LibSQLRepo,
-  database: Path.expand("../priv/local_data/alem_local.db", __DIR__),
-  pool_size: 1,
-  journal_mode: :wal,
-  busy_timeout: 5_000
-
-config :alem, ecto_repos: [Alem.Repo, Alem.LocalFirst.LibSQLRepo]
-
-config :alem, :local_first_data_dir, Path.expand("../priv/local_data", __DIR__)
+config :alem, ecto_repos: [Alem.Repo]
 
 import_config "#{config_env()}.exs"

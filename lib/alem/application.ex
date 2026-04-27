@@ -17,7 +17,19 @@ defmodule Alem.Application do
       # PubSub
       {Phoenix.PubSub, name: Alem.PubSub},
 
+      # LanceDB write subsystem (one GenServer per active user)
+      Alem.Lance.Supervisor,
+
+      # Broadway sync pipeline
+      Alem.Lance.SyncPipeline,
+
       # Email
+      # LanceDB HTTP connection pool
+      {Finch, name: Alem.Lance.Finch, pools: %{
+        "http://172.235.17.68:8765" => [size: 10]
+      }},
+
+      # Email / general HTTP
       {Finch, name: Alem.Finch},
 
       Alem.Sync.Manager,
@@ -46,12 +58,6 @@ defmodule Alem.Application do
     # Authentication now uses real database via Alem.Auth module.
     # No more fake server on port 4001.
     # 1. Sync Bootstrap SQLD (Metadata) before services start
-    sqld_url = Application.get_env(:alem, :sqld_url, "http://localhost:8080")
-    try do
-      Alem.Sqld.ensure_schema()
-    rescue
-      e -> Logger.error("[sqld] Bootstrap exception: #{inspect(e)}")
-    end
 
     opts = [strategy: :one_for_one, name: Alem.Supervisor]
     Supervisor.start_link(children, opts)
