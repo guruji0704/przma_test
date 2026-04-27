@@ -1,0 +1,18 @@
+[package]
+name = "lancedb_nif"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "lancedb_nif"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37.3"
+lancedb = "0.10"
+arrow = { version = "52", features = ["ipc"] }
+arrow-json = "52"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

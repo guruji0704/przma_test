@@ -115,3 +115,9 @@ config :phoenix, :json_library, Jason
 config :alem, ecto_repos: [Alem.Repo]
 
 import_config "#{config_env()}.exs"
+
+config :alem, :lancedb,
+  base_url: "http://172.235.18.126:8765",
+  namespace: "przma",
+  pool_size: 10,
+  timeout: 30_000

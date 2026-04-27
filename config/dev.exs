@@ -15,7 +15,6 @@ config :alem, Alem.Repo,
 # Points to localhost. sqld is only needed for sync features.
 # For benchmark testing (mix benchmark), sqld is NOT required.
 # Download sqld binary: https://github.com/tursodatabase/libsql/releases
-config :alem, :sqld_url, "http://172.235.17.68:8080"
 
 # ── S3 / Linode Object Storage ─────────────────────────────────────────────
 # File uploads are now pointed to Linode Object Storage.
@@ -95,10 +94,8 @@ config :alem, :pleroma, base_url: "http://localhost:4001"
 # Require real S3 storage for analytics even in dev
 config :alem, :analytics_dev_bypass, false
 
-config :alem, Alem.LocalFirst.LibSQLRepo,
-  database: Path.expand("../priv/local_data/alem_local_dev.db", __DIR__),
-  pool_size: 1,
-  journal_mode: :wal,
-  busy_timeout: 5_000,
-  stacktrace: true,
-  show_sensitive_data_on_connection_error: true
+config :alem, :lancedb,
+  base_url:  "http://172.235.18.126:8765",
+  namespace: "przma",
+  pool_size: 10,
+  timeout:   30_000
