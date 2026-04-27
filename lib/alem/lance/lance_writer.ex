@@ -2,12 +2,10 @@ defmodule Alem.Lance.LanceWriter do
   @moduledoc """
   Single-writer GenServer for one user DID's LanceDB namespace.
   One per active user. Terminates after 30 minutes idle.
-  Uses the HTTP client (not NIF) at this stage.
+  Uses Rust NIF (Alem.LanceDB) directly — no HTTP server needed.
   """
   use GenServer, restart: :transient
   require Logger
-
-  alias Alem.Lance.{Config, Table, Query}
 
   @idle_timeout_ms :timer.minutes(30)
 
@@ -33,11 +31,8 @@ defmodule Alem.Lance.LanceWriter do
     user_did = Keyword.fetch!(opts, :user_did)
     Logger.info("[LanceWriter] Starting for #{user_did}")
 
-    cfg = Config.new() |> Config.for_user(user_did)
-
     state = %{
       user_did:      user_did,
-      cfg:           cfg,
       write_count:   0,
       last_write_at: System.monotonic_time(:millisecond),
     }
@@ -47,31 +42,53 @@ defmodule Alem.Lance.LanceWriter do
 
   @impl true
   def handle_call({:insert_perception, payload}, _from, state) do
-    # Ensure table exists
-    ensure_perception_table(state.cfg)
-
     record = Map.merge(payload, %{
       "user_did"   => state.user_did,
       "created_at" => System.os_time(:second)
     })
 
-    result = Table.insert(state.cfg, "perception_events", [record])
+    result = case Jason.encode(record) do
+      {:ok, json} ->
+        case Alem.LanceDB.insert_json("perception_events", json) do
+          :ok    -> {:ok, %{"rows" => 1, "status" => "ok"}}
+          :error -> {:error, "NIF insert failed"}
+        end
+      {:error, reason} ->
+        {:error, "JSON encode failed: #{inspect(reason)}"}
+    end
+
     {:reply, result, bump_write(state), @idle_timeout_ms}
   end
 
   def handle_call({:insert_preserve, payload}, _from, state) do
-    ensure_preserve_table(state.cfg)
     record = Map.merge(payload, %{
       "user_did"   => state.user_did,
       "created_at" => System.os_time(:second)
     })
-    result = Table.insert(state.cfg, "preserve_events", [record])
+
+    result = case Jason.encode(record) do
+      {:ok, json} ->
+        case Alem.LanceDB.insert_json("preserve_events", json) do
+          :ok    -> {:ok, %{"rows" => 1, "status" => "ok"}}
+          :error -> {:error, "NIF insert failed"}
+        end
+      {:error, reason} ->
+        {:error, "JSON encode failed: #{inspect(reason)}"}
+    end
+
     {:reply, result, bump_write(state), @idle_timeout_ms}
   end
 
   def handle_call({:query_perception, limit}, _from, state) do
-    q = Query.new() |> Query.limit(limit)
-    result = Table.search(state.cfg, "perception_events", q)
+    result = case Alem.LanceDB.query("perception_events", "", limit) do
+      {:ok, ipc_bytes} when byte_size(ipc_bytes) > 0 ->
+        {:ok, %{"status" => "ok", "bytes" => byte_size(ipc_bytes)}}
+      {:ok, _} ->
+        {:ok, []}
+      {:error, reason} ->
+        {:error, reason}
+    end
+
     {:reply, result, state, @idle_timeout_ms}
   end
 
@@ -81,41 +98,15 @@ defmodule Alem.Lance.LanceWriter do
     {:stop, :normal, state}
   end
 
-  # ── Private ───────────────────────────────────────────────────────────
+  # ── Private ────────────────────────────────────────────────────────────
 
-  defp via(user_did), do: {:via, Registry, {Alem.Lance.Registry, user_did}}
+  defp via(user_did),
+    do: {:via, Registry, {Alem.Lance.Registry, user_did}}
 
   defp bump_write(state) do
-    %{state | write_count: state.write_count + 1,
-              last_write_at: System.monotonic_time(:millisecond)}
-  end
-
-  defp ensure_perception_table(cfg) do
-    schema = %{fields: [
-      %{name: "id",              type: "utf8"},
-      %{name: "user_did",        type: "utf8"},
-      %{name: "verb",            type: "utf8"},
-      %{name: "seven_p_primary", type: "utf8"},
-      %{name: "preserve_primary",type: "utf8"},
-      %{name: "light_element",   type: "utf8"},
-      %{name: "altruistic_axis", type: "utf8"},
-      %{name: "vault_tier",      type: "utf8"},
-      %{name: "created_at",      type: "int64"},
-    ]}
-    Table.create(cfg, "perception_events", %{schema: schema})
-    :ok
-  end
-
-  defp ensure_preserve_table(cfg) do
-    schema = %{fields: [
-      %{name: "id",              type: "utf8"},
-      %{name: "user_did",        type: "utf8"},
-      %{name: "preserve_primary",type: "utf8"},
-      %{name: "light_element",   type: "utf8"},
-      %{name: "vault_tier",      type: "utf8"},
-      %{name: "created_at",      type: "int64"},
-    ]}
-    Table.create(cfg, "preserve_events", %{schema: schema})
-    :ok
+    %{state |
+      write_count:   state.write_count + 1,
+      last_write_at: System.monotonic_time(:millisecond)
+    }
   end
 end

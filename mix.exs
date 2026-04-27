@@ -100,6 +100,7 @@ defp deps do
 
     # MessagePack
     {:msgpax, "~> 2.4"},
+    {:rustler, "~> 0.36"},
 
     # GraphQL — Absinthe
     {:absinthe,         "~> 1.7"},

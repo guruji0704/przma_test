@@ -134,7 +134,7 @@ defmodule AlemWeb.Router do
     get  "/changes",              SyncController, :get_changes
     get  "/stats",                SyncController, :get_stats
     get  "/download/:doc_id",     SyncController, :download_file
-    post "/upload",               SyncController, :upload_document
+    post "/upload",               SyncController, :crdt_upload
     post "/crdt/upload",          SyncController, :crdt_upload
     post "/crdt/upload_chunk",    SyncController, :chunk_upload
     post "/crdt/finalize_upload", SyncController, :finalize_upload
