@@ -8,12 +8,28 @@ defmodule ChatAppWeb.ChatLive do
   @max_members 5
   @typing_timeout 3000
 
-  def mount(_params, session, socket) do
-    username = session["username"] || "anon"
-    room     = session["room"] || "lobby"
+  def mount(params, _session, socket) do
+    #username = session["username"] || "anon"
+    #room     = session["room"] || "lobby"
+
+    token = params["token"]
+
+    if is_nil(token) do
+      raise "Token missing"
+    end
+
+    user =
+      case verify_token(token) do
+        {:ok, user} -> user
+        _ -> raise "Unauthorized access"
+      end
+
+    username = user.username
+    room = "lobby"
 
     topic = "room:#{room}"
-    private_topic = "private:#{username}"
+    #private_topic = "private:#{username}"
+    private_topic = "private:#{username}-#{:erlang.unique_integer([:positive])}"
 
     is_audience =
       if connected?(socket) do
@@ -56,7 +72,13 @@ defmodule ChatAppWeb.ChatLive do
        typing_users: %{},
        mention_query: nil,
        mention_suggestions: []
-     )}
+     ) # FILE UPLOAD
+     |> allow_upload(:file,
+      accept: ~w(.jpg .jpeg .png .pdf),
+      max_entries: 1,
+      max_file_size: 5_000_000
+      )
+    }
   end
 
   # ========================
@@ -71,10 +93,21 @@ defmodule ChatAppWeb.ChatLive do
       # ✅ Extract tagged user FIRST
       tagged_username = extract_tagged_user(msg, socket.assigns.users)
 
+      # File upload
+      uploaded_files =
+        consume_uploaded_entries(socket, :file, fn %{path: path}, entry ->
+          filename = "#{System.unique_integer([:positive])}-#{entry.client_name}"
+          dest = Path.join("priv/static/uploads", filename)
+          File.cp!(path, dest)
+
+          {:ok, "/uploads/#{filename}"}
+        end)
+
       # ✅ Create message
       message = %{
         user: socket.assigns.username,
         body: msg,
+        file: List.first(uploaded_files),
         tagged: tagged_username
       }
 
@@ -210,5 +243,15 @@ defmodule ChatAppWeb.ChatLive do
     Regex.replace(~r/@(\S+)/, text, fn match, _name ->
       "<span class='font-bold text-blue-600'>#{match}</span>"
     end)
+  end
+
+  defp verify_token(nil), do: {:error, :no_token}
+
+  defp verify_token(token) do
+    # ✅ TEMP (for testing)
+    {:ok, %{username: token}}
+
+    # 🔐 LATER (real implementation):
+    # Call PRZMA service OR decode JWT
   end
 end

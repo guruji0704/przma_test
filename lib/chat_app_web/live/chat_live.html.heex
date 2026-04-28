@@ -1,6 +1,6 @@
 <div class="flex h-screen">
 
-  <!-- LEFT PANEL: Online users — members AND audience இருவருக்கும் காட்டு -->
+  <!-- LEFT PANEL: Online users — members AND audience -->
   <div class="w-1/4 bg-gray-100 p-4 flex flex-col">
 
     <h2 class="font-bold mb-1 text-gray-700">Online Users</h2>
@@ -88,7 +88,21 @@
             <% end %>
             <%!-- raw() renders HTML — so @username shows as blue span, not plain text --%>
             <%= raw highlight_mentions(msg.body) %>
+            <%= if msg[:file] do %>
+              <div class="mt-2">
+
+                <!-- Image preview -->
+                <%= if String.ends_with?(msg.file, [".jpg", ".jpeg", ".png"]) do %>
+                  <img src={msg.file} class="w-40 rounded" />
+                <% else %>
+                  <a href={msg.file} target="_blank" class="text-blue-600 underline">
+                    📎 Download file
+                  </a>
+            <% end %>
           </div>
+          
+      <% end %>
+          </div>  
         </div>
       <% end %>
     </div>
@@ -108,12 +122,21 @@
     <!-- Input OR Audience banner -->
     <%= if not @is_audience do %>
       <form phx-submit="send" phx-change="update_message" class="p-4 border-t flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+
+          <!-- 📎 ATTACH ICON -->
+          <label class="cursor-pointer text-gray-500 hover:text-blue-500 text-xl">
+            📎
+            <.live_file_input upload={@uploads.file} class="hidden" />
+          </label>
         <input
           name="message"
           value={@message}
           class="border border-gray-300 rounded p-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-400"
           placeholder="Type message... use @username to tag someone"
         />
+
+        
         <!-- @ mention popup — only shows when user types @something -->
 <%= if length(@mention_suggestions) > 0 do %>
   <div class="border border-gray-200 rounded-lg shadow-lg bg-white overflow-hidden">
@@ -144,10 +167,18 @@
           </p>
           <button
             class="bg-blue-500 text-white px-5 py-2 rounded disabled:opacity-40"
-            disabled={@remaining < 0 or @message == ""}
+            #disabled={@remaining < 0 or @message == ""}
+            disabled={@remaining < 0}
           >
             Send
           </button>
+        </div>
+        <!-- Upload progress -->
+        <%= for entry <- @uploads.file.entries do %>
+          <div class="text-xs text-gray-500 mt-1">
+            Uploading: <%= entry.client_name %> (<%= entry.progress %>%)
+          </div>
+        <% end %>
         </div>
       </form>
     <% else %>
