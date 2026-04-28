@@ -47,9 +47,12 @@ defmodule Alem.Lance.LanceWriter do
       "created_at" => System.os_time(:second)
     })
 
-    result = case Jason.encode(record) do
+    vector = Map.get(record, "vector", List.duplicate(0.0, 446))
+    metadata = Map.drop(record, ["vector"])
+
+    result = case Jason.encode(metadata) do
       {:ok, json} ->
-        case Alem.LanceDB.insert_json("perception_events", json) do
+        case Alem.LanceDB.insert_with_vector("perception_events", vector, json) do
           :ok    -> {:ok, %{"rows" => 1, "status" => "ok"}}
           :error -> {:error, "NIF insert failed"}
         end

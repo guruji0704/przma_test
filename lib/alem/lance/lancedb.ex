@@ -15,4 +15,13 @@ defmodule Alem.LanceDB do
 
   def insert_json(_table_name, _json_data),
     do: :erlang.nif_error(:nif_not_loaded)
+
+  def vector_search(_table_name, _query_vector, _limit),
+    do: :erlang.nif_error(:nif_not_loaded)
+
+  def insert_with_vector(_table_name, _vector, _metadata_json),
+    do: :erlang.nif_error(:nif_not_loaded)
+  
+  def drop_table(_table_name),
+    do: :erlang.nif_error(:nif_not_loaded)
 end

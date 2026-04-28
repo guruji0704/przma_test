@@ -47,18 +47,30 @@ defmodule AlemWeb.SyncController do
               content_type: content_type,
               status:       "synced"
             })
-            # Push perception event to LanceDB via Rust NIF
+            # Push perception event with vector to LanceDB via Rust NIF
             Task.start(fn ->
               user_did = user.did_id || user.id
+              vector = Alem.Lance.VectorEncoder.encode(
+                file_bytes,
+                content_type,
+                %{
+                  "seven_p_primary"  => Map.get(params, "seven_p_primary", "portfolio"),
+                  "preserve_primary" => Map.get(params, "preserve_primary", "engagement"),
+                  "light_element"    => Map.get(params, "light_element", "transform")
+                }
+              )
               Alem.Lance.DISSupervisor.ensure_writer(user_did)
               Alem.Lance.LanceWriter.insert_perception(user_did, %{
                 "id"               => doc_id,
+                "vector"           => vector,
                 "verb"             => "Create",
-                "seven_p_primary"  => "portfolio",
-                "preserve_primary" => "engagement",
-                "light_element"    => "transform",
-                "altruistic_axis"  => "serve",
-                "vault_tier"       => "private"
+                "media_type"       => content_type,
+                "filename"         => filename,
+                "seven_p_primary"  => Map.get(params, "seven_p_primary", "portfolio"),
+                "preserve_primary" => Map.get(params, "preserve_primary", "engagement"),
+                "light_element"    => Map.get(params, "light_element", "transform"),
+                "altruistic_axis"  => Map.get(params, "altruistic_axis", "serve"),
+                "vault_tier"       => Map.get(params, "vault_tier", "private")
               })
             end)
             json(conn, %{success: true, doc_id: doc_id, s3_key: s3_key})
@@ -75,29 +87,42 @@ defmodule AlemWeb.SyncController do
          {:ok, filename}   <- require_param(params, "filename"),
          {:ok, file_bytes} <- decode_file_content(params),
          {:ok, _}          <- {:ok, decode_crdt_state(params)} do
+      content_type = "application/octet-stream"
       case upload_content_to_s3(user.id, doc_id, filename, file_bytes,
-             "application/octet-stream", get_s3_bucket()) do
+             content_type, get_s3_bucket()) do
         {:ok, s3_key} ->
           upsert_document_pg(%{
             id:           doc_id,
             user_id:      user.id,
             filename:     filename,
             object_key:   s3_key,
-            content_type: "application/octet-stream",
+            content_type: content_type,
             status:       "synced"
           })
-          # Push perception event to LanceDB via Rust NIF
+          # Push perception event with vector to LanceDB via Rust NIF
           Task.start(fn ->
             user_did = user.did_id || user.id
+            vector = Alem.Lance.VectorEncoder.encode(
+              file_bytes,
+              content_type,
+              %{
+                "seven_p_primary"  => Map.get(params, "seven_p_primary", "portfolio"),
+                "preserve_primary" => Map.get(params, "preserve_primary", "engagement"),
+                "light_element"    => Map.get(params, "light_element", "transform")
+              }
+            )
             Alem.Lance.DISSupervisor.ensure_writer(user_did)
             Alem.Lance.LanceWriter.insert_perception(user_did, %{
               "id"               => doc_id,
+              "vector"           => vector,
               "verb"             => "Create",
-              "seven_p_primary"  => "portfolio",
-              "preserve_primary" => "engagement",
-              "light_element"    => "transform",
-              "altruistic_axis"  => "serve",
-              "vault_tier"       => "private"
+              "media_type"       => content_type,
+              "filename"         => filename,
+              "seven_p_primary"  => Map.get(params, "seven_p_primary", "portfolio"),
+              "preserve_primary" => Map.get(params, "preserve_primary", "engagement"),
+              "light_element"    => Map.get(params, "light_element", "transform"),
+              "altruistic_axis"  => Map.get(params, "altruistic_axis", "serve"),
+              "vault_tier"       => Map.get(params, "vault_tier", "private")
             })
           end)
           json(conn, %{success: true, s3_key: s3_key})
@@ -200,18 +225,37 @@ defmodule AlemWeb.SyncController do
               status:       "synced"
             })
 
-            # 2. Push perception event to LanceDB via Rust NIF
+            # 2. Generate vector + push perception event to LanceDB via Rust NIF
             user_did = user.did_id || user.id
-            Alem.Lance.DISSupervisor.ensure_writer(user_did)
-            Alem.Lance.LanceWriter.insert_perception(user_did, %{
-              "id"               => doc_id,
-              "verb"             => "Create",
-              "seven_p_primary"  => "portfolio",
-              "preserve_primary" => "engagement",
-              "light_element"    => "transform",
-              "altruistic_axis"  => "serve",
-              "vault_tier"       => "private"
-            })
+            case ExAws.S3.get_object(bucket, s3_key)
+                 |> ExAws.request(virtual_host: false) do
+              {:ok, %{body: file_bytes}} ->
+                content_type = detect_media_type(filename, file_bytes)
+                vector = Alem.Lance.VectorEncoder.encode(
+                  file_bytes,
+                  content_type,
+                  %{
+                    "seven_p_primary"  => Map.get(params, "seven_p_primary", "portfolio"),
+                    "preserve_primary" => Map.get(params, "preserve_primary", "engagement"),
+                    "light_element"    => Map.get(params, "light_element", "transform")
+                  }
+                )
+                Alem.Lance.DISSupervisor.ensure_writer(user_did)
+                Alem.Lance.LanceWriter.insert_perception(user_did, %{
+                  "id"               => doc_id,
+                  "vector"           => vector,
+                  "verb"             => "Create",
+                  "media_type"       => content_type,
+                  "filename"         => filename,
+                  "seven_p_primary"  => Map.get(params, "seven_p_primary", "portfolio"),
+                  "preserve_primary" => Map.get(params, "preserve_primary", "engagement"),
+                  "light_element"    => Map.get(params, "light_element", "transform"),
+                  "altruistic_axis"  => Map.get(params, "altruistic_axis", "serve"),
+                  "vault_tier"       => Map.get(params, "vault_tier", "private")
+                })
+              {:error, reason} ->
+                Logger.warning("[VectorEncoder] Could not fetch file: #{inspect(reason)}")
+            end
 
             # 3. Extract vault content if E2EE epoch key present
             if is_integer(epoch_id),
@@ -327,6 +371,31 @@ defmodule AlemWeb.SyncController do
               actor_did:     ctx.actor_did,
               user_id:       ctx.user_id
             })
+
+            # Push PRESERVE event to LanceDB after CAS registration
+            Task.start(fn ->
+              user_did = ctx.actor_did || ctx.user_id
+              vector = Alem.Lance.VectorEncoder.encode(
+                plaintext,
+                detected_type,
+                %{
+                  "seven_p_primary"  => "portfolio",
+                  "preserve_primary" => "engagement",
+                  "light_element"    => "transform"
+                }
+              )
+              Alem.Lance.DISSupervisor.ensure_writer(user_did)
+              Alem.Lance.LanceWriter.insert_preserve(user_did, %{
+                "id"               => doc_id,
+                "vector"           => vector,
+                "preserve_primary" => "engagement",
+                "light_element"    => "transform",
+                "vault_tier"       => "private",
+                "content_hash"     => content_hash,
+                "media_type"       => detected_type
+              })
+            end)
+
             if cas_obj.storage_key != s3_key do
               update_document_pg(doc_id, %{
                 content_hash: content_hash,
@@ -439,6 +508,7 @@ defmodule AlemWeb.SyncController do
       ".mp4"  -> "video/mp4"
       ".mov"  -> "video/quicktime"
       ".mp3"  -> "audio/mpeg"
+      ".wav"  -> "audio/wav"
       ".txt"  -> "text/plain"
       ".md"   -> "text/markdown"
       ".docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -448,6 +518,8 @@ defmodule AlemWeb.SyncController do
       <<0x89, 0x50, 0x4E, 0x47, _::binary>> -> "image/png"
       <<0xFF, 0xD8, 0xFF, _::binary>>        -> "image/jpeg"
       <<0x25, 0x50, 0x44, 0x46, _::binary>>  -> "application/pdf"
+      <<0x49, 0x44, 0x33, _::binary>>        -> "audio/mpeg"
+      <<0x00, 0x00, 0x00, _, 0x66, 0x74, 0x79, 0x70, _::binary>> -> "video/mp4"
       _                                       -> nil
     end
     magic || ext || "application/octet-stream"
@@ -457,18 +529,16 @@ defmodule AlemWeb.SyncController do
   # GENERAL HELPERS
   # ══════════════════════════════════════════════════════════════════════════
 
-#  defp get_current_user(conn) do
-#    case get_req_header(conn, "authorization") do
-#      ["Bearer " <> token | _] -> Auth.verify_token(token)
-#      _                        -> {:error, :missing_token}
-#    end
-#  end
-
+  # defp get_current_user(conn) do
+  #   case get_req_header(conn, "authorization") do
+  #     ["Bearer " <> token | _] -> Auth.verify_token(token)
+  #     _                        -> {:error, :missing_token}
+  #   end
+  # end
 
   defp get_current_user(_conn) do
     {:ok, %{id: "1", did_id: "did:przma:test001"}}
   end
-
 
   defp upload_content_to_s3(user_id, doc_id, filename, file_bytes, type, bucket) do
     s3_key = "user/#{user_id}/documents/#{doc_id}/#{filename}"
