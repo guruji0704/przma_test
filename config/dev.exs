@@ -7,7 +7,7 @@ config :alem, Alem.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "172.235.17.68",
-  database: "dev_alem_lance",
+  database: "dev_alem_integrated",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -54,7 +54,7 @@ config :alem, :epoch_master_key,
 # ── Phoenix Endpoint ───────────────────────────────────────────────────────
 config :alem, AlemWeb.Endpoint,
   http: [
-    ip: {127, 0, 0, 1},
+    ip: {0, 0, 0, 0},
     port: 4000,
     thousand_island_options: [read_timeout: 300_000]
   ],

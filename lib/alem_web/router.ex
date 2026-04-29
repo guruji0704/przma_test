@@ -33,6 +33,8 @@ defmodule AlemWeb.Router do
     pipe_through :browser
     get "/reset-password", AuthController, :reset_password_page
     get "/", PageController, :redirect_to_admin
+    live "/demo", DemoLive
+    live "/panel", UserLive, :index
   end
 
   # ── Admin login/logout (public — no admin_auth guard) ─────────────────────
