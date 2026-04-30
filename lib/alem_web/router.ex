@@ -115,6 +115,9 @@ defmodule AlemWeb.Router do
     # Password reset
     post "/account/reset_password",  AuthController, :reset_password
     post "/account/forgot_password", AuthController, :forgot_password
+
+    # File viewer — secure presigned URL
+    get "/files/:id/url", FileController, :presign
   end
 
   # ── Vault epoch key (public, no auth) ─────────────────────────────────────

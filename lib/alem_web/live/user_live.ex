@@ -30,6 +30,8 @@ defmodule AlemWeb.UserLive do
        |> assign(:sidebar_open,   false)
        |> assign(:flash_msg,      nil)
        |> assign(:flash_type,     :success)
+       |> assign(:viewer,         nil)
+       |> assign(:viewer_loading, false)
        |> allow_upload(:file,
            accept: ~w(.mp3 .wav .mp4 .mov .jpg .jpeg .png .gif .pdf .txt .docx),
            max_entries: 5,
@@ -61,7 +63,7 @@ defmodule AlemWeb.UserLive do
       Repo.all(from d in Document, where: d.user_id == ^uid,
         order_by: [desc: d.inserted_at], limit: 200,
         select: %{id: d.id, filename: d.filename, content_type: d.content_type,
-                  status: d.status, inserted_at: d.inserted_at})
+                  object_key: d.object_key, status: d.status, inserted_at: d.inserted_at})
     rescue _ -> [] end
   end
 
@@ -146,6 +148,60 @@ defmodule AlemWeb.UserLive do
 
   def handle_event("logout", _, socket), do: {:noreply, redirect(socket, to: "/panel/logout")}
   def handle_event("dismiss_flash", _, socket), do: {:noreply, assign(socket, :flash_msg, nil)}
+
+  def handle_event("open_viewer", %{"id" => doc_id}, socket) do
+    user_id = socket.assigns.user.id
+    import Ecto.Query
+    doc = try do
+      Alem.Repo.one(
+        from d in Document,
+        where: d.id == ^doc_id and d.user_id == ^user_id,
+        select: %{id: d.id, filename: d.filename, content_type: d.content_type,
+                  object_key: d.object_key, status: d.status, inserted_at: d.inserted_at}
+      )
+    rescue _ -> nil end
+
+    if doc do
+      url = generate_presign(doc.object_key)
+      viewer = Map.put(doc, :url, url)
+      {:noreply, assign(socket, viewer: viewer, viewer_loading: false)}
+    else
+      {:noreply, assign(socket, viewer: nil)}
+    end
+  end
+
+  def handle_event("close_viewer", _, socket) do
+    {:noreply, assign(socket, viewer: nil, viewer_loading: false)}
+  end
+
+  defp generate_presign(nil), do: nil
+  defp generate_presign(object_key) do
+    bucket = System.get_env("AWS_S3_BUCKET", "perkeep")
+    region = System.get_env("AWS_DEFAULT_REGION", "in-maa-1")
+    # Strip scheme to get clean host — ExAws adds its own scheme
+    raw_host = System.get_env("AWS_S3_ENDPOINT", "in-maa-1.linodeobjects.com")
+    host = raw_host
+           |> String.replace(~r/^https?:\/\//, "")
+           |> String.trim_trailing("/")
+    config = ExAws.Config.new(:s3,
+      scheme:     "https://",
+      host:       host,
+      region:     region,
+      port:       443
+    )
+    case ExAws.S3.presigned_url(config, :get, bucket, object_key, expires_in: 3600) do
+      {:ok, url} ->
+        # Force https — some ExAws configs produce http
+        safe_url = String.replace(url, ~r/^http:\/\//, "https://")
+        require Logger
+        Logger.info("[FileViewer] Presigned URL: #{String.slice(safe_url, 0, 80)}...")
+        safe_url
+      {:error, reason} ->
+        require Logger
+        Logger.error("[FileViewer] Presign failed: #{inspect(reason)}")
+        nil
+    end
+  end
 
   defp process_upload(path, filename, client_type, user) do
     try do
@@ -747,6 +803,156 @@ defmodule AlemWeb.UserLive do
       .empty-title { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 5px; }
       .empty-sub { font-size: 12px; margin-bottom: 18px; }
 
+
+      /* ── File Viewer Modal ── */
+      .fv-overlay {
+        position: fixed; inset: 0; z-index: 1000;
+        display: flex; align-items: center; justify-content: center;
+        padding: 16px; animation: fadeIn 0.2s ease;
+      }
+      .fv-backdrop {
+        position: absolute; inset: 0;
+        background: rgba(0,0,0,0.75);
+        backdrop-filter: blur(4px);
+        cursor: pointer;
+      }
+      .fv-modal {
+        position: relative; z-index: 1;
+        background: var(--bg-2); border: 1px solid var(--border-2);
+        border-radius: var(--r-lg); display: flex; flex-direction: column;
+        width: 100%; max-width: 900px; max-height: 90vh;
+        box-shadow: var(--shadow-lg); animation: scaleIn 0.2s cubic-bezier(0.34,1.56,0.64,1);
+        overflow: hidden;
+      }
+      @keyframes scaleIn { from { transform: scale(0.94); opacity: 0; } to { transform: none; opacity: 1; } }
+
+      .fv-header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 14px 16px; border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .fv-file-info { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+      .fv-file-icon { font-size: 24px; flex-shrink: 0; }
+      .fv-file-name {
+        font-size: 14px; font-weight: 600; color: var(--text);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .fv-file-meta {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 11px; color: var(--text-3); margin-top: 3px; flex-wrap: wrap;
+      }
+      .fv-close {
+        width: 32px; height: 32px; border-radius: var(--r-sm);
+        background: var(--bg-3); border: 1px solid var(--border);
+        color: var(--text-2); cursor: pointer; font-size: 13px;
+        display: flex; align-items: center; justify-content: center;
+        flex-shrink: 0; transition: all 0.15s;
+      }
+      .fv-close:hover { background: var(--red-d); color: var(--red); border-color: var(--red); }
+
+      .fv-body {
+        flex: 1; overflow: auto; min-height: 0;
+        display: flex; align-items: center; justify-content: center;
+        background: var(--bg);
+      }
+
+      /* Image */
+      .fv-img-wrap {
+        width: 100%; height: 100%; min-height: 300px;
+        display: flex; align-items: center; justify-content: center;
+        padding: 20px; overflow: hidden;
+      }
+      .fv-img {
+        max-width: 100%; max-height: 65vh;
+        object-fit: contain; border-radius: var(--r-sm);
+        opacity: 0; transition: opacity 0.3s;
+        box-shadow: var(--shadow);
+      }
+      .fv-img.loaded { opacity: 1; }
+
+      /* Video */
+      .fv-video-wrap { width: 100%; padding: 0; background: #000; }
+      .fv-video { width: 100%; max-height: 65vh; display: block; }
+
+      /* Audio */
+      .fv-audio-wrap {
+        width: 100%; padding: 40px 30px;
+        display: flex; flex-direction: column; align-items: center; gap: 24px;
+      }
+      .fv-audio-art {
+        text-align: center;
+        width: 160px; height: 160px; border-radius: 50%;
+        background: linear-gradient(135deg, var(--primary-d), var(--purple-d));
+        border: 2px solid var(--border-2);
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+      }
+      .fv-audio { width: 100%; max-width: 500px; }
+
+      /* PDF */
+      .fv-doc-wrap { width: 100%; height: 65vh; }
+      .fv-iframe { width: 100%; height: 100%; border: none; display: block; }
+
+      /* Text */
+      .fv-text-wrap { width: 100%; padding: 24px; height: 65vh; overflow: auto; }
+      .fv-text-content {
+        font-family: 'DM Mono','Fira Code',monospace; font-size: 12px;
+        line-height: 1.7; color: var(--text); white-space: pre-wrap; word-break: break-word;
+      }
+      .fv-text-loading {
+        display: flex; align-items: center; gap: 12px;
+        color: var(--text-2); font-size: 13px;
+      }
+
+      /* Unsupported + Error */
+      .fv-unsupported, .fv-error {
+        padding: 48px 32px; text-align: center; color: var(--text-3);
+      }
+
+      /* Footer */
+      .fv-footer {
+        padding: 12px 16px; border-top: 1px solid var(--border);
+        display: flex; gap: 8px; justify-content: flex-end;
+        flex-shrink: 0; background: var(--bg-2);
+      }
+
+      /* DOCX viewer */
+      .fv-docx-wrap {
+        width: 100%; height: 65vh; overflow: auto;
+        display: flex; flex-direction: column; align-items: center;
+        padding: 0;
+      }
+      .fv-docx-content {
+        width: 100%; max-width: 800px; margin: 0 auto;
+        padding: 32px 40px; line-height: 1.7;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: 14px; color: var(--text);
+        background: var(--bg-2);
+      }
+      .fv-docx-content h1 { font-size: 22px; font-weight: 700; margin: 20px 0 10px; color: var(--text); }
+      .fv-docx-content h2 { font-size: 18px; font-weight: 600; margin: 16px 0 8px; color: var(--text); }
+      .fv-docx-content h3 { font-size: 15px; font-weight: 600; margin: 12px 0 6px; color: var(--text); }
+      .fv-docx-content p  { margin: 8px 0; }
+      .fv-docx-content table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+      .fv-docx-content td, .fv-docx-content th { border: 1px solid var(--border-2); padding: 6px 10px; font-size: 13px; }
+      .fv-docx-content img { max-width: 100%; height: auto; border-radius: 4px; }
+      @media (max-width: 640px) { .fv-docx-content { padding: 20px 16px; } }
+
+      /* Spinner */
+      .fv-spinner {
+        width: 18px; height: 18px; border-radius: 50%;
+        border: 2px solid var(--border-2);
+        border-top-color: var(--primary);
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* Mobile adjustments */
+      @media (max-width: 640px) {
+        .fv-modal { max-height: 95vh; border-radius: var(--r) var(--r) 0 0; align-self: flex-end; }
+        .fv-overlay { padding: 0; align-items: flex-end; }
+        .fv-audio-art { width: 120px; height: 120px; }
+      }
+
       /* ── Page animation ── */
       .page-wrap { animation: fadeUp 0.18s ease both; }
       @keyframes fadeUp { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: none; } }
@@ -766,6 +972,127 @@ defmodule AlemWeb.UserLive do
         <span><%= if @flash_type == :success, do: "✓", else: "✕" %></span>
         <%= @flash_msg %>
         <button phx-click="dismiss_flash" style="background:none;border:none;color:inherit;cursor:pointer;margin-left:6px;font-size:16px;line-height:1">×</button>
+      </div>
+    <% end %>
+
+    <!-- ── File Viewer Modal ── -->
+    <%= if @viewer do %>
+      <div class="fv-overlay">
+        <div class="fv-backdrop" phx-click="close_viewer"></div>
+        <div class="fv-modal">
+          <!-- Header -->
+          <div class="fv-header">
+            <div class="fv-file-info">
+              <span class="fv-file-icon"><%= ico(@viewer.content_type) %></span>
+              <div>
+                <div class="fv-file-name"><%= @viewer.filename %></div>
+                <div class="fv-file-meta">
+                  <span><%= ftype(@viewer.content_type) %></span>
+                  <span>·</span>
+                  <span><%= fdate(@viewer.inserted_at) %></span>
+                  <span>·</span>
+                  <span class={"badge #{sbadge(@viewer.status)}"}><%= fstatus(@viewer.status) %></span>
+                </div>
+              </div>
+            </div>
+            <button class="fv-close" phx-click="close_viewer" title="Close">✕</button>
+          </div>
+
+          <!-- Body -->
+          <div class="fv-body">
+            <%= if is_nil(@viewer.url) do %>
+              <div class="fv-error">
+                <div style="font-size:36px;margin-bottom:12px">⚠️</div>
+                <div style="font-weight:600;margin-bottom:6px">File unavailable</div>
+                <div style="font-size:12px;color:var(--text-3)">Could not generate a download link. The file may have been deleted.</div>
+              </div>
+            <% else %>
+              <%= cond do %>
+                <% is_image(@viewer.content_type) -> %>
+                  <div class="fv-img-wrap">
+                    <img src={@viewer.url} alt={@viewer.filename} class="fv-img"
+                         onload="this.classList.add('loaded')"
+                         onerror="this.parentNode.innerHTML='<div class=fv-error>Image could not be loaded</div>'"/>
+                  </div>
+
+                <% is_video(@viewer.content_type) -> %>
+                  <div class="fv-video-wrap">
+                    <video controls autoplay class="fv-video" preload="metadata">
+                      <source src={@viewer.url} type={@viewer.content_type}/>
+                      Your browser does not support video playback.
+                    </video>
+                  </div>
+
+                <% is_audio(@viewer.content_type) -> %>
+                  <div class="fv-audio-wrap">
+                    <div class="fv-audio-art">
+                      <span style="font-size:64px;opacity:.6">🎵</span>
+                      <div style="margin-top:12px;font-size:14px;font-weight:600;color:var(--text)"><%= @viewer.filename %></div>
+                    </div>
+                    <audio controls class="fv-audio" preload="metadata">
+                      <source src={@viewer.url} type={@viewer.content_type}/>
+                      Your browser does not support audio playback.
+                    </audio>
+                  </div>
+
+                <% is_pdf(@viewer.content_type) -> %>
+                  <div class="fv-doc-wrap">
+                    <iframe src={"#{@viewer.url}#toolbar=1&navpanes=0"}
+                            class="fv-iframe"
+                            title={@viewer.filename}>
+                      <p>PDF preview not available. <a href={@viewer.url} target="_blank">Download instead</a></p>
+                    </iframe>
+                  </div>
+
+                <% is_text(@viewer.content_type) -> %>
+                  <div class="fv-text-wrap" id={"fv-text-#{@viewer.id}"}>
+                    <div class="fv-text-loading">
+                      <div class="fv-spinner"></div>
+                      <span>Loading file content...</span>
+                    </div>
+                  </div>
+
+                <% is_docx(@viewer.content_type) -> %>
+                  <div class="fv-docx-wrap" id="fv-docx-container"
+                       data-url={@viewer.url}>
+                    <div class="fv-text-loading" id="fv-docx-loading">
+                      <div class="fv-spinner"></div>
+                      <span>Rendering document...</span>
+                    </div>
+                    <div id="fv-docx-output" class="fv-docx-content" style="display:none"></div>
+                    <div id="fv-docx-error" class="fv-unsupported" style="display:none">
+                      <div style="font-size:36px;margin-bottom:12px">📝</div>
+                      <div style="font-weight:600;margin-bottom:6px">Could not render document</div>
+                      <div style="font-size:12px;color:var(--text-3);margin-bottom:16px">Download to view in Microsoft Word</div>
+                      <a href={@viewer.url} download={@viewer.filename} class="btn btn-primary">↓ Download File</a>
+                    </div>
+                  </div>
+
+                <% true -> %>
+                  <div class="fv-unsupported">
+                    <div style="font-size:48px;margin-bottom:16px"><%= ico(@viewer.content_type) %></div>
+                    <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px"><%= @viewer.filename %></div>
+                    <div style="font-size:13px;color:var(--text-2);margin-bottom:20px">This file type cannot be previewed in the browser</div>
+                    <a href={@viewer.url} target="_blank" class="btn btn-primary" download={@viewer.filename}>
+                      ↓ Download File
+                    </a>
+                  </div>
+              <% end %>
+            <% end %>
+          </div>
+
+          <!-- Footer -->
+          <%= if @viewer.url do %>
+            <div class="fv-footer">
+              <a href={@viewer.url} target="_blank" class="btn btn-ghost btn-sm">
+                ↗ Open in new tab
+              </a>
+              <a href={@viewer.url} download={@viewer.filename} class="btn btn-primary btn-sm">
+                ↓ Download
+              </a>
+            </div>
+          <% end %>
+        </div>
       </div>
     <% end %>
 
@@ -990,6 +1317,50 @@ defmodule AlemWeb.UserLive do
       document.addEventListener('DOMContentLoaded', drawCharts);
       window.addEventListener('phx:update', drawCharts);
       window.addEventListener('phx:page-loading-stop', drawCharts);
+
+      // ── DOCX Renderer (mammoth.js) ──
+      function renderDocx() {
+        var container = document.getElementById('fv-docx-container');
+        if (!container || !window.mammoth) return;
+
+        var url = container.getAttribute('data-url');
+        if (!url) return;
+
+        var loading = document.getElementById('fv-docx-loading');
+        var output  = document.getElementById('fv-docx-output');
+        var errBox  = document.getElementById('fv-docx-error');
+
+        if (loading) loading.style.display = 'flex';
+        if (output)  output.style.display  = 'none';
+        if (errBox)  errBox.style.display  = 'none';
+
+        fetch(url)
+          .then(function(r) {
+            if (!r.ok) throw new Error('Fetch failed: ' + r.status);
+            return r.arrayBuffer();
+          })
+          .then(function(buf) {
+            return mammoth.convertToHtml({ arrayBuffer: buf });
+          })
+          .then(function(result) {
+            if (output) {
+              output.innerHTML = result.value;
+              output.style.display = 'block';
+            }
+            if (loading) loading.style.display = 'none';
+          })
+          .catch(function(err) {
+            console.error('DOCX render error:', err);
+            if (loading) loading.style.display = 'none';
+            if (errBox)  errBox.style.display  = 'block';
+          });
+      }
+
+      // Run when viewer opens
+      document.addEventListener('DOMContentLoaded', renderDocx);
+      window.addEventListener('phx:update', function() {
+        setTimeout(renderDocx, 100);
+      });
     </script>
     """
   end
@@ -1047,7 +1418,7 @@ defmodule AlemWeb.UserLive do
             <thead><tr><th>File</th><th>Type</th><th>Status</th><th>Date</th></tr></thead>
             <tbody>
               <%= for f <- Enum.take(@files, 8) do %>
-                <tr>
+                <tr style="cursor:pointer" phx-click="open_viewer" phx-value-id={f.id}>
                   <td>
                     <div style="display:flex;align-items:center;gap:8px">
                       <span style="font-size:15px"><%= ico(f.content_type) %></span>
@@ -1107,7 +1478,7 @@ defmodule AlemWeb.UserLive do
             <thead><tr><th>File</th><th>Type</th><th>Status</th><th>Uploaded</th></tr></thead>
             <tbody>
               <%= for f <- @filtered do %>
-                <tr>
+                <tr style="cursor:pointer" phx-click="open_viewer" phx-value-id={f.id}>
                   <td>
                     <div style="display:flex;align-items:center;gap:8px">
                       <span style="font-size:15px"><%= ico(f.content_type) %></span>
@@ -1264,6 +1635,19 @@ defmodule AlemWeb.UserLive do
   end
 
   # ── Helpers ────────────────────────────────────────────────────────────────
+
+  defp is_image(t) when is_binary(t), do: String.starts_with?(t, "image/")
+  defp is_image(_), do: false
+  defp is_video(t) when is_binary(t), do: String.starts_with?(t, "video/")
+  defp is_video(_), do: false
+  defp is_audio(t) when is_binary(t), do: String.starts_with?(t, "audio/")
+  defp is_audio(_), do: false
+  defp is_pdf(t) when is_binary(t), do: t == "application/pdf" or String.contains?(t, "pdf")
+  defp is_pdf(_), do: false
+  defp is_text(t) when is_binary(t), do: String.starts_with?(t, "text/")
+  defp is_docx(t) when is_binary(t), do: String.contains?(t, "wordprocessingml") or String.contains?(t, "msword") or String.ends_with?(t, ".docx")
+  defp is_text(_), do: false
+  defp is_docx(_), do: false
 
   defp do_sort(f, "newest"), do: f
   defp do_sort(f, "oldest"), do: Enum.reverse(f)
