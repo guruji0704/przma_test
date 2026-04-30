@@ -35,6 +35,11 @@ defmodule AlemWeb.Router do
   pipeline :user_auth do
     plug AlemWeb.Plugs.UserAuth
   end
+  
+    # Studio layout pipeline
+  pipeline :studio_layout do
+    plug :put_root_layout, html: {AlemWeb.Layouts, :studio_root}
+  end  
 
   # ── Public browser routes ─────────────────────────────────────────────────
   scope "/", AlemWeb do
@@ -67,6 +72,13 @@ defmodule AlemWeb.Router do
   scope "/", AlemWeb do
     pipe_through [:browser, :user_layout, :user_auth]
     live "/panel", UserLive, :index
+  end
+
+  # PRZMA Studio (protected, opens in new tab)
+  scope "/", AlemWeb do
+    pipe_through [:browser, :studio_layout, :user_auth]
+    live "/studio",     StudioLive, :new
+    live "/studio/:id", StudioLive, :edit
   end
 
   # ── API v1 ────────────────────────────────────────────────────────────────
