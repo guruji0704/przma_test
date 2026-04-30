@@ -794,6 +794,38 @@ defmodule AlemWeb.UserLive do
       .spacer { flex: 1; }
       .mono { font-family: 'DM Mono','Fira Code',monospace; font-size: 11px; }
       .text-sm { font-size: 11px; color: var(--text-3); }
+
+      /* ── File Viewer Modal ── */
+      .fv-overlay { position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .2s ease; }
+      .fv-backdrop { position:absolute;inset:0;background:rgba(0,0,0,0.78);backdrop-filter:blur(4px);cursor:pointer; }
+      .fv-modal { position:relative;z-index:1;background:var(--bg-2);border:1px solid var(--border-2);border-radius:var(--r-lg);display:flex;flex-direction:column;width:100%;max-width:920px;max-height:90vh;box-shadow:var(--shadow-lg);animation:scaleIn .2s cubic-bezier(0.34,1.56,0.64,1);overflow:hidden; }
+      @keyframes scaleIn { from{transform:scale(0.94);opacity:0} to{transform:none;opacity:1} }
+      .fv-header { display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0; }
+      .fv-file-icon { font-size:22px;flex-shrink:0; }
+      .fv-file-name { font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+      .fv-file-meta { display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-3);margin-top:3px;flex-wrap:wrap; }
+      .fv-close { width:30px;height:30px;border-radius:var(--r-sm);background:var(--bg-3);border:1px solid var(--border);color:var(--text-2);cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s;margin-left:auto; }
+      .fv-close:hover { background:var(--red-d);color:var(--red);border-color:var(--red); }
+      .fv-body { flex:1;overflow:auto;min-height:0;display:flex;align-items:center;justify-content:center;background:var(--bg); }
+      .fv-img-wrap { width:100%;height:100%;min-height:300px;display:flex;align-items:center;justify-content:center;padding:20px; }
+      .fv-img { max-width:100%;max-height:68vh;object-fit:contain;border-radius:var(--r-sm);opacity:0;transition:opacity .3s;box-shadow:var(--shadow); }
+      .fv-img.loaded { opacity:1; }
+      .fv-video-wrap { width:100%;background:#000; }
+      .fv-video { width:100%;max-height:68vh;display:block; }
+      .fv-audio-wrap { width:100%;padding:36px 28px;display:flex;flex-direction:column;align-items:center;gap:20px; }
+      .fv-audio-art { text-align:center;width:140px;height:140px;border-radius:50%;background:linear-gradient(135deg,var(--primary-d),var(--purple-d));border:2px solid var(--border-2);display:flex;flex-direction:column;align-items:center;justify-content:center; }
+      .fv-audio { width:100%;max-width:500px; }
+      .fv-doc-wrap { width:100%;height:68vh; }
+      .fv-iframe { width:100%;height:100%;border:none;display:block; }
+      .fv-text-wrap { width:100%;padding:24px;height:68vh;overflow:auto; }
+      .fv-text-loading { display:flex;align-items:center;gap:12px;color:var(--text-2);font-size:13px; }
+      .fv-unsupported,.fv-error { padding:48px 32px;text-align:center;color:var(--text-3); }
+      .fv-footer { padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-shrink:0;background:var(--bg-2); }
+      .fv-spinner { width:18px;height:18px;border-radius:50%;border:2px solid var(--border-2);border-top-color:var(--primary);animation:spin .7s linear infinite; }
+      @keyframes spin { to{transform:rotate(360deg)} }
+      @media(max-width:640px){.fv-modal{max-height:95vh;border-radius:var(--r) var(--r) 0 0;align-self:flex-end}.fv-overlay{padding:0;align-items:flex-end}}
+
+
     </style>
 
     <!-- Flash -->
@@ -802,6 +834,93 @@ defmodule AlemWeb.UserLive do
         <span><%= if @flash_type == :success, do: "✓", else: "✕" %></span>
         <%= @flash_msg %>
         <button phx-click="dismiss_flash" style="background:none;border:none;color:inherit;cursor:pointer;margin-left:6px;font-size:16px;line-height:1">×</button>
+      </div>
+    <% end %>
+
+
+    <!-- ── File Viewer Modal ── -->
+    <%= if @viewer do %>
+      <div class="fv-overlay">
+        <div class="fv-backdrop" phx-click="close_viewer"></div>
+        <div class="fv-modal">
+          <div class="fv-header">
+            <span class="fv-file-icon"><%= ico(@viewer.content_type) %></span>
+            <div style="overflow:hidden;flex:1;min-width:0">
+              <div class="fv-file-name"><%= @viewer.filename %></div>
+              <div class="fv-file-meta">
+                <span><%= ftype(@viewer.content_type) %></span>
+                <span>·</span>
+                <span><%= fdate(@viewer.inserted_at) %></span>
+                <span>·</span>
+                <span class={"badge #{file_status_badge(@viewer.status)}"}><%= file_status_label(@viewer.status) %></span>
+              </div>
+            </div>
+            <button class="fv-close" phx-click="close_viewer">✕</button>
+          </div>
+          <div class="fv-body">
+            <%= if is_nil(@viewer.url) do %>
+              <div class="fv-error">
+                <div style="font-size:36px;margin-bottom:12px">⚠️</div>
+                <div style="font-weight:600;margin-bottom:6px">File unavailable</div>
+                <div style="font-size:12px;color:var(--text-3)">Could not generate a download link.</div>
+              </div>
+            <% else %>
+              <%= cond do %>
+                <% String.starts_with?(@viewer.content_type || "", "image/") -> %>
+                  <div class="fv-img-wrap">
+                    <img src={@viewer.url} alt={@viewer.filename} class="fv-img"
+                         onload="this.classList.add('loaded')"
+                         onerror="this.parentNode.innerHTML='<div class=fv-error>⚠️ Image could not be loaded</div>'"/>
+                  </div>
+                <% String.starts_with?(@viewer.content_type || "", "video/") -> %>
+                  <div class="fv-video-wrap">
+                    <video controls autoplay class="fv-video" preload="metadata">
+                      <source src={@viewer.url} type={@viewer.content_type}/>
+                    </video>
+                  </div>
+                <% String.starts_with?(@viewer.content_type || "", "audio/") -> %>
+                  <div class="fv-audio-wrap">
+                    <div class="fv-audio-art">
+                      <span style="font-size:52px;opacity:.7">🎵</span>
+                    </div>
+                    <audio controls class="fv-audio" preload="metadata" autoplay>
+                      <source src={@viewer.url} type={@viewer.content_type}/>
+                    </audio>
+                  </div>
+                <% (@viewer.content_type || "") == "application/pdf" or String.contains?(@viewer.content_type || "", "pdf") -> %>
+                  <div class="fv-doc-wrap">
+                    <iframe src={@viewer.url} class="fv-iframe" title={@viewer.filename}></iframe>
+                  </div>
+                <% String.contains?(@viewer.content_type || "", "wordprocessingml") or String.contains?(@viewer.content_type || "", "msword") -> %>
+                  <div class="fv-doc-wrap" id="fv-docx-wrap" data-url={@viewer.url}>
+                    <div id="fv-docx-loading" class="fv-text-loading" style="padding:24px">
+                      <div class="fv-spinner"></div><span>Rendering document...</span>
+                    </div>
+                    <div id="fv-docx-output" style="display:none;width:100%;height:100%;overflow:auto;padding:28px 36px;font-family:Georgia,serif;font-size:13px;line-height:1.8;color:var(--text);background:var(--bg-2)"></div>
+                  </div>
+                <% String.starts_with?(@viewer.content_type || "", "text/") -> %>
+                  <div class="fv-text-wrap" data-url={@viewer.url}>
+                    <div class="fv-text-loading" id="fv-text-loading" style="padding:12px"><div class="fv-spinner"></div><span>Loading...</span></div>
+                    <pre id="fv-text-content" style="display:none;font-family:monospace;font-size:12px;line-height:1.6;color:var(--text);white-space:pre-wrap;word-break:break-word"></pre>
+                  </div>
+                <% true -> %>
+                  <div class="fv-unsupported">
+                    <div style="font-size:48px;margin-bottom:16px"><%= ico(@viewer.content_type) %></div>
+                    <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px"><%= @viewer.filename %></div>
+                    <div style="font-size:12px;color:var(--text-2);margin-bottom:20px">Preview not available for this file type</div>
+                    <a href={@viewer.url} target="_blank" class="btn btn-primary" download={@viewer.filename}>↓ Download File</a>
+                  </div>
+              <% end %>
+            <% end %>
+          </div>
+          <%= if @viewer.url do %>
+            <div class="fv-footer">
+              <a href={@viewer.url} target="_blank" class="btn btn-ghost btn-sm">↗ Open in new tab</a>
+              <a href={"/studio/#{@viewer.id}"} target="_blank" class="btn btn-ghost btn-sm">✏ Edit in Studio</a>
+              <a href={@viewer.url} download={@viewer.filename} class="btn btn-primary btn-sm">↓ Download</a>
+            </div>
+          <% end %>
+        </div>
       </div>
     <% end %>
 
@@ -1029,6 +1148,69 @@ defmodule AlemWeb.UserLive do
       document.addEventListener('DOMContentLoaded', drawCharts);
       window.addEventListener('phx:update', drawCharts);
       window.addEventListener('phx:page-loading-stop', drawCharts);
+
+      // ── Auto-reload panel files when Studio saves ──
+      (function() {
+        // BroadcastChannel listener
+        try {
+          var ch = new BroadcastChannel('przma-studio');
+          ch.addEventListener('message', function(e) {
+            if (e.data && e.data.type === 'file_saved') {
+              window.location.reload();
+            }
+          });
+        } catch(err) {}
+        // localStorage fallback
+        window.addEventListener('storage', function(e) {
+          if (e.key === 'przma-file-saved') {
+            window.location.reload();
+          }
+        });
+      })();
+
+      // ── Viewer content loaders ──
+      function loadViewerContent() {
+        // DOCX via mammoth
+        var docxWrap = document.getElementById('fv-docx-wrap');
+        if (docxWrap && window.mammoth) {
+          var url = docxWrap.getAttribute('data-url');
+          fetch(url)
+            .then(function(r){ return r.arrayBuffer(); })
+            .then(function(buf){ return mammoth.convertToHtml({arrayBuffer: buf}); })
+            .then(function(res){
+              var out = document.getElementById('fv-docx-output');
+              var ldr = document.getElementById('fv-docx-loading');
+              if(out){ out.innerHTML = res.value; out.style.display = 'block'; }
+              if(ldr) ldr.style.display = 'none';
+            }).catch(function(){ document.getElementById('fv-docx-loading').textContent = 'Could not render DOCX'; });
+        }
+        // Plain text
+        var textPre = document.getElementById('fv-text-content');
+        if (textPre) {
+          var srcEl = textPre.previousElementSibling;
+          var url = srcEl ? srcEl.getAttribute('data-url') : null;
+          var audioEl = document.querySelector('audio[src]');
+          // Find the URL from iframe or audio src on page
+          var iframeEl = document.querySelector('.fv-doc-wrap iframe');
+          if (!url && iframeEl) url = iframeEl.src;
+          if (!url) {
+            // fallback: find text loader via data-url on parent
+            var wrap = textPre.parentElement;
+            if (wrap) url = wrap.getAttribute('data-url');
+          }
+          if (url) {
+            fetch(url).then(function(r){ return r.text(); })
+              .then(function(t){
+                textPre.textContent = t;
+                textPre.style.display = 'block';
+                var ldr = document.getElementById('fv-text-loading');
+                if (ldr) ldr.style.display = 'none';
+              }).catch(function(e){ console.error(e); });
+          }
+        }
+      }
+      document.addEventListener('DOMContentLoaded', loadViewerContent);
+      window.addEventListener('phx:update', function(){ setTimeout(loadViewerContent, 80); });
     </script>
     """
   end

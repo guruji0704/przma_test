@@ -197,7 +197,8 @@ defmodule AlemWeb.StudioLive do
              padding: 0 24px; line-height: 1.8; color: #111; }
       table { border-collapse: collapse; width: 100%; }
       td, th { border: 1px solid #ccc; padding: 6px 10px; }
-      img { max-width: 100%; }
+      img { max-width: 100%; height: auto; }
+      h1,h2,h3 { margin: 20px 0 10px; } p { margin: 8px 0; }
     </style>
     </head><body>#{content}</body></html>
     """
@@ -207,6 +208,19 @@ defmodule AlemWeb.StudioLive do
   defp build_file(content, "text", existing_doc) do
     base = if existing_doc, do: Path.rootname(existing_doc.filename), else: "edited"
     {content, "text/plain", "#{base}-edited.txt"}
+  end
+
+  defp build_file(content, "image_base64", existing_doc) do
+    # Convert base64 data URL to PNG bytes
+    base = if existing_doc, do: Path.rootname(existing_doc.filename), else: "edited-image"
+    filename = "#{base}-edited.png"
+    case String.split(content, ",", parts: 2) do
+      [_header, data] ->
+        bytes = Base.decode64!(data)
+        {bytes, "image/png", filename}
+      _ ->
+        {content, "image/png", filename}
+    end
   end
 
   defp build_file(content, _, existing_doc) do
@@ -420,7 +434,12 @@ defmodule AlemWeb.StudioLive do
         </span>
 
         <!-- Save button -->
-        <button class="topbar-btn tb-primary" id="btn-save" onclick="studioSave()">
+        <!-- Hidden save form - reliable LiveView bridge -->
+        <form id="save-form" phx-submit="save_content" style="display:none">
+          <textarea id="save-input" name="content"></textarea>
+          <input type="hidden" name="format" value="html" id="save-format"/>
+        </form>
+        <button class="topbar-btn tb-primary" id="btn-save" onclick="studioSave()" type="button">
           💾 Save
         </button>
 
@@ -683,24 +702,56 @@ defmodule AlemWeb.StudioLive do
       }
       function autoSave() { if (editorDirty) studioSave(); }
 
-      // ── PRZMA Save (sends to LiveView) ──
+      // Keyboard shortcuts for editor
+      function handleEditorKey(e) {
+        if (e.ctrlKey || e.metaKey) {
+          switch(e.key.toLowerCase()) {
+            case 'b': e.preventDefault(); execCmd('bold'); break;
+            case 'i': e.preventDefault(); execCmd('italic'); break;
+            case 'u': e.preventDefault(); execCmd('underline'); break;
+            case 's': e.preventDefault(); studioSave(); break;
+            case 'z': e.preventDefault(); execCmd(e.shiftKey ? 'redo' : 'undo'); break;
+          }
+        }
+      }
+
+      // ── PRZMA Save (reliable hidden form → LiveView) ──
       function studioSave() {
         var ed = document.getElementById('doc-editor');
         if (!ed) return;
-        var content = ed.innerHTML;
+
         var chip = document.getElementById('save-status-chip');
         if (chip) { chip.textContent = '⏳ Saving...'; chip.className = 'studio-status-chip sc-saving'; }
-        // Push to LiveView via phx pushEvent
-        var hook = window.__studioHook;
-        if (hook) {
-          hook.pushEvent('save_content', {content: content, format: 'html'});
-        } else {
-          // Fallback: find LiveView socket via liveSocket global
-          if (window.liveSocket) {
-            var view = window.liveSocket.getActiveElement();
-            if (view) view.pushEvent('save_content', {content: content, format: 'html'});
+
+        // Determine format and content based on active tool
+        var fmt = 'html';
+        var content = ed.innerHTML;
+
+        // For image tool, bake CSS filters into pixels then export
+        if (document.getElementById('panel-image') &&
+            document.getElementById('panel-image').style.display !== 'none') {
+          var canvas = document.getElementById('img-canvas');
+          if (canvas && canvas.style.display !== 'none') {
+            var baked = getBakedCanvas();
+            content = baked.toDataURL('image/png');
+            fmt = 'image_base64';
           }
         }
+
+        // Write content to hidden form and submit via LiveView
+        var input = document.getElementById('save-input');
+        var fmtInput = document.getElementById('save-format');
+        var form = document.getElementById('save-form');
+        if (!input || !form) {
+          console.error('[Studio] Save form not found');
+          if (chip) { chip.textContent = '✕ Save failed'; chip.className = 'studio-status-chip sc-error'; }
+          return;
+        }
+        input.value = content;
+        if (fmtInput) fmtInput.value = fmt;
+
+        // Submit via LiveView form mechanism
+        form.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true}));
         editorDirty = false;
       }
 
@@ -763,10 +814,27 @@ defmodule AlemWeb.StudioLive do
         document.getElementById('sl-s').value=100;
         document.getElementById('img-canvas').style.filter='none';
       }
+      function getBakedCanvas() {
+        // Bake CSS filters into actual pixels for export
+        var src = document.getElementById('img-canvas');
+        var b = document.getElementById('sl-b').value;
+        var c = document.getElementById('sl-c').value;
+        var s = document.getElementById('sl-s').value;
+        var f = 'brightness('+(1+b/100)+') contrast('+(1+c/100)+') saturate('+(s/100)+')';
+        if (imgData.extraFilter) f += ' ' + imgData.extraFilter;
+        var out = document.createElement('canvas');
+        out.width = src.width; out.height = src.height;
+        var ctx = out.getContext('2d');
+        ctx.filter = f;
+        ctx.drawImage(src, 0, 0);
+        return out;
+      }
       function downloadImg() {
-        var canvas=document.getElementById('img-canvas');
-        var a=document.createElement('a'); a.download='edited-image.png';
-        a.href=canvas.toDataURL('image/png'); a.click();
+        var out = getBakedCanvas();
+        var a = document.createElement('a');
+        a.download = 'edited-image.png';
+        a.href = out.toDataURL('image/png');
+        a.click();
       }
 
       // ── Init: load file content ──
@@ -819,15 +887,30 @@ defmodule AlemWeb.StudioLive do
         }
       });
 
-      // ── phx hook bridge for save ──
-      window.addEventListener('phx:mounted', function() {
-        var lv = document.querySelector('[data-phx-main]');
-        if (lv) {
-          window.__studioHook = {
-            pushEvent: function(event, payload) {
-              lv.dispatchEvent(new CustomEvent('phx:push', {detail:{event:event,payload:payload}}));
-            }
-          };
+      // ── Cross-tab panel refresh on save ──
+
+
+      // ── Cross-tab notification ──
+      var _ch = null;
+      try { _ch = new BroadcastChannel('przma-studio'); } catch(e) {}
+      function notifyPanelSaved() {
+        var msg = {type:'file_saved',ts:Date.now()};
+        if (_ch) _ch.postMessage(msg);
+        localStorage.setItem('przma-file-saved', JSON.stringify(msg));
+      }
+      window.addEventListener('phx:update', function() {
+        var chip = document.getElementById('save-status-chip');
+        if (chip && chip.textContent.indexOf('Saved to S3') !== -1 && !chip._notified) {
+          chip._notified = true;
+          notifyPanelSaved();
+          setTimeout(function(){ chip._notified = false; }, 5000);
+        }
+      });
+      // ── Auto-save draft to localStorage ──
+      window.addEventListener('beforeunload', function() {
+        var ed = document.getElementById('doc-editor');
+        if (ed && editorDirty) {
+          localStorage.setItem('przma-studio-draft-backup', ed.innerHTML);
         }
       });
     </script>
