@@ -28,13 +28,16 @@ defmodule AlemWeb.Router do
     plug :put_root_layout, html: {AlemWeb.Layouts, :admin_root}
   end
 
+  pipeline :user_layout do
+    plug :put_root_layout, html: {AlemWeb.Layouts, :user_root}
+  end
+
   # ── Public browser routes ─────────────────────────────────────────────────
   scope "/", AlemWeb do
     pipe_through :browser
     get "/reset-password", AuthController, :reset_password_page
     get "/", PageController, :redirect_to_admin
     live "/demo", DemoLive
-    live "/panel", UserLive, :index
   end
 
   # ── Admin login/logout (public — no admin_auth guard) ─────────────────────
@@ -51,6 +54,11 @@ defmodule AlemWeb.Router do
   scope "/admin", AlemWeb do
     pipe_through [:browser, :admin_auth, :admin_layout]
     live "/", AdminLive, :index
+  end
+
+  scope "/", AlemWeb do
+    pipe_through [:browser, :user_layout]
+    live "/panel", UserLive, :index
   end
 
   # ── API v1 ────────────────────────────────────────────────────────────────
