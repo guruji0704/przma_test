@@ -3,7 +3,7 @@
     "identifier": "default",
     "description": "Default permissions for the application",
     "platforms": ["linux", "macOS", "windows"],
-    "windows": ["main"],
+    "windows": ["*"],
     "permissions": [
       "core:default",
       "core:window:default",

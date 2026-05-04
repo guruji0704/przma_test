@@ -162,7 +162,6 @@ defmodule AlemWeb.Router do
   scope "/api/v1/sync", AlemWeb do
     pipe_through :api
 
-    post "/upload-url",           SyncController, :get_upload_url
     post "/apply",                SyncController, :apply_changes
     get  "/changes",              SyncController, :get_changes
     get  "/stats",                SyncController, :get_stats

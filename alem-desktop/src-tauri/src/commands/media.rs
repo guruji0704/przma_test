@@ -24,6 +24,7 @@ use arrow::ipc::writer::StreamWriter;
 use base64::Engine;
 use rayon::prelude::*;
 use std::sync::Arc;
+use crate::db::lancedb::LanceDBManager;
 
 // ── Public types returned to frontend ─────────────────────────────────────
 
@@ -254,4 +255,127 @@ fn build_arrow_ipc(frames: &[FrameInfo]) -> Result<String, String> {
     }
 
     Ok(base64::engine::general_purpose::STANDARD.encode(&buf))
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Phase 4 — Zero-Copy Thumbnail Commands
+// Thumbnails are stored directly in LanceDB as binary blobs.
+// This allows gallery views to load without any file-system I/O.
+// ══════════════════════════════════════════════════════════════════════════
+
+use crate::AppState;
+use arrow::array::{BinaryArray, StringArray as TStringArray};
+use lancedb::query::{ExecutableQuery, QueryBase};
+use futures::StreamExt;
+use arrow::record_batch::RecordBatchIterator;
+
+/// Store a thumbnail for a specific document.
+/// The raw image bytes are resized to at most 256×256 WebP and saved in LanceDB.
+#[tauri::command]
+pub async fn store_thumbnail(
+    state: tauri::State<'_, AppState>,
+    doc_id: String,
+    image_data_b64: String,
+) -> Result<(), String> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(&image_data_b64)
+        .map_err(|e| format!("base64 decode: {}", e))?;
+
+    // Decode → resize to max 256px → encode as PNG
+    let img = image::load_from_memory(&raw)
+        .map_err(|e| format!("image decode: {}", e))?;
+    let thumb = img.thumbnail(256, 256);
+    let mut thumb_bytes: Vec<u8> = Vec::new();
+    thumb.write_to(
+        &mut std::io::Cursor::new(&mut thumb_bytes),
+        image::ImageFormat::Png,
+    ).map_err(|e| format!("thumbnail encode: {}", e))?;
+
+    let table = state.lancedb.open_table("thumbnails").await.map_err(|e| e.to_string())?;
+
+    // Remove old entry for same doc_id
+    let _ = table.delete(&format!("doc_id = '{doc_id}'")).await;
+
+    let schema = LanceDBManager::thumbnails_schema();
+    let now = chrono::Utc::now().to_rfc3339();
+    let (w, h) = (thumb.width() as i64, thumb.height() as i64);
+
+    let batch = arrow::record_batch::RecordBatch::try_new(schema.clone(), vec![
+        Arc::new(TStringArray::from(vec![doc_id.as_str()])),
+        Arc::new(TStringArray::from(vec!["image/png"])),
+        Arc::new(arrow::array::Int64Array::from(vec![w])),
+        Arc::new(arrow::array::Int64Array::from(vec![h])),
+        Arc::new(BinaryArray::from(vec![thumb_bytes.as_slice()])),
+        Arc::new(TStringArray::from(vec![now.as_str()])),
+    ]).map_err(|e| e.to_string())?;
+
+    let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
+
+    log::info!("🖼️ [Thumbnail] Stored {}×{} thumbnail for doc '{}'", w, h, doc_id);
+    Ok(())
+}
+
+/// Retrieve a stored thumbnail for a document. Returns base64-encoded PNG bytes.
+#[tauri::command]
+pub async fn get_thumbnail(
+    state: tauri::State<'_, AppState>,
+    doc_id: String,
+) -> Result<Option<String>, String> {
+    let table = state.lancedb.open_table("thumbnails").await.map_err(|e| e.to_string())?;
+    let mut stream = table
+        .query()
+        .only_if(&format!("doc_id = '{doc_id}'"))
+        .execute()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        if batch.num_rows() > 0 {
+            let data_col = batch.column(4).as_any().downcast_ref::<BinaryArray>().unwrap();
+            let bytes = data_col.value(0);
+            return Ok(Some(base64::engine::general_purpose::STANDARD.encode(bytes)));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Batch-retrieve all thumbnails for a given vault. Efficient for gallery view.
+/// Returns a map of doc_id → base64 PNG.
+#[tauri::command]
+pub async fn get_thumbnails_bulk(
+    state: tauri::State<'_, AppState>,
+    doc_ids: Vec<String>,
+) -> Result<Vec<ThumbnailEntry>, String> {
+    if doc_ids.is_empty() { return Ok(vec![]); }
+
+    let table = state.lancedb.open_table("thumbnails").await.map_err(|e| e.to_string())?;
+    let id_list: Vec<String> = doc_ids.iter().map(|id| format!("'{}'", id.replace("'", "''"))).collect();
+    let filter = format!("doc_id IN ({})", id_list.join(", "));
+
+    let mut stream = table.query().only_if(&filter).execute().await.map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+
+    while let Some(batch_res) = stream.next().await {
+        let batch = batch_res.map_err(|e| e.to_string())?;
+        let id_col   = batch.column(0).as_any().downcast_ref::<TStringArray>().unwrap();
+        let data_col = batch.column(4).as_any().downcast_ref::<BinaryArray>().unwrap();
+        for i in 0..batch.num_rows() {
+            entries.push(ThumbnailEntry {
+                doc_id: id_col.value(i).to_string(),
+                data_b64: base64::engine::general_purpose::STANDARD.encode(data_col.value(i)),
+            });
+        }
+    }
+
+    log::info!("🖼️ [Thumbnail] Bulk retrieved {} thumbnails", entries.len());
+    Ok(entries)
+}
+
+#[derive(serde::Serialize)]
+pub struct ThumbnailEntry {
+    pub doc_id:   String,
+    pub data_b64: String,
 }

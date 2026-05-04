@@ -60,10 +60,8 @@ pub fn document_schema() -> Schema {
             DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
             true,
         ),
-        Field::new("day",   DataType::Utf8,  true),   // "YYYY-MM-DD"
-        Field::new("week",  DataType::Int32, true),   // ISO week 1-53
-        Field::new("month", DataType::Int32, true),   // 1-12
         Field::new("year",  DataType::Int32, true),   // e.g. 2025
+        Field::new("vault_category", DataType::Utf8, false),
     ])
 }
 
@@ -116,6 +114,7 @@ pub fn documents_to_record_batch(docs: &[Document]) -> Result<RecordBatch, arrow
     let mut week_b         = Int32Builder::with_capacity(n);
     let mut month_b        = Int32Builder::with_capacity(n);
     let mut year_b         = Int32Builder::with_capacity(n);
+    let mut vault_cat_b    = StringBuilder::with_capacity(n, n * 8);
 
     for doc in docs {
         doc_id_b.append_value(&doc.id);
@@ -152,6 +151,7 @@ pub fn documents_to_record_batch(docs: &[Document]) -> Result<RecordBatch, arrow
                 year_b.append_null();
             }
         }
+        vault_cat_b.append_value(&doc.vault_category);
     }
 
     let columns: Vec<ArrayRef> = vec![
@@ -167,6 +167,7 @@ pub fn documents_to_record_batch(docs: &[Document]) -> Result<RecordBatch, arrow
         Arc::new(week_b.finish()),
         Arc::new(month_b.finish()),
         Arc::new(year_b.finish()),
+        Arc::new(vault_cat_b.finish()),
     ];
 
     RecordBatch::try_new(schema, columns)
@@ -192,6 +193,7 @@ pub fn record_batch_to_ipc(batch: &RecordBatch) -> Result<Vec<u8>, String> {
     writer.finish()
         .map_err(|e| format!("IPC finish failed: {e}"))?;
 
+    drop(writer);
     Ok(buf.into_inner())
 }
 
@@ -227,6 +229,7 @@ pub struct UploadMeta<'a> {
     pub file_size:    i64,       // bytes, for the analytics column
     pub status:       &'a str,
     pub created_at:   &'a str,  // ISO-8601
+    pub vault_category: &'a str,
 }
 
 /// Build a one-row Arrow IPC batch from document metadata.
@@ -246,6 +249,7 @@ pub fn upload_meta_to_ipc(meta: &UploadMeta<'_>) -> Result<Vec<u8>, String> {
     let mut week_b         = Int32Builder::with_capacity(1);
     let mut month_b        = Int32Builder::with_capacity(1);
     let mut year_b         = Int32Builder::with_capacity(1);
+    let mut vault_cat_b    = StringBuilder::with_capacity(1, meta.vault_category.len());
 
     doc_id_b.append_value(meta.doc_id);
     filename_b.append_value(meta.filename);
@@ -254,6 +258,7 @@ pub fn upload_meta_to_ipc(meta: &UploadMeta<'_>) -> Result<Vec<u8>, String> {
     status_b.append_value(meta.status);
     is_synced_b.append_value(false);
     needs_upload_b.append_value(true);
+    vault_cat_b.append_value(meta.vault_category);
 
     match parse_timestamp(meta.created_at) {
         Some((ms, day, week, month, year)) => {
@@ -285,6 +290,7 @@ pub fn upload_meta_to_ipc(meta: &UploadMeta<'_>) -> Result<Vec<u8>, String> {
         Arc::new(week_b.finish()),
         Arc::new(month_b.finish()),
         Arc::new(year_b.finish()),
+        Arc::new(vault_cat_b.finish()),
     ];
 
     let batch = RecordBatch::try_new(schema, columns)
@@ -296,6 +302,7 @@ pub fn upload_meta_to_ipc(meta: &UploadMeta<'_>) -> Result<Vec<u8>, String> {
 // ── Benchmark helper ──────────────────────────────────────────────────────
 
 /// Stats returned by `benchmark_serialization`.
+#[allow(dead_code)]
 #[derive(serde::Serialize, Clone)]
 pub struct SerializationStats {
     pub format:     String,
@@ -307,6 +314,7 @@ pub struct SerializationStats {
 
 /// Generate `n` synthetic Document records for benchmarking.
 /// Timestamps are spread across the last 180 days.
+#[allow(dead_code)]
 pub fn generate_synthetic_documents(n: usize) -> Vec<Document> {
     let content_types = ["image/jpeg", "image/png", "application/pdf", "video/mp4", "text/plain"];
     let statuses      = ["pending", "synced", "failed", "uploading"];
@@ -345,6 +353,7 @@ pub fn generate_synthetic_documents(n: usize) -> Vec<Document> {
             last_synced_at: Some(created_at.clone()),
             created_at:     created_at.clone(),
             updated_at:     created_at,
+            vault_category: "personal".into(),
         }
     }).collect()
 }

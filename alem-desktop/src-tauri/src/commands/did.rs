@@ -18,13 +18,6 @@ pub async fn store_server_did(
     did: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE local_identity
-         SET did = ?1, updated_at = datetime('now')
-         WHERE id = 'singleton'",
-        libsql::params![did],
-    ).await.map_err(|e| e.to_string())?;
-
+    state.lancedb.store_did(&did).await.map_err(|e| e.to_string())?;
     Ok(())
 }

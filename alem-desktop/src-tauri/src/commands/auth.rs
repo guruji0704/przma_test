@@ -1,6 +1,8 @@
 use tauri::State;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
+use arrow::array::Array;
+use arrow_array::StringArray;
 
 // ══════════════════════════════════════════════════════════════════════════
 // Response Structs
@@ -31,32 +33,20 @@ pub struct RegisterResponse {
 }
 
 #[derive(Serialize)]
+pub struct GenericResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Serialize)]
 pub struct LoginResponse {
     pub success: bool,
     pub did: Option<String>,
     pub access_token: Option<String>,
 }
 
-#[derive(Serialize)]
-pub struct GenericResponse {
-    pub success: bool,
-    pub message: String,
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// Helper
-// ══════════════════════════════════════════════════════════════════════════
-
-async fn get_server_url(_conn: &libsql::Connection) -> String {
-    // DIAGNOSTIC OVERRIDE: Unconditionally use the remote server
-    "http://172.235.17.68:4201".to_string()
-}
-
-fn get_text(row: &libsql::Row, idx: i32) -> String {
-    match row.get_value(idx).ok() {
-        Some(libsql::Value::Text(s)) => s,
-        _ => String::new(),
-    }
+async fn get_server_url(db: &crate::db::lancedb::LanceDBManager) -> String {
+    db.get_server_url().await.unwrap_or(None).unwrap_or_else(|| "http://172.235.18.126:4201".to_string())
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -65,13 +55,12 @@ fn get_text(row: &libsql::Row, idx: i32) -> String {
 
 #[tauri::command]
 pub async fn get_captcha(state: State<'_, AppState>) -> Result<CaptchaResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .get(format!("{}/api/v1/pleroma/captcha", server_url))
         .send().await
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(|e| format!("Network error: {}. Please check your internet connection and server URL.", e))?;
 
     if !resp.status().is_success() {
         return Err(format!("Server error: {}", resp.status()));
@@ -97,8 +86,7 @@ pub async fn register_account(
     captcha_token: String,
     state: State<'_, AppState>,
 ) -> Result<RegisterResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     log::info!("Registering: {} @ {}", nickname, server_url);
 
@@ -112,7 +100,7 @@ pub async fn register_account(
             "captcha_token":    captcha_token,
         }))
         .send().await
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(|e| format!("Network error: {}. Please check your internet connection and server URL.", e))?;
 
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
@@ -147,8 +135,7 @@ pub async fn verify_email(
     code: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/verify_email", server_url))
@@ -157,7 +144,7 @@ pub async fn verify_email(
             "code": code,
         }))
         .send().await
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(|e| format!("Network error: {}. Please check your internet connection and server URL.", e))?;
 
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
@@ -178,14 +165,13 @@ pub async fn resend_otp(
     user_id: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/resend_otp", server_url))
         .json(&serde_json::json!({ "user_id": user_id }))
         .send().await
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(|e| format!("Network error: {}. Please check your internet connection and server URL.", e))?;
 
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
@@ -206,20 +192,18 @@ pub async fn forgot_password(
     email: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/forgot_password", server_url))
         .json(&serde_json::json!({ "email": email }))
         .send().await
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(|e| format!("Network error: {}. Please check your internet connection and server URL.", e))?;
 
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     let result: ApiMessageResponse = serde_json::from_str(&body).unwrap_or(ApiMessageResponse { message: None, error: Some(body.clone()), user_id: None, email: None });
 
-    // Always returns 200 OK with generic message to prevent enumeration, according to controller logic
     Ok(GenericResponse {
         success: status.is_success(),
         message: result.message.unwrap_or("If that email is registered, a reset link has been sent.".to_string()),
@@ -234,8 +218,7 @@ pub async fn reset_password(
     confirm: String,
     state: State<'_, AppState>,
 ) -> Result<GenericResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/v1/account/reset_password", server_url))
@@ -246,7 +229,7 @@ pub async fn reset_password(
             "password_confirmation": confirm
         }))
         .send().await
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(|e| format!("Network error: {}. Please check your internet connection and server URL.", e))?;
 
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
@@ -264,20 +247,14 @@ pub async fn reset_password(
 
 #[tauri::command]
 pub async fn get_stored_did(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
-    let mut rows = conn
-        .query("SELECT did FROM local_identity WHERE id = 'singleton'", ())
-        .await.map_err(|e| e.to_string())?;
-
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        match row.get_value(0).ok() {
-            Some(libsql::Value::Text(s)) if !s.is_empty() => Ok(Some(s)),
-            _ => Ok(None),
+    if let Ok(Some(batch)) = state.lancedb.get_identity().await {
+        let col = batch.column(1).as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| "Invalid identity schema".to_string())?;
+        if col.len() > 0 && !col.is_null(0) {
+            return Ok(Some(col.value(0).to_string()));
         }
-    } else {
-        Ok(None)
     }
+    Ok(None)
 }
 
 #[tauri::command]
@@ -286,8 +263,7 @@ pub async fn login(
     password: String,
     state: State<'_, AppState>,
 ) -> Result<LoginResponse, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let server_url = get_server_url(&conn).await;
+    let server_url = get_server_url(&state.lancedb).await;
 
     log::info!("Login: {} @ {}", identifier, server_url);
 
@@ -301,7 +277,7 @@ pub async fn login(
             "password":   password,
         }))
         .send().await
-        .map_err(|e| format!("Network error: {}", e))?;
+        .map_err(|e| format!("Network error: {}. Please check your internet connection and server URL.", e))?;
 
     if !token_resp.status().is_success() {
         let status = token_resp.status();
@@ -312,8 +288,6 @@ pub async fn login(
 
     let token_data: serde_json::Value = token_resp.json().await
         .map_err(|e| format!("Failed to parse token response: {}", e))?;
-
-    log::info!("Token response: {}", token_data);
 
     let access_token = token_data["access_token"]
         .as_str()
@@ -352,30 +326,38 @@ pub async fn login(
 
     let user_id = did.splitn(3, ':').nth(2).unwrap_or(&identifier).to_string();
 
-    let _sqld_url = token_data["sync_config"]["sqld_url"].as_str().map(|s| s.to_string());
-    let _s3_bucket = token_data["sync_config"]["s3_bucket"].as_str().map(|s| s.to_string());
-    let _s3_prefix = token_data["sync_config"]["s3_prefix"].as_str().map(|s| s.to_string());
 
     log::info!("Login OK  username={} did={} user_id={}", username, did, user_id);
 
-    conn.execute(
-        "INSERT INTO local_identity (
-            id, did, user_id, username, access_token, server_url, updated_at
-         ) VALUES (
-            'singleton', ?, ?, ?, ?, ?, datetime('now')
-         )
-         ON CONFLICT(id) DO UPDATE SET
-            did          = excluded.did,
-            user_id      = excluded.user_id,
-            username     = excluded.username,
-            access_token = excluded.access_token,
-            server_url   = excluded.server_url,
-            updated_at   = excluded.updated_at",
-        libsql::params![did.clone(), user_id, username, access_token.clone(), server_url],
-    )
-    .await
-    .map_err(|e| format!("Failed to save credentials: {}", e))?;
-    log::info!("Credentials saved");
+    // Also try keyring as secondary (best-effort, don't fail login if it errors)
+    let _ = crate::vault::save_token_to_keyring(&access_token);
+
+    use arrow::array::{RecordBatch, StringArray};
+    use std::sync::Arc;
+    let schema = crate::db::lancedb::LanceDBManager::identity_schema();
+    
+    let batch = RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(vec!["singleton"])),
+        Arc::new(StringArray::from(vec![did.clone()])),
+        Arc::new(StringArray::from(vec![user_id])),
+        Arc::new(StringArray::from(vec![username])),
+        Arc::new(StringArray::from(vec![None as Option<&str>])), // email
+        Arc::new(StringArray::from(vec![server_url])),
+        Arc::new(StringArray::from(vec![None as Option<&str>])), // last_sync_at
+        Arc::new(StringArray::from(vec![None as Option<&str>])), // vault_key
+        Arc::new(StringArray::from(vec![None as Option<&str>])), // key_salt
+        Arc::new(StringArray::from(vec![access_token.clone()])), // access_token ← new
+    ]).map_err(|e| e.to_string())?;
+
+    state.lancedb.save_identity(batch).await.map_err(|e| e.to_string())?;
+    log::info!("✅ Credentials + access_token saved to LanceDB");
+
+    // Refresh the vault_key in AppState for the new user
+    let new_key = crate::vault::load_or_generate_key_lancedb(&state.lancedb)
+        .await
+        .map_err(|e| format!("Failed to reload vault key: {}", e))?;
+    *state.vault_key.write().await = new_key;
+    log::info!("🔐 Vault key refreshed in AppState");
 
     Ok(LoginResponse {
         success:      true,
@@ -386,69 +368,72 @@ pub async fn login(
 
 #[tauri::command]
 pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
-    log::info!("Logout");
+    log::info!("🚪 [Logout] Initiated");
+    if let Err(e) = crate::vault::delete_token_from_keyring() {
+        log::warn!("🚪 [Logout] Keychain token delete failed (ignoring): {}", e);
+    }
+    
+    state.lancedb.logout().await.map_err(|e| {
+        log::error!("🚪 [Logout] LanceDB logout failed: {}", e);
+        e.to_string()
+    })?;
 
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "UPDATE local_identity SET
-            did          = NULL,
-            user_id      = NULL,
-            username     = NULL,
-            email        = NULL,
-            access_token = NULL,
-            sqld_url     = NULL,
-            s3_bucket    = NULL,
-            s3_prefix    = NULL,
-            last_sync_at = NULL,
-            updated_at   = datetime('now')
-         WHERE id = 'singleton'",
-        (),
-    )
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
-
-    conn.execute("DELETE FROM documents", ())
-        .await
-        .map_err(|e| format!("Failed to clear documents: {}", e))?;
-
-    log::info!("Logout successful and local data cleared");
+    log::info!("🚪 [Logout] Successful - token cleared and database reset");
     Ok(())
 }
 
-/// Returns the stored access_token from local_identity so the frontend
-/// can use it for direct fetch() calls (e.g. analytics test in DevTools).
 #[tauri::command]
-pub async fn get_local_token(
-    state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    let mut rows = conn
-        .query("SELECT access_token FROM local_identity WHERE id = 'singleton'", ())
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        if let Ok(libsql::Value::Text(t)) = row.get_value(0) {
-            return Ok(Some(t));
-        }
-    }
-    Ok(None)
+pub async fn clear_local_data(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    log::info!("🔴 HARD RESET: Clearing all local data...");
+    state.lancedb.logout().await.map_err(|e| e.to_string())?;
+    
+    // Clear the vault_key in memory too
+    *state.vault_key.write().await = crate::vault::VaultKey::default();
+    
+    log::info!("✅ Local data wiped clean.");
+    Ok(())
 }
 
-/// Overwrite the stored server_url in local_identity.
-/// Use this to switch between remote server and localhost for local dev.
+#[derive(Serialize)]
+pub struct UserInfo {
+    pub username: String,
+    pub did: String,
+}
+
+#[tauri::command]
+pub async fn get_current_user(state: State<'_, AppState>) -> Result<UserInfo, String> {
+    if let Ok(Some(batch)) = state.lancedb.get_identity().await {
+        let name_col = batch.column(3).as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| "Invalid identity schema".to_string())?;
+        let did_col = batch.column(1).as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| "Invalid identity schema".to_string())?;
+        
+        if name_col.len() > 0 && did_col.len() > 0 {
+            return Ok(UserInfo {
+                username: name_col.value(0).to_string(),
+                did:      did_col.value(0).to_string(),
+            });
+        }
+    }
+    Err("No user logged in".to_string())
+}
+
+#[tauri::command]
+pub async fn get_local_token(
+    _state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    match crate::vault::load_token_from_keyring() {
+        Ok(opt) => Ok(opt),
+        Err(e) => Err(e),
+    }
+}
+
 #[tauri::command]
 pub async fn update_server_url(
     url: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conn = crate::db::connect(&state.db).await.map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO local_identity (id, server_url)
-         VALUES ('singleton', ?)
-         ON CONFLICT(id) DO UPDATE SET server_url = excluded.server_url",
-        libsql::params![url.clone()],
-    ).await.map_err(|e| e.to_string())?;
-    log::info!("[Auth] Server URL updated to: {}", url);
+    state.lancedb.update_server_url(&url).await.map_err(|e| e.to_string())?;
+    log::info!("[Auth] Server URL updated in LanceDB to: {}", url);
     Ok(())
 }

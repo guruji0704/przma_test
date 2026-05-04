@@ -26,13 +26,16 @@
 
 pub mod epoch;
 pub mod przma_vault;
+pub mod cas;
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
 use argon2::{Argon2, Algorithm, Version, Params};
+use lancedb::{connect, connection::Connection, Table};
 use keyring::Entry;
+use arrow_array::{StringArray, Array};
 use base64::Engine;
 use hkdf::Hkdf;
 use rand::RngCore;
@@ -323,6 +326,7 @@ const ARGON2_PARALLELISM: u32 = 4;
 
 // ── VaultKey ──────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Default)]
 pub struct VaultKey([u8; 32]);
 
 impl VaultKey {
@@ -383,7 +387,48 @@ impl VaultKey {
             Err(e) => Err(format!("Keychain load failed: {}", e)),
         }
     }
+}
 
+// ── Access-Token Keychain (separate entry from vault_key) ─────────────────
+const TOKEN_KEYRING_ACCOUNT: &str = "access-token";
+
+/// Persist the access token to the OS keychain.
+/// Never store in plaintext on disk.
+pub fn save_token_to_keyring(token: &str) -> Result<(), String> {
+    let entry = Entry::new(KEYRING_SERVICE, TOKEN_KEYRING_ACCOUNT)
+        .map_err(|e| format!("Keychain entry create failed: {}", e))?;
+    entry.set_password(token)
+        .map_err(|e| format!("Keychain token save failed: {}", e))?;
+    log::info!("🔐 [Token] Access token saved to OS keychain");
+    Ok(())
+}
+
+/// Load the access token from the OS keychain.
+/// Returns `Ok(None)` if not found (user not logged in or new device).
+pub fn load_token_from_keyring() -> Result<Option<String>, String> {
+    let entry = Entry::new(KEYRING_SERVICE, TOKEN_KEYRING_ACCOUNT)
+        .map_err(|e| format!("Keychain entry create failed: {}", e))?;
+    match entry.get_password() {
+        Ok(token) => {
+            log::info!("🔐 [Token] Access token loaded from OS keychain");
+            Ok(Some(token))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Keychain token load failed: {}", e)),
+    }
+}
+
+/// Delete the access token from the OS keychain (on logout).
+pub fn delete_token_from_keyring() -> Result<(), String> {
+    let entry = Entry::new(KEYRING_SERVICE, TOKEN_KEYRING_ACCOUNT)
+        .map_err(|e| format!("Keychain entry create failed: {}", e))?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Keychain token delete failed: {}", e)),
+    }
+}
+
+impl VaultKey {
     /// Restore a key from a base64 string (legacy SQLite storage).
     pub fn from_b64(s: &str) -> Result<Self, String> {
         let bytes = base64::engine::general_purpose::STANDARD
@@ -578,17 +623,15 @@ pub fn decrypt_file(vault_path: &Path, key: &VaultKey) -> Result<Vec<u8>, String
     Ok(plaintext)
 }
 
-// ── Key bootstrap ─────────────────────────────────────────────────────────
-
 /// Loads the vault key using a priority chain, or generates + stores a new one.
 ///
 /// Priority:
 ///   1. OS keychain (Windows Credential Store / macOS Keychain / Linux Secret Service)
-///   2. SQLite `local_identity.vault_key` — legacy path; migrated to keychain on first load
-///   3. Generate new random 256-bit key → save to keychain
+///   2. LanceDB `local_identity.vault_key` — fallback; migrated to keychain on first load
+///   3. Generate new random 256-bit key → save to keychain + LanceDB
 ///
 /// Called once at app startup before `AppState` is created.
-pub async fn load_or_generate_key(db: &libsql::Database) -> Result<VaultKey, String> {
+pub async fn load_or_generate_key_lancedb(db: &crate::db::lancedb::LanceDBManager) -> Result<VaultKey, String> {
     // ── Step 1: OS keychain ───────────────────────────────────────────────
     match VaultKey::load_from_keyring() {
         Ok(Some(key)) => return Ok(key),
@@ -596,28 +639,21 @@ pub async fn load_or_generate_key(db: &libsql::Database) -> Result<VaultKey, Str
         Err(e) => log::warn!("🔐 [Vault] Keychain unavailable (non-fatal): {}", e),
     }
 
-    // ── Step 2: SQLite legacy path (migrate to keychain) ─────────────────
-    let conn = crate::db::connect(db).await.map_err(|e| e.to_string())?;
-
-    let mut rows = conn
-        .query(
-            "SELECT vault_key FROM local_identity WHERE id = 'singleton'",
-            (),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
-        if let Ok(libsql::Value::Text(b64)) = row.get_value(0) {
+    // ── Step 2: LanceDB fallback path ─────────────────
+    if let Ok(Some(batch)) = db.get_identity().await {
+        // Extract vault_key from column index 7 (matches identity_schema in lancedb.rs)
+        let key_col = batch.column(7).as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| "Invalid identity table structure".to_string())?;
+        
+        if key_col.len() > 0 && !key_col.is_null(0) {
+            let b64 = key_col.value(0);
             if !b64.is_empty() {
-                let key = VaultKey::from_b64(&b64)?;
-                log::info!("🔐 [Vault] Key found in SQLite — migrating to OS keychain");
+                let key = VaultKey::from_b64(b64)?;
+                log::info!("🔐 [Vault] Key found in LanceDB — migrating to OS keychain");
 
-                // Copy key to keychain; keep SQLite as backup (never wipe it —
-                // if keychain is lost, SQLite is the only recovery path).
                 match key.save_to_keyring() {
-                    Ok(_) => log::info!("🔐 [Vault] Key copied to OS keychain (SQLite backup retained)"),
-                    Err(e) => log::warn!("🔐 [Vault] Keychain copy failed (SQLite remains authoritative): {}", e),
+                    Ok(_) => log::info!("🔐 [Vault] Key copied to OS keychain (LanceDB backup retained)"),
+                    Err(e) => log::warn!("🔐 [Vault] Keychain copy failed (LanceDB remains authoritative): {}", e),
                 }
 
                 return Ok(key);
@@ -625,23 +661,21 @@ pub async fn load_or_generate_key(db: &libsql::Database) -> Result<VaultKey, Str
         }
     }
 
-    // ── Step 3: Generate a new key — save to BOTH keychain and SQLite ────
+    // ── Step 3: Generate a new key — save to BOTH keychain and LanceDB ────
     let key = VaultKey::generate();
 
-    // Always persist in SQLite first (guaranteed local storage).
-    conn.execute(
-        "INSERT INTO local_identity (id, vault_key)
-         VALUES ('singleton', ?)
-         ON CONFLICT(id) DO UPDATE SET vault_key = excluded.vault_key",
-        libsql::params![key.to_b64()],
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    // Prepare a RecordBatch for the singleton identity
+    let _schema = crate::db::lancedb::LanceDBManager::identity_schema();
+    // Actually, I'll just use a helper in lancedb.rs to build the singleton batch.
+    
+    // For now, let's assume we have a way to save just the key.
+    // I'll update lancedb.rs again to have a specific `save_vault_key` helper to avoid complexity here.
+    db.save_vault_key(&key.to_b64()).await.map_err(|e| e.to_string())?;
 
-    // Also try keychain (faster lookup on subsequent starts).
+    // Also try keychain
     match key.save_to_keyring() {
-        Ok(_)  => log::info!("🔐 [Vault] New key saved to SQLite + OS keychain"),
-        Err(e) => log::warn!("🔐 [Vault] Keychain save failed (SQLite only): {}", e),
+        Ok(_)  => log::info!("🔐 [Vault] New key saved to LanceDB + OS keychain"),
+        Err(e) => log::warn!("🔐 [Vault] Keychain save failed (LanceDB only): {}", e),
     }
 
     Ok(key)
