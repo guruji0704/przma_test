@@ -137,6 +137,7 @@ defmodule Alem.Home.Uploader do
   defp insert_dedup_ref(doc, cas_obj, ns_key, actor_did) do
     try do
       Repo.insert!(%Alem.Cas.CasDedupRef{
+        tenant_id:      ns_key,
         namespace_key:  ns_key,
         actor_did:      actor_did,
         content_hash:   cas_obj.content_hash,

@@ -1,5 +1,5 @@
 nohup: ignoring input
-=CRASH REPORT==== 30-Apr-2026::16:48:30.513642 ===
+=CRASH REPORT==== 4-May-2026::06:12:48.203830 ===
   crasher:
     initial call: prim_tty:reader/1
     pid: <0.69.0>
@@ -18,7 +18,7 @@ nohup: ignoring input
     reductions: 155
   neighbours:
 
-=CRASH REPORT==== 30-Apr-2026::16:48:30.513642 ===
+=CRASH REPORT==== 4-May-2026::06:12:48.203830 ===
   crasher:
     initial call: prim_tty:reader/1
     pid: <0.69.0>
@@ -37,7 +37,6 @@ nohup: ignoring input
     reductions: 155
   neighbours:
 
-Compiling 1 file (.ex)
     warning: variable "arrow_b64" is unused (if the variable is not meant to be used, prefix it with an underscore)
     │
  58 │       arrow_b64 = Map.get(params, "arrow_ipc", "")
@@ -344,7 +343,7 @@ You don't need to worry! This is an optional feature used during development to
 refresh your browser when you save files and it does not affect production.
 
 [info] [SyncManager] Starting sync manager
-[debug] QUERY OK source="epoch_keys" db=2.0ms decode=0.9ms queue=6.2ms idle=0.0ms
+[debug] QUERY OK source="epoch_keys" db=7.6ms decode=1.3ms queue=79.2ms idle=0.0ms
 SELECT e0."epoch_id", e0."public_key_b64", e0."enc_private_key_b64", e0."started_at", e0."expires_at", e0."grace_until", e0."is_current" FROM "epoch_keys" AS e0 WHERE (e0."is_current" = TRUE) ORDER BY e0."epoch_id" DESC LIMIT 1 []
 [90m↳ Alem.Vault.EpochKeyManager.load_current_epoch_from_pg/0, at: lib/alem/vault/epoch_key_manager.ex:169[0m
 [info] [EpochKeyManager] Loaded epoch_id=228 from PostgreSQL
@@ -354,383 +353,625 @@ SELECT e0."epoch_id", e0."public_key_b64", e0."enc_private_key_b64", e0."started
 [info] Running AlemWeb.Endpoint with Bandit 1.10.0 at 0.0.0.0:4000 (http)
 [info] Access AlemWeb.Endpoint at http://localhost:4000
 [watch] build finished, watching for changes...
-[info] CONNECTED TO Phoenix.LiveView.Socket in 259µs
-  Transport: :longpoll
-  Serializer: Phoenix.Socket.V2.JSONSerializer
-  Parameters: %{"_csrf_token" => "CnsSVgtyDRs_CHgOIlMHMUAfBgQ3Zj4to-DffFJwI_3oNfBy9HbNeUYh", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "2", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
-[debug] MOUNT AlemWeb.UserLive
-  Parameters: %{}
-  Session: %{"_csrf_token" => "eVV0m4GlvWKal5EHyWdJR3gE", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777567339}
-[debug] QUERY OK source="users" db=1.5ms queue=2.3ms idle=641.3ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
-[debug] QUERY OK source="documents" db=1.3ms queue=1.4ms idle=645.6ms
-SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
-[debug] QUERY OK source="documents" db=1.2ms queue=1.3ms idle=648.7ms
-SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
-[debug] QUERY OK source="documents" db=0.9ms queue=1.4ms idle=651.4ms
-SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
-[debug] QUERY OK source="documents" db=1.9ms queue=1.5ms idle=654.0ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
-[debug] QUERY OK source="sessions" db=1.2ms queue=2.0ms idle=672.5ms
-SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
-[debug] Replied in 62ms
 
 Rebuilding...
 
-Done in 809ms.
+Done in 812ms.
 [info] GET /panel
 [debug] Processing with AlemWeb.UserLive.index/2
   Parameters: %{}
   Pipelines: [:browser, :user_layout, :user_auth]
-[debug] QUERY OK source="users" db=4.9ms idle=1332.3ms
+[info] Sent 302 in 46ms
+[debug] Phoenix.Router halted in :user_auth/2
+[info] GET /panel/login
+[debug] Processing with AlemWeb.UserSessionController.new/2
+  Parameters: %{}
+  Pipelines: [:browser]
+[info] Sent 200 in 15ms
+[info] POST /panel/login
+[debug] Processing with AlemWeb.UserSessionController.create/2
+  Parameters: %{"_csrf_token" => "KCd9IBU0PAEzEkIjGBgcIngZElk7HQphRq7vzRvEK_vdSmOaNvK-bLyP", "email" => "gurujib07042002@gmail.com", "password" => "[FILTERED]"}
+  Pipelines: [:browser]
+[debug] QUERY OK source="users" db=3.1ms queue=3.2ms idle=1304.7ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."email" = $1) ["gurujib07042002@gmail.com"]
+[90m↳ AlemWeb.UserSessionController.create/2, at: lib/alem_web/live/user_session_controller.ex:16[0m
+[info] Sent 302 in 510ms
+[info] GET /panel
+[debug] Processing with AlemWeb.UserLive.index/2
+  Parameters: %{}
+  Pipelines: [:browser, :user_layout, :user_auth]
+[debug] QUERY OK source="users" db=0.9ms queue=1.5ms idle=1876.5ms
 SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
-[debug] QUERY OK source="users" db=3.1ms idle=1341.2ms
+[debug] QUERY OK source="users" db=3.7ms idle=1900.6ms
 SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
-[debug] QUERY OK source="documents" db=1.2ms idle=1344.6ms
+[debug] QUERY OK source="documents" db=7.1ms queue=5.3ms idle=1911.5ms
 SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
-[debug] QUERY OK source="documents" db=3.3ms idle=1345.9ms
+[debug] QUERY OK source="documents" db=2.7ms queue=1.9ms idle=1924.2ms
 SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
-[debug] QUERY OK source="documents" db=1.5ms queue=0.1ms idle=1349.4ms
+[debug] QUERY OK source="documents" db=2.0ms queue=3.2ms idle=1929.1ms
 SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
-[debug] QUERY OK source="documents" db=2.9ms idle=1351.1ms
+[debug] QUERY OK source="documents" db=1.5ms queue=2.0ms idle=643.4ms
 SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
-[debug] QUERY OK source="sessions" db=1.3ms idle=1354.9ms
+[debug] QUERY OK source="sessions" db=2.8ms queue=1.7ms idle=649.4ms
 SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
-[info] Sent 200 in 54ms
-[info] CONNECTED TO Phoenix.LiveView.Socket in 28µs
+[info] Sent 200 in 109ms
+[info] CONNECTED TO Phoenix.LiveView.Socket in 31µs
   Transport: :websocket
   Serializer: Phoenix.Socket.V2.JSONSerializer
-  Parameters: %{"_csrf_token" => "FwYRRypdFQIVAQQvW3cTJy06Mz8eaVYxrPGwGiRncVON7BVoTmWuLZ1t", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+  Parameters: %{"_csrf_token" => "NSMEHxccGSJIJkY9B0ERM11ZPxIPJAljOuNIxzSf0krzL4Bpk6ffVuzR", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
 [debug] MOUNT AlemWeb.UserLive
   Parameters: %{}
-  Session: %{"_csrf_token" => "eVV0m4GlvWKal5EHyWdJR3gE", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777567339}
-[debug] QUERY OK source="users" db=5.1ms queue=0.1ms idle=1202.6ms
+  Session: %{"_csrf_token" => "zVJVofJDxM4GKuSC6oYtYQs1", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875237}
+[debug] QUERY OK source="users" db=1.6ms idle=997.2ms
 SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
-[debug] QUERY OK source="documents" db=1.8ms idle=204.7ms
+[debug] QUERY OK source="documents" db=3.3ms idle=443.0ms
 SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
-[debug] QUERY OK source="documents" db=1.7ms idle=207.0ms
+[debug] QUERY OK source="documents" db=2.5ms idle=445.8ms
 SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
-[debug] QUERY OK source="documents" db=2.9ms idle=209.0ms
+[debug] QUERY OK source="documents" db=1.6ms idle=437.4ms
 SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
-[debug] QUERY OK source="documents" db=2.0ms queue=0.1ms idle=212.5ms
+[debug] QUERY OK source="documents" db=1.8ms idle=413.9ms
 SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
-[debug] QUERY OK source="sessions" db=1.6ms idle=215.0ms
+[debug] QUERY OK source="sessions" db=1.4ms idle=396.3ms
 SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
-[debug] Replied in 17ms
+[debug] Replied in 15ms
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
   Parameters: %{"page" => "files", "value" => ""}
-[debug] Replied in 381µs
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "958f136c-6596-4bc4-b292-9cf5eabb5ce6"}
-[debug] QUERY OK source="documents" db=1.1ms queue=1.4ms idle=1361.0ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["958f136c-6596-4bc4-b292-9cf5eabb5ce6", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 22ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "a12494fa-4008-420d-be84-8ba0c466c5ef"}
-[debug] QUERY OK source="documents" db=2.1ms idle=1582.3ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["a12494fa-4008-420d-be84-8ba0c466c5ef", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 3ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "a12494fa-4008-420d-be84-8ba0c466c5ef"}
-[debug] QUERY OK source="documents" db=0.7ms idle=1538.5ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["a12494fa-4008-420d-be84-8ba0c466c5ef", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 1ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "a12494fa-4008-420d-be84-8ba0c466c5ef"}
-[debug] QUERY OK source="documents" db=2.5ms idle=1351.6ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["a12494fa-4008-420d-be84-8ba0c466c5ef", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 3ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "e0850c29-a9ee-4190-af45-9dadd9267857"}
-[debug] QUERY OK source="documents" db=0.8ms idle=1167.2ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["e0850c29-a9ee-4190-af45-9dadd9267857", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 1ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "e0850c29-a9ee-4190-af45-9dadd9267857"}
-[debug] QUERY OK source="documents" db=0.7ms idle=1025.8ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["e0850c29-a9ee-4190-af45-9dadd9267857", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 1ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "e0850c29-a9ee-4190-af45-9dadd9267857"}
-[debug] QUERY OK source="documents" db=1.4ms idle=1010.8ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["e0850c29-a9ee-4190-af45-9dadd9267857", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 2ms
-[info] GET /studio/e0850c29-a9ee-4190-af45-9dadd9267857
-[debug] Processing with AlemWeb.StudioLive.edit/2
-  Parameters: %{"id" => "e0850c29-a9ee-4190-af45-9dadd9267857"}
+[debug] Replied in 982µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "upload", "value" => ""}
+[debug] Replied in 250µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "profile", "value" => ""}
+[debug] Replied in 214µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "devices", "value" => ""}
+[debug] Replied in 174µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 181µs
+[info] GET /studio
+[debug] Processing with AlemWeb.StudioLive.new/2
+  Parameters: %{}
   Pipelines: [:browser, :studio_layout, :user_auth]
-[debug] QUERY OK source="users" db=2.3ms idle=1759.1ms
+[debug] QUERY OK source="users" db=15.2ms idle=1975.7ms
 SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
 [90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
-[debug] QUERY OK source="users" db=1.9ms idle=1769.2ms
+[debug] QUERY OK source="users" db=2.7ms idle=1997.6ms
 SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:33[0m
-[debug] QUERY OK source="documents" db=3.2ms idle=1771.7ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["e0850c29-a9ee-4190-af45-9dadd9267857", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:39[0m
-[info] Sent 200 in 17ms
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[info] Sent 200 in 26ms
+[info] CONNECTED TO Phoenix.LiveView.Socket in 47µs
+  Transport: :websocket
+  Serializer: Phoenix.Socket.V2.JSONSerializer
+  Parameters: %{"_csrf_token" => "CTgvHF8HPAdJeUMPHkVqNUQ4HCRvHQtesneJ0avC14wHU09vrWEP6Lxo", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+[debug] MOUNT AlemWeb.StudioLive
+  Parameters: %{}
+  Session: %{"_csrf_token" => "zVJVofJDxM4GKuSC6oYtYQs1", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875237}
+[debug] QUERY OK source="users" db=6.0ms idle=1134.4ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[debug] Replied in 6ms
+[info] GET /panel
+[debug] Processing with AlemWeb.UserLive.index/2
+  Parameters: %{}
+  Pipelines: [:browser, :user_layout, :user_auth]
+[info] Sent 302 in 269µs
+[debug] Phoenix.Router halted in :user_auth/2
+[info] GET /panel/login
+[debug] Processing with AlemWeb.UserSessionController.new/2
+  Parameters: %{}
+  Pipelines: [:browser]
+[info] Sent 200 in 347µs
+[info] GET /panel/login
+[debug] Processing with AlemWeb.UserSessionController.new/2
+  Parameters: %{}
+  Pipelines: [:browser]
+[info] Sent 200 in 518µs
+[info] POST /panel/login
+[debug] Processing with AlemWeb.UserSessionController.create/2
+  Parameters: %{"_csrf_token" => "HBEaVS8PBiFBESwWJz1QHyYlFH8-IQUxTCUlAV1R5sFBr_dFSrFFrJls", "email" => "gurujib07042002@gmail.com", "password" => "[FILTERED]"}
+  Pipelines: [:browser]
+[debug] QUERY OK source="users" db=2.0ms idle=1601.3ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."email" = $1) ["gurujib07042002@gmail.com"]
+[90m↳ AlemWeb.UserSessionController.create/2, at: lib/alem_web/live/user_session_controller.ex:16[0m
+[info] Sent 302 in 524ms
+[info] GET /panel
+[debug] Processing with AlemWeb.UserLive.index/2
+  Parameters: %{}
+  Pipelines: [:browser, :user_layout, :user_auth]
+[debug] QUERY OK source="users" db=2.2ms idle=1476.2ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
+[debug] QUERY OK source="users" db=1.4ms idle=1478.7ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
+[debug] QUERY OK source="documents" db=1.1ms idle=1480.3ms
+SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
+[debug] QUERY OK source="documents" db=1.6ms idle=1481.5ms
+SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
+[debug] QUERY OK source="documents" db=1.6ms idle=885.1ms
+SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
+[debug] QUERY OK source="documents" db=2.4ms idle=886.5ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
+[debug] QUERY OK source="sessions" db=1.6ms idle=884.2ms
+SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
+[info] Sent 200 in 14ms
+[info] CONNECTED TO Phoenix.LiveView.Socket in 20µs
+  Transport: :websocket
+  Serializer: Phoenix.Socket.V2.JSONSerializer
+  Parameters: %{"_csrf_token" => "JWIHQypuZSoMWz4CLRUCAAYvJ1QFGFodm0HzD7RYx9TVxw6YsxumIs3_", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+[debug] MOUNT AlemWeb.UserLive
+  Parameters: %{}
+  Session: %{"_csrf_token" => "HRO9nY7stbjTUb4YuWR9LkiB", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875432}
+[debug] QUERY OK source="users" db=0.7ms idle=388.5ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
+[debug] QUERY OK source="documents" db=0.8ms idle=389.4ms
+SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
+[debug] QUERY OK source="documents" db=0.5ms idle=390.5ms
+SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
+[debug] QUERY OK source="documents" db=1.6ms idle=391.2ms
+SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
+[debug] QUERY OK source="documents" db=1.6ms idle=393.0ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
+[debug] QUERY OK source="sessions" db=2.1ms idle=395.1ms
+SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
+[debug] Replied in 9ms
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "files", "value" => ""}
+[debug] Replied in 70µs
+[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
+  Parameters: %{"sort" => "oldest", "value" => ""}
+[debug] Replied in 155µs
+[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
+  Parameters: %{"sort" => "az", "value" => ""}
+[debug] Replied in 179µs
+[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
+  Parameters: %{"sort" => "za", "value" => ""}
+[debug] Replied in 211µs
+[debug] HANDLE EVENT "search" in AlemWeb.UserLive
+  Parameters: %{"key" => "t", "value" => "t"}
+[debug] Replied in 176µs
+[debug] HANDLE EVENT "search" in AlemWeb.UserLive
+  Parameters: %{"key" => "o", "value" => "to"}
+[debug] Replied in 188µs
+[debug] HANDLE EVENT "search" in AlemWeb.UserLive
+  Parameters: %{"key" => "Backspace", "value" => "t"}
+[debug] Replied in 179µs
+[debug] HANDLE EVENT "search" in AlemWeb.UserLive
+  Parameters: %{"key" => "Backspace", "value" => ""}
+[debug] Replied in 207µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "files", "value" => ""}
+[debug] Replied in 174µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "upload", "value" => ""}
+[debug] Replied in 220µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 1ms
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "profile", "value" => ""}
+[debug] Replied in 194µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "devices", "value" => ""}
+[debug] Replied in 234µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "profile", "value" => ""}
+[debug] Replied in 191µs
+[info] GET /studio
+[debug] Processing with AlemWeb.StudioLive.new/2
+  Parameters: %{}
+  Pipelines: [:browser, :studio_layout, :user_auth]
+[debug] QUERY OK source="users" db=0.9ms idle=790.8ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
+[debug] QUERY OK source="users" db=0.4ms idle=792.3ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[info] Sent 200 in 4ms
+[info] CONNECTED TO Phoenix.LiveView.Socket in 46µs
+  Transport: :websocket
+  Serializer: Phoenix.Socket.V2.JSONSerializer
+  Parameters: %{"_csrf_token" => "HhgfDQg0BV4iDl1iFjBcFEA5a2F4HBp2VJP4fm2-Vl76CRhM5n9X4ws4", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+[debug] MOUNT AlemWeb.StudioLive
+  Parameters: %{}
+  Session: %{"_csrf_token" => "HRO9nY7stbjTUb4YuWR9LkiB", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875432}
+[debug] QUERY OK source="users" db=0.9ms idle=1134.2ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[debug] Replied in 1ms
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "image", "value" => ""}
+[debug] Replied in 198µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "audio", "value" => ""}
+[debug] Replied in 198µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "video", "value" => ""}
+[debug] Replied in 169µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "pdf", "value" => ""}
+[debug] Replied in 367µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "video", "value" => ""}
+[debug] Replied in 448µs
+[info] GET /panel
+[debug] Processing with AlemWeb.UserLive.index/2
+  Parameters: %{}
+  Pipelines: [:browser, :user_layout, :user_auth]
+[debug] QUERY OK source="users" db=0.6ms queue=0.2ms idle=603.5ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
+[debug] QUERY OK source="users" db=0.5ms queue=0.2ms idle=604.6ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
+[debug] QUERY OK source="documents" db=0.5ms queue=0.2ms idle=605.5ms
+SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
+[debug] QUERY OK source="documents" db=1.5ms idle=606.4ms
+SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
+[debug] QUERY OK source="documents" db=0.8ms idle=608.2ms
+SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
+[debug] QUERY OK source="documents" db=1.0ms idle=609.3ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
+[debug] QUERY OK source="sessions" db=1.0ms idle=610.7ms
+SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
+[info] Sent 200 in 9ms
+[info] CONNECTED TO Phoenix.LiveView.Socket in 19µs
+  Transport: :websocket
+  Serializer: Phoenix.Socket.V2.JSONSerializer
+  Parameters: %{"_csrf_token" => "IBx3eygwYgsmEBlnJQRjYCpua3MvBAsqhN8BFiUxRrs3pfW9_99Jcobh", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+[debug] MOUNT AlemWeb.UserLive
+  Parameters: %{}
+  Session: %{"_csrf_token" => "HRO9nY7stbjTUb4YuWR9LkiB", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875432}
+[debug] QUERY OK source="users" db=0.7ms idle=1993.2ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
+[debug] QUERY OK source="documents" db=4.3ms idle=1393.7ms
+SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
+[debug] QUERY OK source="documents" db=1.4ms idle=4.7ms
+SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
+[debug] QUERY OK source="documents" db=1.0ms idle=1.8ms
+SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
+[debug] QUERY OK source="documents" db=1.1ms idle=2.9ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
+[debug] QUERY OK source="sessions" db=2.3ms idle=4.3ms
+SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
+[debug] Replied in 12ms
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "files", "value" => ""}
+[debug] Replied in 232µs
+[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
+  Parameters: %{"sort" => "newest", "value" => ""}
+[debug] Replied in 200µs
+[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
+  Parameters: %{"sort" => "oldest", "value" => ""}
+[debug] Replied in 217µs
+[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
+  Parameters: %{"sort" => "newest", "value" => ""}
+[debug] Replied in 197µs
+[debug] HANDLE EVENT "filter" in AlemWeb.UserLive
+  Parameters: %{"filter" => "audio", "value" => ""}
+[debug] Replied in 247µs
+[info] GET /studio/92f4382a-d61e-4ecb-9d11-5083bae751dd
+[debug] Processing with AlemWeb.StudioLive.edit/2
+  Parameters: %{"id" => "92f4382a-d61e-4ecb-9d11-5083bae751dd"}
+  Pipelines: [:browser, :studio_layout, :user_auth]
+[debug] QUERY OK source="users" db=0.6ms idle=579.8ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
+[debug] QUERY OK source="users" db=0.6ms idle=580.2ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[debug] QUERY OK source="documents" db=0.4ms queue=0.7ms idle=581.2ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["92f4382a-d61e-4ecb-9d11-5083bae751dd", "ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:40[0m
+[info] Sent 200 in 32ms
 [info] CONNECTED TO Phoenix.LiveView.Socket in 18µs
   Transport: :websocket
   Serializer: Phoenix.Socket.V2.JSONSerializer
-  Parameters: %{"_csrf_token" => "UhEgZCECJhoSZy0QNHQ2P0ghDA8zByI87GvTL6avd0fqXAsw1vhEa4Ey", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+  Parameters: %{"_csrf_token" => "exh7YTojWAlDKFssZRJBCRMZHQw_WlE73J4XTzoz7J1x0puPfNO5s18y", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
 [debug] MOUNT AlemWeb.StudioLive
-  Parameters: %{"id" => "e0850c29-a9ee-4190-af45-9dadd9267857"}
-  Session: %{"_csrf_token" => "eVV0m4GlvWKal5EHyWdJR3gE", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777567339}
-[debug] QUERY OK source="users" db=1.6ms idle=1947.3ms
+  Parameters: %{"id" => "92f4382a-d61e-4ecb-9d11-5083bae751dd"}
+  Session: %{"_csrf_token" => "HRO9nY7stbjTUb4YuWR9LkiB", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875432}
+[debug] QUERY OK source="users" db=0.7ms idle=979.9ms
 SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:33[0m
-[debug] QUERY OK source="documents" db=1.1ms idle=1207.9ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["e0850c29-a9ee-4190-af45-9dadd9267857", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:39[0m
-[debug] Replied in 3ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "8a4a4f2c-ab2c-409c-9afd-dfa04a15dcd6"}
-[debug] QUERY OK source="documents" db=1.2ms idle=1424.8ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["8a4a4f2c-ab2c-409c-9afd-dfa04a15dcd6", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[debug] QUERY OK source="documents" db=0.9ms idle=980.8ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["92f4382a-d61e-4ecb-9d11-5083bae751dd", "ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:40[0m
 [debug] Replied in 2ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "895045fb-3c8b-4615-92ca-f7edba62a69f"}
-[debug] QUERY OK source="documents" db=1.3ms idle=1361.9ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["895045fb-3c8b-4615-92ca-f7edba62a69f", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 2ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=1.5ms idle=1491.1ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 2ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=2.6ms idle=1619.0ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 4ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=1.3ms idle=1832.1ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 2ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=0.9ms idle=1134.1ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 1ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=1.1ms idle=1662.2ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 2ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=0.8ms idle=1096.0ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 1ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=1.5ms idle=1975.7ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 2ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=1.2ms queue=0.2ms idle=1268.4ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 2ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "efa80791-823d-47b2-a299-e5dd0eb3510a"}
-[debug] QUERY OK source="documents" db=0.9ms idle=1696.3ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["efa80791-823d-47b2-a299-e5dd0eb3510a", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "video", "value" => ""}
+[debug] Replied in 191µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "document", "value" => ""}
+[debug] Replied in 207µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "image", "value" => ""}
+[debug] Replied in 197µs
+[info] GET /panel
+[debug] Processing with AlemWeb.UserLive.index/2
+  Parameters: %{}
+  Pipelines: [:browser, :user_layout, :user_auth]
+[debug] QUERY OK source="users" db=0.8ms idle=1813.8ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
+[debug] QUERY OK source="users" db=0.9ms idle=1814.9ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
+[debug] QUERY OK source="documents" db=0.8ms idle=1816.0ms
+SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
+[debug] QUERY OK source="documents" db=0.7ms idle=1816.9ms
+SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
+[debug] QUERY OK source="documents" db=0.8ms idle=1817.8ms
+SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
+[debug] QUERY OK source="documents" db=1.0ms idle=1818.7ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
+[debug] QUERY OK source="sessions" db=2.1ms idle=1820.0ms
+SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
+[info] Sent 200 in 9ms
+[info] CONNECTED TO Phoenix.LiveView.Socket in 19µs
+  Transport: :websocket
+  Serializer: Phoenix.Socket.V2.JSONSerializer
+  Parameters: %{"_csrf_token" => "cDM6fgorTUUgTwhjZk9GHAA7EFt4DRsh8auGdrz6T-b73-rEulBb4frc", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+[debug] MOUNT AlemWeb.UserLive
+  Parameters: %{}
+  Session: %{"_csrf_token" => "HRO9nY7stbjTUb4YuWR9LkiB", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875432}
+[debug] QUERY OK source="users" db=2.2ms queue=0.1ms idle=1152.0ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.mount/3, at: lib/alem_web/live/user_live.ex:12[0m
+[debug] QUERY OK source="documents" db=1.0ms idle=1153.9ms
+SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
+[debug] QUERY OK source="documents" db=1.5ms idle=1151.2ms
+SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
+[debug] QUERY OK source="documents" db=0.7ms idle=1151.8ms
+SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
+[debug] QUERY OK source="documents" db=1.6ms idle=1151.8ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
+[debug] QUERY OK source="sessions" db=0.6ms idle=1152.9ms
+SELECT s0."id", s0."device", s0."last_active_at", s0."inserted_at" FROM "sessions" AS s0 WHERE ((s0."user_id" = $1) AND (s0."revoked_at" IS NULL)) ORDER BY s0."last_active_at" DESC LIMIT 10 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_sessions/1, at: lib/alem_web/live/user_live.ex:72[0m
+[debug] Replied in 9ms
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "files", "value" => ""}
 [debug] Replied in 1ms
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
-  Parameters: %{"page" => "upload", "value" => ""}
-[debug] Replied in 227µs
-[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
-  Parameters: %{"page" => "profile", "value" => ""}
-[debug] Replied in 307µs
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 247µs
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
   Parameters: %{"page" => "devices", "value" => ""}
-[debug] Replied in 265µs
+[debug] Replied in 230µs
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
-  Parameters: %{"page" => "files", "value" => ""}
-[debug] Replied in 263µs
+  Parameters: %{"page" => "profile", "value" => ""}
+[debug] Replied in 180µs
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
   Parameters: %{"page" => "upload", "value" => ""}
-[debug] Replied in 330µs
+[debug] Replied in 427µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 1ms
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
   Parameters: %{"page" => "files", "value" => ""}
+[debug] Replied in 270µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 170µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "upload", "value" => ""}
+[debug] Replied in 266µs
+[info] GET /studio
+[debug] Processing with AlemWeb.StudioLive.new/2
+  Parameters: %{}
+  Pipelines: [:browser, :studio_layout, :user_auth]
+[debug] QUERY OK source="users" db=1.8ms idle=1607.0ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
+[debug] QUERY OK source="users" db=1.8ms idle=609.8ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[info] Sent 200 in 7ms
+[info] CONNECTED TO Phoenix.LiveView.Socket in 42µs
+  Transport: :websocket
+  Serializer: Phoenix.Socket.V2.JSONSerializer
+  Parameters: %{"_csrf_token" => "AhoMCCAITzc4KQRnYBV7Ej0eI0woOFspJHC1NQxDLKn35wOKHIqudS2k", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+[debug] MOUNT AlemWeb.StudioLive
+  Parameters: %{}
+  Session: %{"_csrf_token" => "HRO9nY7stbjTUb4YuWR9LkiB", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875432}
+[debug] QUERY OK source="users" db=1.6ms idle=830.2ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[debug] Replied in 2ms
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 1ms
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "files", "value" => ""}
+[debug] Replied in 291µs
+[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
+  Parameters: %{"id" => "4e25189d-f28c-4c1b-8a57-51ffe6012119"}
+[debug] QUERY OK source="documents" db=3.6ms idle=326.3ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["4e25189d-f28c-4c1b-8a57-51ffe6012119", "ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
+[debug] Replied in 7ms
+[debug] HANDLE EVENT "close_viewer" in AlemWeb.UserLive
+  Parameters: %{"value" => ""}
+[debug] Replied in 182µs
+[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
+  Parameters: %{"id" => "ba152917-a7ff-4bce-a700-f79bc1ee02c6"}
+[debug] QUERY OK source="documents" db=1.9ms idle=1125.8ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["ba152917-a7ff-4bce-a700-f79bc1ee02c6", "ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
+[debug] Replied in 2ms
+[debug] HANDLE EVENT "close_viewer" in AlemWeb.UserLive
+  Parameters: %{"value" => ""}
 [debug] Replied in 198µs
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
   Parameters: %{"page" => "home", "value" => ""}
-[debug] Replied in 349µs
+[debug] Replied in 175µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 180µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "profile", "value" => ""}
+[debug] Replied in 233µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "devices", "value" => ""}
+[debug] Replied in 246µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 205µs
+[info] GET /studio
+[debug] Processing with AlemWeb.StudioLive.new/2
+  Parameters: %{}
+  Pipelines: [:browser, :studio_layout, :user_auth]
+[debug] QUERY OK source="users" db=1.0ms idle=1053.1ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
+[debug] QUERY OK source="users" db=1.1ms idle=1054.5ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[info] Sent 200 in 4ms
+[info] CONNECTED TO Phoenix.LiveView.Socket in 57µs
+  Transport: :websocket
+  Serializer: Phoenix.Socket.V2.JSONSerializer
+  Parameters: %{"_csrf_token" => "KSc-YCcMfxwyDE0CAjQ9NlAlFwIwOxV9Sqt6Hj5XJAyEIAnufJNvijfL", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
+[debug] MOUNT AlemWeb.StudioLive
+  Parameters: %{}
+  Session: %{"_csrf_token" => "zVJVofJDxM4GKuSC6oYtYQs1", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777875237}
+[debug] QUERY OK source="users" db=1.5ms idle=1193.4ms
+SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:34[0m
+[debug] Replied in 1ms
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "image", "value" => ""}
+[debug] Replied in 173µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "audio", "value" => ""}
+[debug] Replied in 211µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "video", "value" => ""}
+[debug] Replied in 142µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "pdf", "value" => ""}
+[debug] Replied in 151µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "code", "value" => ""}
+[debug] Replied in 192µs
+[debug] HANDLE EVENT "switch_tool" in AlemWeb.StudioLive
+  Parameters: %{"tool" => "document", "value" => ""}
+[debug] Replied in 186µs
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
   Parameters: %{"page" => "files", "value" => ""}
-[debug] Replied in 189µs
-[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
-  Parameters: %{"sort" => "oldest", "value" => ""}
-[debug] Replied in 180µs
-[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
-  Parameters: %{"sort" => "az", "value" => ""}
-[debug] Replied in 214µs
-[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
-  Parameters: %{"sort" => "za", "value" => ""}
-[debug] Replied in 280µs
-[debug] HANDLE EVENT "sort" in AlemWeb.UserLive
-  Parameters: %{"sort" => "newest", "value" => ""}
-[debug] Replied in 291µs
-[debug] HANDLE EVENT "filter" in AlemWeb.UserLive
-  Parameters: %{"filter" => "audio", "value" => ""}
-[debug] Replied in 266µs
-[debug] HANDLE EVENT "filter" in AlemWeb.UserLive
-  Parameters: %{"filter" => "video", "value" => ""}
-[debug] Replied in 260µs
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "8bf24e5a-0ea0-4598-beed-ebb458955d90"}
-[debug] QUERY OK source="documents" db=0.8ms idle=1192.6ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["8bf24e5a-0ea0-4598-beed-ebb458955d90", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 1ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "8bf24e5a-0ea0-4598-beed-ebb458955d90"}
-[debug] QUERY OK source="documents" db=0.9ms idle=1269.3ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["8bf24e5a-0ea0-4598-beed-ebb458955d90", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
-[debug] Replied in 2ms
-[debug] HANDLE EVENT "open_viewer" in AlemWeb.UserLive
-  Parameters: %{"id" => "8bf24e5a-0ea0-4598-beed-ebb458955d90"}
-[debug] QUERY OK source="documents" db=1.0ms idle=1597.4ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["8bf24e5a-0ea0-4598-beed-ebb458955d90", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.UserLive.handle_event/3, at: lib/alem_web/live/user_live.ex:156[0m
 [debug] Replied in 1ms
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
   Parameters: %{"page" => "home", "value" => ""}
-[debug] Replied in 168µs
+[debug] Replied in 154µs
 [debug] HANDLE EVENT "nav" in AlemWeb.UserLive
   Parameters: %{"page" => "files", "value" => ""}
-[debug] Replied in 890µs
+[debug] Replied in 175µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 188µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "upload", "value" => ""}
+[debug] Replied in 218µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "profile", "value" => ""}
+[debug] Replied in 198µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "devices", "value" => ""}
+[debug] Replied in 178µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "devices", "value" => ""}
+[debug] Replied in 175µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 189µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 201µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "upload", "value" => ""}
+[debug] Replied in 176µs
+[debug] HANDLE EVENT "validate_upload" in AlemWeb.UserLive
+  Parameters: %{"_target" => ["file"]}
+[debug] Replied in 209µs
+[info] JOINED lvu:0 in 4ms
+  Parameters: %{"token" => "SFMyNTY.g2gDaAJhBnQAAAADdwNwaWRYdw1ub25vZGVAbm9ob3N0AAADpQAAAAAAAAAAdwNyZWZoAm0AAAAUcGh4LUdLeElHLVp3bG5INEFnTXhtAAAAATB3A2NpZHcDbmlsbgYAH6608Z0BYgABUYA.oJnhkDBB53FsXUDspe8cwUaFUlhVDHzq3N3VX8-yLcA"}
+[debug] HANDLE EVENT "do_upload" in AlemWeb.UserLive
+  Parameters: %{}
+[debug] ExAws: PUT Request URL: "https://in-maa-1.linodeobjects.com/perkeep/user/ztn5VV5Dr4W6EbD9/documents/0eb05790-82e3-48d7-bf12-488f23d2b644/Video%20Upload.pdf" HEADERS: [{"Authorization", "AWS4-HMAC-SHA256 Credential=QBQ24J1P1BV957AUYYXV/20260504/in-maa-1/s3/aws4_request,SignedHeaders=content-length;content-type;host;x-amz-content-sha256;x-amz-date,Signature=8bc4368792c6275ea948778f92b9364ac67b27b04c9e73d54e0b4f691badd1c2"}, {"host", "in-maa-1.linodeobjects.com"}, {"x-amz-date", "20260504T063723Z"}, {"content-length", "188066"}, {"content-type", "application/pdf"}, {"x-amz-content-sha256", "2c3479775e514f070c82d11a981d852aea0f0ad1b2adde3b2e6d0e0131d99159"}] BODY: <<37, 80, 68, 70, 45, 49, 46, 55, 13, 10, 37, 181, 181, 181, 181, 13, 10, 49, 32, 48, 32, 111, 98, 106, 13, 10, 60, 60, 47, 84, 121, 112, 101, 47, 67, 97, 116, 97, 108, 111, 103, 47, 80, 97, 103, 101, 115, 32, 50, 32, ...>> ATTEMPT: 1
+[debug] QUERY OK source="documents" db=6.3ms queue=2.5ms idle=1924.0ms
+INSERT INTO "documents" ("id","status","filename","content_type","user_id","inserted_at","updated_at","object_key","tenant_id") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ["0eb05790-82e3-48d7-bf12-488f23d2b644", "synced", "Video Upload.pdf", "application/pdf", "ztn5VV5Dr4W6EbD9", ~U[2026-05-04 06:37:24Z], ~U[2026-05-04 06:37:24Z], "user/ztn5VV5Dr4W6EbD9/documents/0eb05790-82e3-48d7-bf12-488f23d2b644/Video Upload.pdf", "default"]
+[90m↳ AlemWeb.UserLive.process_upload/4, at: lib/alem_web/live/user_live.ex:201[0m
+[info] [LanceWriter] Starting for did:przma:CZNkZ0P5pAzWGLtMrwJiFqIPS4NMzB7YZ9o9BxRZG_A
+[debug] QUERY OK source="documents" db=2.0ms queue=0.1ms idle=1511.8ms
+SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE (d0."user_id" = $1) ORDER BY d0."inserted_at" DESC LIMIT 200 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_files/1, at: lib/alem_web/live/user_live.ex:63[0m
+[debug] QUERY OK source="documents" db=1.8ms idle=1514.6ms
+SELECT count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:47[0m
+[debug] QUERY OK source="documents" db=1.2ms idle=1516.5ms
+SELECT d0."content_type", count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY d0."content_type" ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:48[0m
+[debug] QUERY OK source="documents" db=2.1ms idle=1517.9ms
+SELECT DATE_TRUNC('month', d0."inserted_at"), count(d0."id") FROM "documents" AS d0 WHERE (d0."user_id" = $1) GROUP BY DATE_TRUNC('month', d0."inserted_at") ORDER BY DATE_TRUNC('month', d0."inserted_at") LIMIT 6 ["ztn5VV5Dr4W6EbD9"]
+[90m↳ AlemWeb.UserLive.load_stats/1, at: lib/alem_web/live/user_live.ex:50[0m
+[debug] Replied in 863ms
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "files", "value" => ""}
+[debug] Replied in 1ms
 [debug] HANDLE EVENT "filter" in AlemWeb.UserLive
-  Parameters: %{"filter" => "all", "value" => ""}
-[debug] Replied in 285µs
-[debug] HANDLE EVENT "filter" in AlemWeb.UserLive
-  Parameters: %{"filter" => "video", "value" => ""}
-[debug] Replied in 171µs
-[info] GET /studio/6ad20685-1f19-4d9b-93e5-e2619a89c8c5
-[debug] Processing with AlemWeb.StudioLive.edit/2
-  Parameters: %{"id" => "6ad20685-1f19-4d9b-93e5-e2619a89c8c5"}
-  Pipelines: [:browser, :studio_layout, :user_auth]
-[debug] QUERY OK source="users" db=0.9ms idle=1725.5ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
-[debug] QUERY OK source="users" db=0.7ms idle=1727.1ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:33[0m
-[debug] QUERY OK source="documents" db=0.8ms idle=728.2ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["6ad20685-1f19-4d9b-93e5-e2619a89c8c5", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:39[0m
-[info] Sent 200 in 5ms
-[info] CONNECTED TO Phoenix.LiveView.Socket in 49µs
-  Transport: :websocket
-  Serializer: Phoenix.Socket.V2.JSONSerializer
-  Parameters: %{"_csrf_token" => "KmAmWiBlHiUAGxMwIWYNBwACKSIYBjcXO6pjMQYIvLXQMSHOyUMhJ5PR", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
-[debug] MOUNT AlemWeb.StudioLive
-  Parameters: %{"id" => "6ad20685-1f19-4d9b-93e5-e2619a89c8c5"}
-  Session: %{"_csrf_token" => "eVV0m4GlvWKal5EHyWdJR3gE", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777567339}
-[debug] QUERY OK source="users" db=0.9ms idle=1226.9ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:33[0m
-[debug] QUERY OK source="documents" db=0.7ms idle=1228.1ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["6ad20685-1f19-4d9b-93e5-e2619a89c8c5", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:39[0m
-[debug] Replied in 3ms
-[info] GET /studio/6ad20685-1f19-4d9b-93e5-e2619a89c8c5
-[debug] Processing with AlemWeb.StudioLive.edit/2
-  Parameters: %{"id" => "6ad20685-1f19-4d9b-93e5-e2619a89c8c5"}
-  Pipelines: [:browser, :studio_layout, :user_auth]
-[debug] QUERY OK source="users" db=2.3ms idle=1770.4ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
-[debug] QUERY OK source="users" db=1.3ms idle=1773.2ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:33[0m
-[debug] QUERY OK source="documents" db=0.5ms idle=1774.7ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["6ad20685-1f19-4d9b-93e5-e2619a89c8c5", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:39[0m
-[info] Sent 200 in 6ms
-[info] CONNECTED TO Phoenix.LiveView.Socket in 18µs
-  Transport: :websocket
-  Serializer: Phoenix.Socket.V2.JSONSerializer
-  Parameters: %{"_csrf_token" => "LTAEb1l-cl0cYxkQFQUQGRQvAj4-aiM3HfR_4J51j4Rqy0UQmxftlYDr", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
-[debug] MOUNT AlemWeb.StudioLive
-  Parameters: %{"id" => "6ad20685-1f19-4d9b-93e5-e2619a89c8c5"}
-  Session: %{"_csrf_token" => "eVV0m4GlvWKal5EHyWdJR3gE", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777567339}
-[debug] QUERY OK source="users" db=1.0ms queue=0.2ms idle=1138.5ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:33[0m
-[debug] QUERY OK source="documents" db=0.5ms idle=1139.9ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["6ad20685-1f19-4d9b-93e5-e2619a89c8c5", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:39[0m
-[debug] Replied in 2ms
-[debug] HANDLE EVENT "filter" in AlemWeb.UserLive
-  Parameters: %{"filter" => "image", "value" => ""}
-[debug] Replied in 347µs
-[info] GET /studio/4e43bb11-1e69-4c10-bba1-b80c98bd7408
-[debug] Processing with AlemWeb.StudioLive.edit/2
-  Parameters: %{"id" => "4e43bb11-1e69-4c10-bba1-b80c98bd7408"}
-  Pipelines: [:browser, :studio_layout, :user_auth]
-[debug] QUERY OK source="users" db=0.7ms idle=1489.5ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.Plugs.UserAuth.call/2, at: lib/alem_web/live/user_auth.ex:11[0m
-[debug] QUERY OK source="users" db=0.6ms idle=1490.5ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:33[0m
-[debug] QUERY OK source="documents" db=0.9ms idle=1491.4ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["4e43bb11-1e69-4c10-bba1-b80c98bd7408", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:39[0m
-[info] Sent 200 in 3ms
-[info] CONNECTED TO Phoenix.LiveView.Socket in 21µs
-  Transport: :websocket
-  Serializer: Phoenix.Socket.V2.JSONSerializer
-  Parameters: %{"_csrf_token" => "UiITBhhsKyo-PiQvGgQmK0EyNCkUSTcX7tE6uXlFHioNv1cc8ePcFzPR", "_live_referer" => "undefined", "_mount_attempts" => "0", "_mounts" => "0", "_track_static" => %{"0" => "http://172.235.18.126:4201/assets/app.js"}, "vsn" => "2.0.0"}
-[debug] MOUNT AlemWeb.StudioLive
-  Parameters: %{"id" => "4e43bb11-1e69-4c10-bba1-b80c98bd7408"}
-  Session: %{"_csrf_token" => "eVV0m4GlvWKal5EHyWdJR3gE", "user_id" => "ztn5VV5Dr4W6EbD9", "user_login_at" => 1777567339}
-[debug] QUERY OK source="users" db=2.0ms idle=992.7ms
-SELECT u0."id", u0."nickname", u0."email", u0."name", u0."bio", u0."avatar", u0."password_hash", u0."is_active", u0."is_admin", u0."is_moderator", u0."did_id", u0."is_verified", u0."otp_code", u0."otp_expires_at", u0."otp_attempts", u0."reset_token", u0."reset_token_expires_at", u0."reset_token_attempts", u0."reset_sent_at", u0."inserted_at", u0."updated_at" FROM "users" AS u0 WHERE (u0."id" = $1) ["ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.get_user/1, at: lib/alem_web/live/studio_live.ex:33[0m
-[debug] QUERY OK source="documents" db=0.5ms idle=994.9ms
-SELECT d0."id", d0."filename", d0."content_type", d0."object_key", d0."status", d0."inserted_at" FROM "documents" AS d0 WHERE ((d0."id" = $1) AND (d0."user_id" = $2)) ["4e43bb11-1e69-4c10-bba1-b80c98bd7408", "ztn5VV5Dr4W6EbD9"]
-[90m↳ AlemWeb.StudioLive.load_doc/3, at: lib/alem_web/live/studio_live.ex:39[0m
-[debug] Replied in 3ms
+  Parameters: %{"filter" => "audio", "value" => ""}
+[debug] Replied in 156µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "home", "value" => ""}
+[debug] Replied in 425µs
+[debug] HANDLE EVENT "nav" in AlemWeb.UserLive
+  Parameters: %{"page" => "upload", "value" => ""}
+[debug] Replied in 1ms
+[info] [LanceWriter] Idle timeout — stopping did:przma:CZNkZ0P5pAzWGLtMrwJiFqIPS4NMzB7YZ9o9BxRZG_A

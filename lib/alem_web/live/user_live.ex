@@ -32,6 +32,8 @@ defmodule AlemWeb.UserLive do
        |> assign(:sidebar_open,   false)
        |> assign(:flash_msg,      nil)
        |> assign(:flash_type,     :success)
+       |> assign(:active_folder,  "personal")
+       |> assign(:folder_stats,   load_folder_stats(user.id))
        |> allow_upload(:file,
            accept: ~w(.mp3 .wav .mp4 .mov .jpg .jpeg .png .gif .pdf .txt .docx),
            max_entries: 5,
@@ -59,12 +61,27 @@ defmodule AlemWeb.UserLive do
   end
 
   defp load_files(uid) do
+    # Default: load personal folder on initial mount
+    load_files_by_folder(uid, "personal")
+  end
+
+  defp load_files_by_folder(uid, folder) do
+    case Alem.Home.list_files(uid, folder) do
+      {:ok, files} -> files
+      _            -> []
+    end
+  end
+
+  defp load_folder_stats(uid) do
     try do
-      Repo.all(from d in Document, where: d.user_id == ^uid,
-        order_by: [desc: d.inserted_at], limit: 200,
-        select: %{id: d.id, filename: d.filename, content_type: d.content_type,
-                  object_key: d.object_key, status: d.status, inserted_at: d.inserted_at})
-    rescue _ -> [] end
+      Repo.all(
+        from d in Document,
+        where: d.user_id == ^uid,
+        group_by: d.folder,
+        select: {d.folder, count(d.id)}
+      ) |> Map.new()
+    rescue _ -> %{"personal" => 0, "private" => 0, "public" => 0}
+    end
   end
 
   defp load_sessions(uid) do
@@ -113,15 +130,19 @@ defmodule AlemWeb.UserLive do
 
   def handle_event("validate_upload", _params, socket), do: {:noreply, socket}
 
-  def handle_event("do_upload", _params, socket) do
-    user = socket.assigns.user
+  def handle_event("do_upload", params, socket) do
+    user   = socket.assigns.user
+    folder = Map.get(params, "folder", socket.assigns[:active_folder] || "personal")
+
     results = consume_uploaded_entries(socket, :file, fn %{path: path}, entry ->
-      process_upload(path, entry.client_name, entry.client_type, user)
+      process_upload(path, entry.client_name, entry.client_type, user, folder)
     end)
+
     {:noreply,
      socket
-     |> assign(:files, load_files(user.id))
-     |> assign(:stats, load_stats(user.id))
+     |> assign(:files,          load_files_by_folder(user.id, folder))
+     |> assign(:stats,          load_stats(user.id))
+     |> assign(:folder_stats,   load_folder_stats(user.id))
      |> assign(:upload_results, results)}
   end
 
@@ -148,6 +169,16 @@ defmodule AlemWeb.UserLive do
 
   def handle_event("logout", _, socket), do: {:noreply, redirect(socket, to: "/panel/logout")}
   def handle_event("dismiss_flash", _, socket), do: {:noreply, assign(socket, :flash_msg, nil)}
+
+  def handle_event("set_folder", %{"folder" => f}, socket)
+      when f in ~w(personal private public) do
+    user = socket.assigns.user
+    {:noreply,
+     socket
+     |> assign(:active_folder, f)
+     |> assign(:files, load_files_by_folder(user.id, f))}
+  end
+  def handle_event("set_folder", _, socket), do: {:noreply, socket}
 
   def handle_event("open_viewer", %{"id" => doc_id}, socket) do
     import Ecto.Query
@@ -183,44 +214,35 @@ defmodule AlemWeb.UserLive do
     {:noreply, assign(socket, viewer: nil, viewer_loading: false)}
   end
 
-  defp process_upload(path, filename, client_type, user) do
+  defp process_upload(path, filename, client_type, user, folder \\ "personal") do
     try do
       file_bytes   = File.read!(path)
       content_type = detect_type(filename, file_bytes, client_type)
-      doc_id       = Ecto.UUID.generate()
-      bucket       = System.get_env("AWS_S3_BUCKET", "perkeep")
-      s3_key       = "user/#{user.id}/documents/#{doc_id}/#{filename}"
+      did_id       = user.did_id || user.id
 
-      s3_ok = case ExAws.S3.put_object(bucket, s3_key, file_bytes, content_type: content_type)
-                    |> ExAws.request(virtual_host: false) do
-        {:ok, _} -> true; _ -> false
+      case Alem.Home.upload(
+        file_bytes,
+        filename,
+        content_type,
+        folder:  folder,
+        user_id: user.id,
+        did_id:  did_id
+      ) do
+        {:ok, doc} ->
+          {:ok, %{
+            filename: filename,
+            size:     byte_size(file_bytes),
+            type:     content_type,
+            folder:   folder,
+            s3:       true,
+            pg:       true,
+            lance:    true,
+            doc_id:   doc.id
+          }}
+
+        {:error, reason} ->
+          {:ok, %{filename: filename, error: inspect(reason)}}
       end
-
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
-      pg_ok = try do
-        Repo.insert!(%Document{id: doc_id, tenant_id: "default", user_id: user.id,
-          filename: filename, object_key: s3_key, content_type: content_type,
-          status: "synced", inserted_at: now, updated_at: now})
-        true
-      rescue _ -> false end
-
-      lance_ok = try do
-        cls = %{"seven_p_primary" => classify(content_type),
-                "preserve_primary" => "engagement", "light_element" => "transform"}
-        vec = Alem.Lance.VectorEncoder.encode(file_bytes, content_type, cls)
-        did = user.did_id || user.id
-        Alem.Lance.DISSupervisor.ensure_writer(did)
-        case Alem.LanceDB.insert_with_vector("perception_events", vec,
-          Jason.encode!(%{"id" => doc_id, "verb" => "Create", "media_type" => content_type,
-            "filename" => filename, "seven_p_primary" => cls["seven_p_primary"],
-            "preserve_primary" => "engagement", "light_element" => "transform",
-            "user_did" => did})) do
-          :ok -> true; _ -> false
-        end
-      rescue _ -> false end
-
-      {:ok, %{filename: filename, size: byte_size(file_bytes),
-              type: content_type, s3: s3_ok, pg: pg_ok, lance: lance_ok}}
     rescue e ->
       {:ok, %{filename: filename, error: Exception.message(e)}}
     end
@@ -247,14 +269,7 @@ defmodule AlemWeb.UserLive do
   defp ext_type(".docx"), do: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   defp ext_type(_), do: nil
 
-  defp classify(t) do
-    cond do
-      String.starts_with?(t, "audio/") -> "portfolio"
-      String.starts_with?(t, "video/") -> "perception"
-      String.starts_with?(t, "image/") -> "platform"
-      true -> "product"
-    end
-  end
+
 
   # ── Render ─────────────────────────────────────────────────────────────────
 
@@ -293,6 +308,8 @@ defmodule AlemWeb.UserLive do
       |> assign(:filtered,      filtered)
       |> assign(:month_labels,  Jason.encode!(month_labels))
       |> assign(:month_values,  Jason.encode!(month_values))
+      |> assign(:folder_stats,  assigns[:folder_stats] || %{})
+      |> assign(:active_folder,  assigns[:active_folder] || "personal")
       |> assign(:type_values,   Jason.encode!([
            assigns.stats.audio, assigns.stats.video,
            assigns.stats.image, assigns.stats.document
@@ -1292,6 +1309,21 @@ defmodule AlemWeb.UserLive do
     ~H"""
     <div class="card">
       <div class="card-hdr" style="flex-direction:column;align-items:stretch;gap:10px">
+        <!-- Folder tabs -->
+        <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+          <button class={"ftab #{if @active_folder=="personal", do: "on"}"}
+            phx-click="set_folder" phx-value-folder="personal"
+            style={"font-size:11px;#{if @active_folder=="personal", do: "background:#fef3c7;color:#92400e;border-color:#fbbf24", else: ""}"}>
+            🔐 Personal (<%= Map.get(@folder_stats, "personal", 0) %>)</button>
+          <button class={"ftab #{if @active_folder=="private", do: "on"}"}
+            phx-click="set_folder" phx-value-folder="private"
+            style={"font-size:11px;#{if @active_folder=="private", do: "background:#ede9fe;color:#4c1d95;border-color:#7c3aed", else: ""}"}>
+            🔒 Private (<%= Map.get(@folder_stats, "private", 0) %>)</button>
+          <button class={"ftab #{if @active_folder=="public", do: "on"}"}
+            phx-click="set_folder" phx-value-folder="public"
+            style={"font-size:11px;#{if @active_folder=="public", do: "background:#d1fae5;color:#064e3b;border-color:#059669", else: ""}"}>
+            🌍 Public (<%= Map.get(@folder_stats, "public", 0) %>)</button>
+        </div>
         <!-- Filter tabs -->
         <div class="filter-row">
           <button class={"ftab #{if @files_filter=="all",      do: "on"}"} phx-click="filter" phx-value-filter="all">All (<%= @stats.total %>)</button>
@@ -1324,7 +1356,7 @@ defmodule AlemWeb.UserLive do
       <% else %>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>File</th><th>Type</th><th>Status</th><th>Uploaded</th><th>Version</th><th style="width:80px">Actions</th></tr></thead>
+            <thead><tr><th>File</th><th>Type</th><th>Folder</th><th>Status</th><th>Uploaded</th><th style="width:80px">Actions</th></tr></thead>
             <tbody>
               <%= for f <- @filtered do %>
                 <tr style="cursor:pointer" phx-click="open_viewer" phx-value-id={f.id}>
@@ -1337,7 +1369,9 @@ defmodule AlemWeb.UserLive do
                   <td><span class="badge badge-gray"><%= ftype(f.content_type) %></span></td>
                   <td><span class={"badge #{file_status_badge(f.status)}"}><%= file_status_label(f.status) %></span></td>
                   <td class="text-sm"><%= fdate(f.inserted_at) %></td>
-                  <td><span class="badge badge-gray" style="font-family:monospace;font-size:9px">v1</span></td>
+                  <td><span style={"font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;#{folder_badge_style(f[:folder])}"}>
+                    <%= folder_icon(f[:folder]) %> <%= String.capitalize(f[:folder] || "personal") %>
+                  </span></td>
                   <td onclick="event.stopPropagation()">
                     <a href={"/studio/#{f.id}"} target="_blank" class="btn btn-ghost btn-sm"
                       style="font-size:11px;padding:3px 8px;text-decoration:none">
@@ -1356,17 +1390,92 @@ defmodule AlemWeb.UserLive do
 
   defp render_page(%{page: :upload} = assigns) do
     ~H"""
-    <div class="card" style="max-width:600px">
+    <style>
+      .folder-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+      @media(max-width:640px){.folder-grid{grid-template-columns:1fr}}
+      .folder-card{padding:16px;border:2px solid var(--border);border-radius:var(--r-lg);
+        cursor:pointer;transition:all .2s;background:var(--bg-3);
+        display:flex;flex-direction:column;gap:6px;user-select:none}
+      .folder-card:hover{border-color:var(--border-2);transform:translateY(-2px);box-shadow:var(--shadow)}
+      .fc-personal.active{border-color:#f59e0b!important;background:rgba(245,158,11,.08)!important;box-shadow:0 0 0 3px rgba(245,158,11,.2)!important}
+      .fc-private.active{border-color:#7c3aed!important;background:rgba(124,58,237,.08)!important;box-shadow:0 0 0 3px rgba(124,58,237,.2)!important}
+      .fc-public.active{border-color:#059669!important;background:rgba(5,150,105,.08)!important;box-shadow:0 0 0 3px rgba(5,150,105,.2)!important}
+      .fc-icon{font-size:26px;line-height:1}
+      .fc-name{font-size:15px;font-weight:700;color:var(--text)}
+      .fc-tags{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-3);margin-top:2px}
+      .fc-desc{font-size:12px;color:var(--text-2);line-height:1.5;font-style:italic;margin-top:4px}
+      .fc-count{font-size:10px;color:var(--text-3);margin-top:4px}
+      .fc-personal .fc-tags{color:#d97706}
+      .fc-private  .fc-tags{color:#7c3aed}
+      .fc-public   .fc-tags{color:#059669}
+      .fc-personal.active .fc-tags{color:#d97706}
+      .fc-private.active  .fc-tags{color:#7c3aed}
+      .fc-public.active   .fc-tags{color:#059669}
+    </style>
+
+    <div class="card" style="max-width:680px">
       <div class="card-hdr">
         <span class="card-title">Upload Files</span>
         <span class="card-sub" style="margin-left:8px">MP3 · WAV · MP4 · JPG · PNG · PDF · DOCX (max 50 MB)</span>
       </div>
       <div class="card-body">
+
+        <!-- ── Folder Selector ── -->
+        <div style="margin-bottom:20px">
+          <div style="font-size:11px;font-weight:700;color:var(--text-3);
+                      text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px">
+            Choose Folder
+          </div>
+          <div class="folder-grid">
+            <div class={"folder-card fc-personal #{if @active_folder=="personal", do: "active"}"}
+                 phx-click="set_folder" phx-value-folder="personal">
+              <div class="fc-icon">🔐</div>
+              <div class="fc-name">Personal</div>
+              <div class="fc-tags">Private · Sovereign · Yours</div>
+              <div class="fc-desc">Your daily entries and reflections. Nothing leaves without your explicit choice.</div>
+              <div class="fc-count"><%= Map.get(@folder_stats || %{}, "personal", 0) %> files</div>
+            </div>
+            <div class={"folder-card fc-private #{if @active_folder=="private", do: "active"}"}
+                 phx-click="set_folder" phx-value-folder="private">
+              <div class="fc-icon">🔒</div>
+              <div class="fc-name">Private</div>
+              <div class="fc-tags">Encrypted · Local-First · Zero Server Access</div>
+              <div class="fc-desc">Notes, drafts, and local data. Encrypted on your device. Server stores only ciphertext.</div>
+              <div class="fc-count"><%= Map.get(@folder_stats || %{}, "private", 0) %> files</div>
+            </div>
+            <div class={"folder-card fc-public #{if @active_folder=="public", do: "active"}"}
+                 phx-click="set_folder" phx-value-folder="public">
+              <div class="fc-icon">🌍</div>
+              <div class="fc-name">Public</div>
+              <div class="fc-tags">Open · Tended · Everyone's</div>
+              <div class="fc-desc">What you choose to share with the world. PRZMA Commons can read this.</div>
+              <div class="fc-count"><%= Map.get(@folder_stats || %{}, "public", 0) %> files</div>
+            </div>
+          </div>
+
+          <div style="font-size:12px;color:var(--text-2);padding:8px 12px;
+                      background:var(--bg-3);border-radius:var(--r-sm);border:1px solid var(--border)">
+            <%= case @active_folder do %>
+              <% "personal" -> %>
+                🔐 <strong>Personal</strong> — stored encrypted, accessible only by you. Share with anyone using a time-limited token.
+              <% "private" -> %>
+                🔒 <strong>Private</strong> — encrypted on your device before upload. Server cannot read this content. No sharing possible.
+              <% "public" -> %>
+                🌍 <strong>Public</strong> — visible to everyone. PRZMA platform can use this for collective intelligence. You can un-public any file at any time.
+            <% end %>
+          </div>
+        </div>
+
+        <!-- ── Upload Form ── -->
         <form phx-submit="do_upload" phx-change="validate_upload">
+          <input type="hidden" name="folder" value={@active_folder}/>
           <div class="upload-zone" phx-drop-target={@uploads.file.ref}>
             <div class="uz-icon">☁</div>
             <div class="uz-title">Drop files here or click Browse</div>
-            <div class="uz-sub">Stored in S3 · PostgreSQL · LanceDB (446-dim HOLNN vector)</div>
+            <div class="uz-sub">
+              Uploading to: <strong><%= String.capitalize(@active_folder) %></strong> folder
+              · S3 · PostgreSQL · LanceDB 446-dim HOLNN
+            </div>
             <label class="btn btn-primary" style="cursor:pointer">
               Browse Files
               <.live_file_input upload={@uploads.file} style="display:none"/>
@@ -1380,7 +1489,9 @@ defmodule AlemWeb.UserLive do
                   <span style="font-size:14px"><%= ico(entry.client_type) %></span>
                   <span class="up-name"><%= entry.client_name %></span>
                   <span class="up-size"><%= fmtb(entry.client_size) %></span>
-                  <div class="prog-wrap"><div class="prog-fill" style={"width:#{entry.progress}%"}></div></div>
+                  <div class="prog-wrap">
+                    <div class="prog-fill" style={"width:#{entry.progress}%"}></div>
+                  </div>
                   <button type="button" phx-click="cancel_upload" phx-value-ref={entry.ref}
                     style="background:none;border:none;color:var(--text-3);cursor:pointer;font-size:16px;line-height:1;padding:0">×</button>
                 </div>
@@ -1390,12 +1501,13 @@ defmodule AlemWeb.UserLive do
               <% end %>
               <button type="submit" class="btn btn-primary"
                 style="margin-top:10px;width:100%;height:42px">
-                Upload <%= length(@uploads.file.entries) %> file(s)
+                Upload <%= length(@uploads.file.entries) %> file(s) to <%= String.capitalize(@active_folder) %>
               </button>
             </div>
           <% end %>
         </form>
 
+        <!-- ── Results ── -->
         <%= if @upload_results != [] do %>
           <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
             <div style="display:flex;align-items:center;margin-bottom:10px">
@@ -1415,11 +1527,17 @@ defmodule AlemWeb.UserLive do
                     <span class="res-dot"><%= if r[:lance], do: "✅", else: "❌" %> LanceDB</span>
                     <span class="text-sm" style="margin-left:auto"><%= fmtb(r[:size]) %></span>
                   </div>
+                  <div style="font-size:10px;color:var(--text-3);margin-top:4px">
+                    <span style={"#{folder_badge_style(r[:folder])}padding:2px 7px;border-radius:99px;font-weight:700"}>
+                      <%= folder_icon(r[:folder]) %> <%= String.capitalize(r[:folder] || "personal") %>
+                    </span>
+                  </div>
                 <% end %>
               </div>
             <% end %>
           </div>
         <% end %>
+
       </div>
     </div>
     """
@@ -1579,4 +1697,14 @@ defmodule AlemWeb.UserLive do
   defp fmtb(b) when b > 1_000_000, do: "#{Float.round(b/1_000_000,1)} MB"
   defp fmtb(b) when b > 1_000,     do: "#{Float.round(b/1_000,1)} KB"
   defp fmtb(b), do: "#{b} B"
+
+  defp folder_icon("personal"), do: "🔐"
+  defp folder_icon("private"),  do: "🔒"
+  defp folder_icon("public"),   do: "🌍"
+  defp folder_icon(_),          do: "🔐"
+
+  defp folder_badge_style("personal"), do: "background:#fef3c7;color:#92400e;"
+  defp folder_badge_style("private"),  do: "background:#ede9fe;color:#4c1d95;"
+  defp folder_badge_style("public"),   do: "background:#d1fae5;color:#064e3b;"
+  defp folder_badge_style(_),          do: "background:var(--bg-4);color:var(--text-2);"
 end

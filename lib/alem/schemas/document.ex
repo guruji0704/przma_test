@@ -4,7 +4,7 @@ defmodule Alem.Schemas.Document do
 
   @primary_key {:id, :binary_id, autogenerate: false}
   @folders     ~w(personal private public)
-  @categories  ~w(images videos audio documents)
+  @categories  ~w(images videos audio documents encrypted)
 
   schema "documents" do
     field :tenant_id,      :string
