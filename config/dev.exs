@@ -5,8 +5,10 @@ import Config
 # Change username/password to match your local postgres setup.
 config :alem, Alem.Repo,
   username: "postgres",
-  password: "postgres",
-  hostname: "172.235.17.68",
+  password: "qwe123",
+  #hostname: "172.235.17.68",
+  hostname: "localhost",
+
   database: "dev_alem_integrated",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
@@ -56,7 +58,7 @@ config :alem, :epoch_master_key,
 config :alem, AlemWeb.Endpoint,
   http: [
     ip: {127, 0, 0, 1},
-    port: 4000,
+    port: 5432,
     thousand_island_options: [read_timeout: 300_000]
   ],
   # url: [host: "172.235.17.68", port: 4000],

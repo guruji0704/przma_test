@@ -22,6 +22,14 @@ defmodule AlemWeb.Swagger do
         5. `GET /api/v1/accounts/verify_credentials` — verify token
         6. `GET /api/v1/accounts/did` — get your Decentralized Identifier
 
+        ## Chat Flow
+        1. Login via `POST /api/v1/oauth/token` → get `access_token`
+        2. `POST /api/v1/chat/socket/token` → get chat token
+        3. `GET /api/v1/chat/rooms` → list rooms
+        4. `POST /api/v1/chat/rooms/:id/join` → join as member or audience
+        5. `POST /api/v1/chat/rooms/:id/messages` → send messages
+        6. `GET /api/v1/chat/rooms/:id/messages` → get history
+
         ## Session Management
         Each login automatically creates a session record (device, IP, browser).
         - `GET /api/v1/sessions` — list all active sessions
@@ -37,7 +45,11 @@ defmodule AlemWeb.Swagger do
         %Server{url: "http://localhost:4000", description: "Development"}
       ],
       paths: %{
-        # ── Captcha ─────────────────────────────────────────
+
+        # ══════════════════════════════════════════════════════
+        # AUTH
+        # ══════════════════════════════════════════════════════
+
         "/api/v1/pleroma/captcha" => %OpenApiSpex.PathItem{
           get: op("Get Captcha", "Authentication", "get_captcha",
             "Get a captcha challenge (token + answer). Use token+solution when registering.",
@@ -45,7 +57,6 @@ defmodule AlemWeb.Swagger do
               500 => resp("Error",   "ErrorResponse")})
         },
 
-        # ── OAuth App ────────────────────────────────────────
         "/api/v1/apps" => %OpenApiSpex.PathItem{
           post: op_body("Register OAuth App", "Authentication", "register_app",
             "Register a new OAuth application. Returns client_id and client_secret.",
@@ -54,7 +65,6 @@ defmodule AlemWeb.Swagger do
               422 => resp("Validation error", "ErrorResponse")})
         },
 
-        # ── Register ─────────────────────────────────────────
         "/api/v1/account/register" => %OpenApiSpex.PathItem{
           post: op_body("Register Account", "Authentication", "register_account",
             "Create a new user account. A DID (did:przma:...) is automatically generated and stored.",
@@ -63,7 +73,6 @@ defmodule AlemWeb.Swagger do
               400 => resp("Bad request",      "ErrorResponse")})
         },
 
-        # ── OAuth Token ──────────────────────────────────────
         "/api/v1/oauth/token" => %OpenApiSpex.PathItem{
           post: op_body("Login / Get Token", "Authentication", "get_oauth_token",
             """
@@ -82,7 +91,6 @@ defmodule AlemWeb.Swagger do
               400 => resp("Bad grant type",  "ErrorResponse")})
         },
 
-        # ── Verify Credentials ───────────────────────────────
         "/api/v1/accounts/verify_credentials" => %OpenApiSpex.PathItem{
           get: op_auth("Verify Credentials", "Authentication", "verify_credentials",
             "Verify your Bearer token. Returns account info including DID.",
@@ -90,7 +98,6 @@ defmodule AlemWeb.Swagger do
               401 => resp("Unauthorized",  "ErrorResponse")})
         },
 
-        # ── DID ──────────────────────────────────────────────
         "/api/v1/accounts/did" => %OpenApiSpex.PathItem{
           get: op_auth("Get My DID", "DID", "get_did",
             """
@@ -107,7 +114,10 @@ defmodule AlemWeb.Swagger do
               401 => resp("Unauthorized", "ErrorResponse")})
         },
 
-        # ── Sessions ─────────────────────────────────────────
+        # ══════════════════════════════════════════════════════
+        # SESSIONS
+        # ══════════════════════════════════════════════════════
+
         "/api/v1/sessions" => %OpenApiSpex.PathItem{
           get: op_auth("List Active Sessions", "Sessions", "list_sessions",
             """
@@ -150,7 +160,6 @@ defmodule AlemWeb.Swagger do
               401 => resp("Unauthorized",     "ErrorResponse")})
         },
 
-        # ── Revoke Token ─────────────────────────────────────
         "/oauth/token/revoke" => %OpenApiSpex.PathItem{
           delete: op_auth("Logout (Revoke Token)", "Authentication", "revoke_token",
             "Revoke the current Bearer token. The token will return 401 after this.",
@@ -158,7 +167,6 @@ defmodule AlemWeb.Swagger do
               404 => resp("Not found", "ErrorResponse")})
         },
 
-        # ── Delete Account ───────────────────────────────────
         "/api/v1/pleroma/delete_account" => %OpenApiSpex.PathItem{
           post: op_auth_body("Delete Account", "Authentication", "delete_account",
             "Delete account (requires password). Revokes all tokens and sessions.",
@@ -168,7 +176,6 @@ defmodule AlemWeb.Swagger do
               403 => resp("Wrong password", "ErrorResponse")})
         },
 
-        # ── Disable Account ──────────────────────────────────
         "/api/v1/pleroma/disable_account" => %OpenApiSpex.PathItem{
           post: op_auth_body("Disable Account", "Authentication", "disable_account",
             "Disable account (requires password). Revokes all tokens and sessions.",
@@ -178,7 +185,10 @@ defmodule AlemWeb.Swagger do
               403 => resp("Wrong password", "ErrorResponse")})
         },
 
-        # ── Namespace ────────────────────────────────────────
+        # ══════════════════════════════════════════════════════
+        # NAMESPACE
+        # ══════════════════════════════════════════════════════
+
         "/api/v1/namespaces" => %OpenApiSpex.PathItem{
           post: op_auth("Create/Get Namespace", "Namespace", "create_or_get_namespace",
             "Create or retrieve the namespace for the authenticated user (keyed by DID).",
@@ -196,17 +206,143 @@ defmodule AlemWeb.Swagger do
             "Get account info stored in the authenticated user's namespace.",
             %{200 => resp("Account",     "AccountResponse"),
               401 => resp("Unauthorized", "ErrorResponse")})
+        },
+
+        # ══════════════════════════════════════════════════════
+        # CHAT
+        # ══════════════════════════════════════════════════════
+
+        "/api/v1/chat/socket/token" => %OpenApiSpex.PathItem{
+          post: op_body("Get Chat Token", "Chat", "chat_get_token",
+            """
+            Get a token to connect to WebSocket.
+
+            ## Flow:
+            1. Login via POST /api/v1/oauth/token → get access_token
+            2. Call this endpoint with your username
+            3. Use returned token to connect WebSocket
+            """,
+            "ChatTokenRequest",
+            %{200 => resp("Token issued", "ChatTokenResponse"),
+              422 => resp("Error",         "ErrorResponse")})
+        },
+
+        "/api/v1/chat/rooms" => %OpenApiSpex.PathItem{
+          get: op("List Chat Rooms", "Chat", "chat_list_rooms",
+            "List all rooms with live member counts. is_full = true means audience mode.",
+            %{200 => resp("Rooms list", "ChatRoomsResponse")}),
+          post: op_body("Create Chat Room", "Chat", "chat_create_room",
+            "Dynamically create a new chat room.",
+            "ChatCreateRoomRequest",
+            %{200 => resp("Room created", "ChatRoomResponse"),
+              422 => resp("Error",         "ErrorResponse")})
+        },
+
+        "/api/v1/chat/rooms/{id}" => %OpenApiSpex.PathItem{
+          get: op_param("Get Room Details", "Chat", "chat_get_room",
+            "Get room metadata, online members, and capacity info.",
+            [room_id_param()],
+            %{200 => resp("Room details", "ChatRoomResponse")})
+        },
+
+        "/api/v1/chat/rooms/{id}/status" => %OpenApiSpex.PathItem{
+          get: op_param("Room Status", "Chat", "chat_room_status",
+            """
+            Check room capacity before joining.
+
+            - `mode: member`   → room has space, you can send messages
+            - `mode: audience` → room is full, you can only read
+            """,
+            [room_id_param()],
+            %{200 => resp("Room status", "ChatRoomStatusResponse")})
+        },
+
+        "/api/v1/chat/rooms/{id}/members" => %OpenApiSpex.PathItem{
+          get: op_param("Online Members", "Chat", "chat_room_members",
+            "Get list of currently online members in the room.",
+            [room_id_param()],
+            %{200 => resp("Members list", "ChatMembersResponse")})
+        },
+
+        "/api/v1/chat/rooms/{id}/join" => %OpenApiSpex.PathItem{
+          post: op_body_param("Join Room", "Chat", "chat_join_room",
+            """
+            Join a chat room.
+
+            - Room has space → `mode: member` → can send messages
+            - Room is full   → `mode: audience` → read only, input hidden
+            """,
+            [room_id_param()],
+            "ChatJoinRequest",
+            %{200 => resp("Joined", "ChatJoinResponse"),
+              422 => resp("Error",  "ErrorResponse")})
+        },
+
+        "/api/v1/chat/rooms/{id}/leave" => %OpenApiSpex.PathItem{
+          delete: op_body_param("Leave Room", "Chat", "chat_leave_room",
+            "Leave a room. Removes you from the online members list.",
+            [room_id_param()],
+            "ChatLeaveRequest",
+            %{200 => resp("Left room", "ChatLeaveResponse"),
+              422 => resp("Error",     "ErrorResponse")})
+        },
+
+        "/api/v1/chat/rooms/{id}/messages" => %OpenApiSpex.PathItem{
+          get: op_param("Message History", "Chat", "chat_get_messages",
+            """
+            Get paginated message history for a room.
+
+            Use `?page=1&per_page=20` for pagination.
+            Private (@tagged) messages are NOT stored here.
+            """,
+            [room_id_param(), page_param(), per_page_param()],
+            %{200 => resp("Message history", "ChatMessagesResponse")}),
+          post: op_body_param("Send Message", "Chat", "chat_send_message",
+            """
+            Send a message to a room.
+
+            - Max 280 characters
+            - Use `@username` in body to send a private message
+            - Private messages are NOT stored in history
+            """,
+            [room_id_param()],
+            "ChatSendMessageRequest",
+            %{200 => resp("Message sent", "ChatMessageResponse"),
+              422 => resp("Error",         "ErrorResponse")})
+        },
+
+        "/api/v1/chat/messages/private" => %OpenApiSpex.PathItem{
+          post: op_body("Send Private DM", "Chat", "chat_send_private",
+            "Send a direct private message to a specific user. Only sender and receiver see it.",
+            "ChatPrivateDMRequest",
+            %{200 => resp("DM delivered", "ChatDMResponse"),
+              422 => resp("Error",         "ErrorResponse")})
+        },
+
+        "/api/v1/chat/rooms/{id}/typing" => %OpenApiSpex.PathItem{
+          post: op_body_param("Typing Indicator", "Chat", "chat_typing",
+            "Broadcast typing indicator. Others in room will see 'karthiga is typing...'",
+            [room_id_param()],
+            "ChatTypingRequest",
+            %{200 => resp("Broadcast sent", "ChatTypingResponse")})
         }
+
       },
+
+      # ════════════════════════════════════════════════════════
+      # COMPONENTS
+      # ════════════════════════════════════════════════════════
+
       components: %Components{
         schemas: %{
-          # ── Request schemas ────────────────────────────────
+
+          # ── Auth Request Schemas ───────────────────────────
           "RegisterAppRequest"     => register_app_request_schema(),
           "OAuthTokenRequest"      => oauth_token_request_schema(),
           "RegisterAccountRequest" => register_account_request_schema(),
           "PasswordConfirmRequest" => password_confirm_schema(),
 
-          # ── Response schemas ───────────────────────────────
+          # ── Auth Response Schemas ──────────────────────────
           "RegisterAppResponse"    => register_app_response_schema(),
           "OAuthTokenResponse"     => oauth_token_response_schema(),
           "AccountResponse"        => account_response_schema(),
@@ -217,8 +353,213 @@ defmodule AlemWeb.Swagger do
           "NamespaceResponse"      => namespace_response_schema(),
           "ErrorResponse"          => error_response_schema(),
           "MessageResponse"        => message_response_schema(),
-          "StatusResponse"         => status_response_schema()
+          "StatusResponse"         => status_response_schema(),
+
+          # ── Chat Request Schemas ───────────────────────────
+          "ChatTokenRequest" => %Schema{
+            type: :object, title: "ChatTokenRequest",
+            required: [:username],
+            properties: %{
+              username: %Schema{type: :string, example: "karthiga"}
+            }
+          },
+
+          "ChatCreateRoomRequest" => %Schema{
+            type: :object, title: "ChatCreateRoomRequest",
+            required: [:name],
+            properties: %{
+              name:  %Schema{type: :string, example: "general"},
+              emoji: %Schema{type: :string, example: "💬"}
+            }
+          },
+
+          "ChatJoinRequest" => %Schema{
+            type: :object, title: "ChatJoinRequest",
+            properties: %{
+              username: %Schema{type: :string, example: "karthiga",
+                                description: "Use if no session"}
+            }
+          },
+
+          "ChatLeaveRequest" => %Schema{
+            type: :object, title: "ChatLeaveRequest",
+            properties: %{
+              username: %Schema{type: :string, example: "karthiga"}
+            }
+          },
+
+          "ChatSendMessageRequest" => %Schema{
+            type: :object, title: "ChatSendMessageRequest",
+            required: [:body],
+            properties: %{
+              body: %Schema{
+                type: :string,
+                example: "hello @ravi",
+                description: "Max 280 chars. Use @username in body to send private DM."
+              },
+              username: %Schema{type: :string, example: "karthiga",
+                                description: "Use if no session"}
+            }
+          },
+
+          "ChatPrivateDMRequest" => %Schema{
+            type: :object, title: "ChatPrivateDMRequest",
+            required: [:to, :body],
+            properties: %{
+              to:       %Schema{type: :string, example: "ravi",
+                                description: "Target username"},
+              body:     %Schema{type: :string, example: "hey only you see this"},
+              username: %Schema{type: :string, example: "karthiga",
+                                description: "Sender — use if no session"}
+            }
+          },
+
+          "ChatTypingRequest" => %Schema{
+            type: :object, title: "ChatTypingRequest",
+            properties: %{
+              username: %Schema{type: :string, example: "karthiga"}
+            }
+          },
+
+          # ── Chat Response Schemas ──────────────────────────
+          "ChatTokenResponse" => %Schema{
+            type: :object, title: "ChatTokenResponse",
+            properties: %{
+              token:      %Schema{type: :string, example: "a2FydGhpZ2E6MTcxMjM="},
+              username:   %Schema{type: :string, example: "karthiga"},
+              expires_in: %Schema{type: :integer, example: 3600}
+            }
+          },
+
+          "ChatRoomsResponse" => %Schema{
+            type: :object, title: "ChatRoomsResponse",
+            properties: %{
+              rooms: %Schema{
+                type: :array,
+                items: %Schema{
+                  type: :object,
+                  properties: %{
+                    id:           %Schema{type: :string,  example: "lobby"},
+                    name:         %Schema{type: :string,  example: "Lobby"},
+                    emoji:        %Schema{type: :string,  example: "🏠"},
+                    member_count: %Schema{type: :integer, example: 3},
+                    max:          %Schema{type: :integer, example: 5},
+                    is_full:      %Schema{type: :boolean, example: false}
+                  }
+                }
+              }
+            }
+          },
+
+          "ChatRoomResponse" => %Schema{
+            type: :object, title: "ChatRoomResponse",
+            properties: %{
+              id:      %Schema{type: :string,  example: "lobby"},
+              members: %Schema{type: :array, items: %Schema{type: :string}},
+              count:   %Schema{type: :integer, example: 2},
+              max:     %Schema{type: :integer, example: 5},
+              is_full: %Schema{type: :boolean, example: false}
+            }
+          },
+
+          "ChatRoomStatusResponse" => %Schema{
+            type: :object, title: "ChatRoomStatusResponse",
+            properties: %{
+              room:    %Schema{type: :string,  example: "lobby"},
+              count:   %Schema{type: :integer, example: 3},
+              max:     %Schema{type: :integer, example: 5},
+              is_full: %Schema{type: :boolean, example: false},
+              mode:    %Schema{type: :string,  example: "member",
+                               description: "member = can send | audience = read only"}
+            }
+          },
+
+          "ChatMembersResponse" => %Schema{
+            type: :object, title: "ChatMembersResponse",
+            properties: %{
+              room:    %Schema{type: :string},
+              members: %Schema{type: :array, items: %Schema{type: :string},
+                               example: ["karthiga", "ravi"]},
+              count:   %Schema{type: :integer, example: 2}
+            }
+          },
+
+          "ChatJoinResponse" => %Schema{
+            type: :object, title: "ChatJoinResponse",
+            properties: %{
+              ok:          %Schema{type: :boolean, example: true},
+              mode:        %Schema{type: :string,  example: "member",
+                                   description: "member | audience"},
+              is_audience: %Schema{type: :boolean, example: false},
+              room:        %Schema{type: :string,  example: "lobby"},
+              message:     %Schema{type: :string,  example: "karthiga joined as member"}
+            }
+          },
+
+          "ChatLeaveResponse" => %Schema{
+            type: :object, title: "ChatLeaveResponse",
+            properties: %{
+              ok:       %Schema{type: :boolean, example: true},
+              username: %Schema{type: :string,  example: "karthiga"},
+              room:     %Schema{type: :string,  example: "lobby"}
+            }
+          },
+
+          "ChatMessagesResponse" => %Schema{
+            type: :object, title: "ChatMessagesResponse",
+            properties: %{
+              room:     %Schema{type: :string,  example: "lobby"},
+              page:     %Schema{type: :integer, example: 1},
+              per_page: %Schema{type: :integer, example: 20},
+              total:    %Schema{type: :integer, example: 45},
+              messages: %Schema{
+                type: :array,
+                items: %Schema{
+                  type: :object,
+                  properties: %{
+                    user:   %Schema{type: :string,          example: "karthiga"},
+                    body:   %Schema{type: :string,          example: "hello everyone"},
+                    tagged: %Schema{type: :string,          example: nil,
+                                    nullable: true,
+                                    description: "null = public, username = private"}
+                  }
+                }
+              }
+            }
+          },
+
+          "ChatMessageResponse" => %Schema{
+            type: :object, title: "ChatMessageResponse",
+            properties: %{
+              ok: %Schema{type: :boolean, example: true},
+              message: %Schema{
+                type: :object,
+                properties: %{
+                  user:   %Schema{type: :string, example: "karthiga"},
+                  body:   %Schema{type: :string, example: "hello everyone"},
+                  tagged: %Schema{type: :string, nullable: true}
+                }
+              }
+            }
+          },
+
+          "ChatDMResponse" => %Schema{
+            type: :object, title: "ChatDMResponse",
+            properties: %{
+              ok:           %Schema{type: :boolean, example: true},
+              delivered_to: %Schema{type: :string,  example: "ravi"}
+            }
+          },
+
+          "ChatTypingResponse" => %Schema{
+            type: :object, title: "ChatTypingResponse",
+            properties: %{
+              ok: %Schema{type: :boolean, example: true}
+            }
+          }
+
         },
+
         securitySchemes: %{
           "BearerAuth" => %OpenApiSpex.SecurityScheme{
             type: "http",
@@ -230,9 +571,9 @@ defmodule AlemWeb.Swagger do
     }
   end
 
-  # ===========================================================================
-  # Schema definitions
-  # ===========================================================================
+  # ════════════════════════════════════════════════════════════
+  # SCHEMA DEFINITIONS
+  # ════════════════════════════════════════════════════════════
 
   defp register_app_request_schema do
     %Schema{
@@ -266,7 +607,8 @@ defmodule AlemWeb.Swagger do
       type: :object, title: "OAuthTokenRequest",
       required: [:grant_type],
       properties: %{
-        grant_type:    %Schema{type: :string, enum: ["password", "client_credentials"], example: "password"},
+        grant_type:    %Schema{type: :string, enum: ["password", "client_credentials"],
+                               example: "password"},
         username:      %Schema{type: :string, description: "Your nickname", example: "johndoe"},
         password:      %Schema{type: :string, format: :password, example: "securepassword123"},
         client_id:     %Schema{type: :string, example: "K7mF2xQ9rP..."},
@@ -287,7 +629,7 @@ defmodule AlemWeb.Swagger do
         expires_in:    %Schema{type: :integer, example: 2592000},
         refresh_token: %Schema{type: :string, example: "refresh_abc123..."},
         me:            %Schema{type: :string, description: "Your nickname", example: "johndoe"},
-        did:           %Schema{
+        did: %Schema{
           type: :string,
           description: "Your Decentralized Identifier",
           example: "did:przma:K7mF2xQ9rPvN3wLtZoYeA8hCbDsJuGiMnRkXpWqTcVlH"
@@ -307,8 +649,10 @@ defmodule AlemWeb.Swagger do
         password:         %Schema{type: :string, format: :password, example: "securepassword123"},
         fullname:         %Schema{type: :string, example: "John Doe"},
         bio:              %Schema{type: :string, example: "Software developer"},
-        captcha_token:    %Schema{type: :string, description: "Token from GET /api/v1/pleroma/captcha"},
-        captcha_solution: %Schema{type: :string, description: "Answer from the captcha challenge"}
+        captcha_token:    %Schema{type: :string,
+                                  description: "Token from GET /api/v1/pleroma/captcha"},
+        captcha_solution: %Schema{type: :string,
+                                  description: "Answer from the captcha challenge"}
       }
     }
   end
@@ -324,7 +668,8 @@ defmodule AlemWeb.Swagger do
         note:         %Schema{type: :string, example: "Software developer"},
         avatar:       %Schema{type: :string, example: ""},
         created_at:   %Schema{type: :string, example: "2026-02-27T00:00:00Z"},
-        did:          %Schema{type: :string, example: "did:przma:K7mF2xQ9rPvN3wLtZoYeA8hCbDsJuGiMnRkXpWqTcVlH"},
+        did: %Schema{type: :string,
+                     example: "did:przma:K7mF2xQ9rPvN3wLtZoYeA8hCbDsJuGiMnRkXpWqTcVlH"},
         pleroma: %Schema{
           type: :object,
           properties: %{
@@ -355,9 +700,11 @@ defmodule AlemWeb.Swagger do
       properties: %{
         user_id:       %Schema{type: :string, example: "mK92pqRtYuIoplKj"},
         nickname:      %Schema{type: :string, example: "johndoe"},
-        did:           %Schema{type: :string, example: "did:przma:K7mF2xQ9rPvN3wLtZoYeA8hCbDsJuGiMnRkXpWqTcVlH"},
+        did:           %Schema{type: :string,
+                               example: "did:przma:K7mF2xQ9rPvN3wLtZoYeA8hCbDsJuGiMnRkXpWqTcVlH"},
         did_method:    %Schema{type: :string, example: "przma"},
-        fingerprint:   %Schema{type: :string, example: "K7mF2xQ9rPvN3wLtZoYeA8hCbDsJuGiMnRkXpWqTcVlH"},
+        fingerprint:   %Schema{type: :string,
+                               example: "K7mF2xQ9rPvN3wLtZoYeA8hCbDsJuGiMnRkXpWqTcVlH"},
         namespace_key: %Schema{type: :string, example: "k7mf2xq9rpvn3wlt"},
         description:   %Schema{type: :string}
       }
@@ -373,26 +720,6 @@ defmodule AlemWeb.Swagger do
           type: :array,
           items: %Reference{"$ref": "#/components/schemas/SessionObject"}
         }
-      },
-      example: %{
-        sessions: [
-          %{
-            id:             "abc123xyz",
-            device:         "desktop",
-            ip_address:     "192.168.1.1",
-            user_agent:     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            last_active_at: "2026-03-03T10:30:00",
-            created_at:     "2026-03-03T09:00:00"
-          },
-          %{
-            id:             "def456uvw",
-            device:         "mobile",
-            ip_address:     "10.0.0.5",
-            user_agent:     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)",
-            last_active_at: "2026-03-02T20:00:00",
-            created_at:     "2026-03-02T18:00:00"
-          }
-        ]
       }
     }
   end
@@ -414,7 +741,8 @@ defmodule AlemWeb.Swagger do
         ip_address:     %Schema{type: :string, example: "192.168.1.1"},
         user_agent:     %Schema{type: :string, example: "Mozilla/5.0..."},
         last_active_at: %Schema{type: :string, format: :"date-time"},
-        created_at:     %Schema{type: :string, format: :"date-time", description: "Login time"}
+        created_at:     %Schema{type: :string, format: :"date-time",
+                                description: "Login time"}
       }
     }
   end
@@ -467,9 +795,9 @@ defmodule AlemWeb.Swagger do
     }
   end
 
-  # ===========================================================================
-  # Helper builders
-  # ===========================================================================
+  # ════════════════════════════════════════════════════════════
+  # HELPER BUILDERS
+  # ════════════════════════════════════════════════════════════
 
   defp op(summary, tag, op_id, desc, responses) do
     %OpenApiSpex.Operation{
@@ -521,13 +849,56 @@ defmodule AlemWeb.Swagger do
     }
   end
 
+  defp op_param(summary, tag, op_id, desc, parameters, responses) do
+    %OpenApiSpex.Operation{
+      summary: summary, tags: [tag], operationId: op_id,
+      description: desc, parameters: parameters,
+      responses: build_responses(responses)
+    }
+  end
+
+  defp op_body_param(summary, tag, op_id, desc, parameters, schema_name, responses) do
+    %OpenApiSpex.Operation{
+      summary: summary, tags: [tag], operationId: op_id,
+      description: desc, parameters: parameters,
+      requestBody: OpenApiSpex.Operation.request_body(
+        "Request body", "application/json",
+        %Reference{"$ref": "#/components/schemas/#{schema_name}"},
+        required: true
+      ),
+      responses: build_responses(responses)
+    }
+  end
+
   defp session_id_param do
     %OpenApiSpex.Parameter{
-      name: :id,
-      in: :path,
-      required: true,
+      name: :id, in: :path, required: true,
       description: "Session ID from GET /api/v1/sessions",
       schema: %Schema{type: :string, example: "abc123xyz"}
+    }
+  end
+
+  defp room_id_param do
+    %OpenApiSpex.Parameter{
+      name: :id, in: :path, required: true,
+      description: "Room ID — lobby | tamil | gaming",
+      schema: %Schema{type: :string, example: "lobby"}
+    }
+  end
+
+  defp page_param do
+    %OpenApiSpex.Parameter{
+      name: :page, in: :query, required: false,
+      description: "Page number (default: 1)",
+      schema: %Schema{type: :integer, example: 1}
+    }
+  end
+
+  defp per_page_param do
+    %OpenApiSpex.Parameter{
+      name: :per_page, in: :query, required: false,
+      description: "Messages per page (default: 20)",
+      schema: %Schema{type: :integer, example: 20}
     }
   end
 
