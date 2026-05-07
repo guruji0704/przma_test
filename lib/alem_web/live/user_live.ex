@@ -981,6 +981,14 @@ defmodule AlemWeb.UserLive do
             <span class="nav-icon">✏</span><span class="nav-label">PRZMA Studio</span>
           </button>
 
+          <button class="nav-item" onclick="window.location='/social'" data-label="Social">
+            <span class="nav-icon">🌐</span><span class="nav-label">Social</span>
+          </button>
+
+          <button class="nav-item" onclick="window.location='/chats'" data-label="Messages">
+            <span class="nav-icon">💬</span><span class="nav-label">Messages</span>
+          </button>
+
           <div class="nav-section">
             <span class="nav-section-label">Account</span>
           </div>
