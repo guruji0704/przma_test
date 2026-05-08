@@ -228,7 +228,7 @@ defmodule AlemWeb.Swagger do
         },
 
         "/api/v1/chat/rooms" => %OpenApiSpex.PathItem{
-          get: op("List Chat Rooms", "Chat", "chat_list_rooms",
+          get: op_auth("List Chat Rooms", "Chat", "chat_list_rooms",
             "List all rooms with live member counts. is_full = true means audience mode.",
             %{200 => resp("Rooms list", "ChatRoomsResponse")}),
           post: op_body("Create Chat Room", "Chat", "chat_create_room",
@@ -239,14 +239,14 @@ defmodule AlemWeb.Swagger do
         },
 
         "/api/v1/chat/rooms/{id}" => %OpenApiSpex.PathItem{
-          get: op_param("Get Room Details", "Chat", "chat_get_room",
+          get: op_auth_param("Get Room Details", "Chat", "chat_get_room",
             "Get room metadata, online members, and capacity info.",
             [room_id_param()],
             %{200 => resp("Room details", "ChatRoomResponse")})
         },
 
         "/api/v1/chat/rooms/{id}/status" => %OpenApiSpex.PathItem{
-          get: op_param("Room Status", "Chat", "chat_room_status",
+          get: op_auth_param("Room Status", "Chat", "chat_room_status",
             """
             Check room capacity before joining.
 
@@ -258,7 +258,7 @@ defmodule AlemWeb.Swagger do
         },
 
         "/api/v1/chat/rooms/{id}/members" => %OpenApiSpex.PathItem{
-          get: op_param("Online Members", "Chat", "chat_room_members",
+          get: op_auth_param("Online Members", "Chat", "chat_room_members",
             "Get list of currently online members in the room.",
             [room_id_param()],
             %{200 => resp("Members list", "ChatMembersResponse")})
@@ -288,7 +288,7 @@ defmodule AlemWeb.Swagger do
         },
 
         "/api/v1/chat/rooms/{id}/messages" => %OpenApiSpex.PathItem{
-          get: op_param("Message History", "Chat", "chat_get_messages",
+          get: op_auth_param("Message History", "Chat", "chat_get_messages",
             """
             Get paginated message history for a room.
 
@@ -858,25 +858,28 @@ defmodule AlemWeb.Swagger do
   end
 
   defp op_body_param(summary, tag, op_id, desc, parameters, schema_name, responses) do
-    %OpenApiSpex.Operation{
-      summary: summary, tags: [tag], operationId: op_id,
-      description: desc, parameters: parameters,
-      requestBody: OpenApiSpex.Operation.request_body(
-        "Request body", "application/json",
+  %OpenApiSpex.Operation{
+    summary: summary,
+    tags: [tag],
+    operationId: op_id,
+    description: desc,
+
+    # ✅ Swagger Bearer Auth
+    security: [%{"BearerAuth" => []}],
+
+    parameters: parameters,
+
+    requestBody:
+      OpenApiSpex.Operation.request_body(
+        "Request body",
+        "application/json",
         %Reference{"$ref": "#/components/schemas/#{schema_name}"},
         required: true
       ),
-      responses: build_responses(responses)
-    }
-  end
 
-  defp session_id_param do
-    %OpenApiSpex.Parameter{
-      name: :id, in: :path, required: true,
-      description: "Session ID from GET /api/v1/sessions",
-      schema: %Schema{type: :string, example: "abc123xyz"}
-    }
-  end
+    responses: build_responses(responses)
+  }
+end
 
   defp room_id_param do
     %OpenApiSpex.Parameter{
@@ -885,6 +888,18 @@ defmodule AlemWeb.Swagger do
       schema: %Schema{type: :string, example: "lobby"}
     }
   end
+  defp session_id_param do
+  %OpenApiSpex.Parameter{
+    name: :id,
+    in: :path,
+    required: true,
+    description: "Session ID",
+    schema: %Schema{
+      type: :string,
+      example: "abc123xyz"
+    }
+  }
+end
 
   defp page_param do
     %OpenApiSpex.Parameter{

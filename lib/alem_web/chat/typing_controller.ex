@@ -5,27 +5,25 @@ defmodule AlemWeb.Chat.TypingController do
   alias Phoenix.PubSub
   alias OpenApiSpex.Schema
 
-  tags ["Chat - Typing"]
+  tags ["Chat"]
 
   operation :notify,
     summary: "Broadcast typing indicator",
+    description: "Others in room will see 'johndoe is typing...'",
     parameters: [id: [in: :path, type: :string, required: true]],
-    request_body: {"Typing", "application/json", %Schema{
-      type: :object,
-      properties: %{
-        username: %Schema{type: :string, example: "karthiga"}
-      }
-    }},
-    responses: %{200 => {"OK", "application/json", %Schema{type: :object}}}
+    responses: %{
+      200 => {"OK", "application/json", %Schema{type: :object}},
+      401 => {"Unauthorized", "application/json", %Schema{type: :object}}
+    }
 
   def notify(conn, params) do
     room_id  = params["id"]
-    username =
-      get_session(conn, :username) ||
-      Map.get(params, "username") ||
-      "anon"
+
+    # ✅ DB-இல் இருந்து auto — username போட வேண்டாம்
+    user     = conn.assigns[:current_user]
+    username = user.username
 
     PubSub.broadcast(Alem.PubSub, "room:#{room_id}", {:typing, username})
-    json(conn, %{ok: true})
+    json(conn, %{ok: true, typing: username})
   end
 end

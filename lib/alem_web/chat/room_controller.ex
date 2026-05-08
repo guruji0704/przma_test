@@ -2,7 +2,6 @@ defmodule AlemWeb.Chat.RoomController do
   use AlemWeb, :controller
   use OpenApiSpex.ControllerSpecs
 
-  alias AlemWeb.Presence
   alias Phoenix.PubSub
   alias OpenApiSpex.Schema
 
@@ -11,55 +10,20 @@ defmodule AlemWeb.Chat.RoomController do
     %{id: "tamil",  name: "Tamil",  emoji: "🗣️"},
     %{id: "gaming", name: "Gaming", emoji: "🎮"}
   ]
-  @max_members 5
+  @max_members 2
 
-  tags ["Chat - Rooms"]
+  tags ["Chat"]
 
   operation :index,
     summary: "List all chat rooms",
+    description: "Returns all rooms with live member counts. Login required.",
     responses: %{
-      200 => {"Rooms", "application/json", %Schema{type: :object}}
+      200 => {"Rooms", "application/json", %Schema{type: :object}},
+      401 => {"Unauthorized", "application/json", %Schema{type: :object}}
     }
 
-  operation :show,
-    summary: "Get room details + members",
-    parameters: [id: [in: :path, type: :string, required: true]],
-    responses: %{200 => {"Room", "application/json", %Schema{type: :object}}}
-
-  operation :status,
-    summary: "Check room full or available",
-    parameters: [id: [in: :path, type: :string, required: true]],
-    responses: %{200 => {"Status", "application/json", %Schema{type: :object}}}
-
-  operation :join,
-    summary: "Join room — member or audience",
-    parameters: [id: [in: :path, type: :string, required: true]],
-    request_body: {"Join", "application/json", %Schema{
-      type: :object,
-      properties: %{
-        username: %Schema{type: :string, example: "karthiga"}
-      }
-    }},
-    responses: %{200 => {"Joined", "application/json", %Schema{type: :object}}}
-
-  operation :leave,
-    summary: "Leave a room",
-    parameters: [id: [in: :path, type: :string, required: true]],
-    request_body: {"Leave", "application/json", %Schema{
-      type: :object,
-      properties: %{
-        username: %Schema{type: :string, example: "karthiga"}
-      }
-    }},
-    responses: %{200 => {"Left", "application/json", %Schema{type: :object}}}
-
-  operation :members,
-    summary: "Get online members",
-    parameters: [id: [in: :path, type: :string, required: true]],
-    responses: %{200 => {"Members", "application/json", %Schema{type: :object}}}
-
   operation :create,
-    summary: "Create new room",
+    summary: "Create a new room",
     request_body: {"Room", "application/json", %Schema{
       type: :object,
       required: [:name],
@@ -68,7 +32,53 @@ defmodule AlemWeb.Chat.RoomController do
         emoji: %Schema{type: :string, example: "💬"}
       }
     }},
-    responses: %{200 => {"Created", "application/json", %Schema{type: :object}}}
+    responses: %{
+      200 => {"Created", "application/json", %Schema{type: :object}},
+      401 => {"Unauthorized", "application/json", %Schema{type: :object}},
+      422 => {"Error", "application/json", %Schema{type: :object}}
+    }
+
+  operation :show,
+    summary: "Get room details + online members",
+    parameters: [id: [in: :path, type: :string, required: true]],
+    responses: %{
+      200 => {"Room", "application/json", %Schema{type: :object}},
+      401 => {"Unauthorized", "application/json", %Schema{type: :object}}
+    }
+
+  operation :members,
+    summary: "Get online members in room",
+    parameters: [id: [in: :path, type: :string, required: true]],
+    responses: %{
+      200 => {"Members", "application/json", %Schema{type: :object}},
+      401 => {"Unauthorized", "application/json", %Schema{type: :object}}
+    }
+
+  operation :status,
+    summary: "Check room status — full or available",
+    description: "mode: member = can send | audience = read only",
+    parameters: [id: [in: :path, type: :string, required: true]],
+    responses: %{
+      200 => {"Status", "application/json", %Schema{type: :object}},
+      401 => {"Unauthorized", "application/json", %Schema{type: :object}}
+    }
+
+  operation :join,
+    summary: "Join a room",
+    description: "Room full → audience (read only). Room available → member (can send).",
+    parameters: [id: [in: :path, type: :string, required: true]],
+    responses: %{
+      200 => {"Joined", "application/json", %Schema{type: :object}},
+      401 => {"Unauthorized", "application/json", %Schema{type: :object}}
+    }
+
+  operation :leave,
+    summary: "Leave a room",
+    parameters: [id: [in: :path, type: :string, required: true]],
+    responses: %{
+      200 => {"Left", "application/json", %Schema{type: :object}},
+      401 => {"Unauthorized", "application/json", %Schema{type: :object}}
+    }
 
   # ── ACTIONS ─────────────────────────────────────────────────
 
@@ -110,34 +120,43 @@ defmodule AlemWeb.Chat.RoomController do
   def show(conn, %{"id" => id}) do
     members = get_room_members(id)
     count   = length(members)
+
     json(conn, %{
-      id: id, members: members,
-      count: count, max: @max_members,
+      id:      id,
+      members: members,
+      count:   count,
+      max:     @max_members,
       is_full: count >= @max_members
     })
   end
 
   def members(conn, %{"id" => id}) do
     members = get_room_members(id)
-    json(conn, %{room: id, members: members, count: length(members)})
+    json(conn, %{
+      room:    id,
+      members: members,
+      count:   length(members)
+    })
   end
 
   def status(conn, %{"id" => id}) do
     count   = get_room_members(id) |> length()
     is_full = count >= @max_members
+
     json(conn, %{
-      room: id, count: count, max: @max_members,
+      room:    id,
+      count:   count,
+      max:     @max_members,
       is_full: is_full,
-      mode: if(is_full, do: "audience", else: "member")
+      mode:    if(is_full, do: "audience", else: "member")
     })
   end
 
-  def join(conn, params) do
-    id       = params["id"]
-    username =
-      get_session(conn, :username) ||
-      Map.get(params, "username") ||
-      "anon"
+  def join(conn, %{"id" => id}) do
+    # ✅ DB-இல் இருந்து login பண்ணின user — auto வரும்
+    user     = conn.assigns[:current_user]
+    username = user.username
+    did      = user.did
 
     members = get_room_members(id)
     count   = length(members)
@@ -145,24 +164,39 @@ defmodule AlemWeb.Chat.RoomController do
     if count < @max_members do
       add_member(id, username)
       PubSub.broadcast(Alem.PubSub, "room:#{id}", {:user_joined, username})
-      json(conn, %{ok: true, mode: "member", is_audience: false, room: id})
+
+      json(conn, %{
+        ok:          true,
+        mode:        "member",
+        is_audience: false,
+        room:        id,
+        username:    username,
+        did:         did
+      })
     else
-      json(conn, %{ok: true, mode: "audience", is_audience: true, room: id,
-                   message: "Room full — joined as audience (read only)"})
+      json(conn, %{
+        ok:          true,
+        mode:        "audience",
+        is_audience: true,
+        room:        id,
+        username:    username,
+        did:         did,
+        message:     "Room full (#{count}/#{@max_members}) — joined as audience (read only)"
+      })
     end
   end
 
-  def leave(conn, params) do
-    id       = params["id"]
-    username =
-      get_session(conn, :username) ||
-      Map.get(params, "username") ||
-      "anon"
+  def leave(conn, %{"id" => id}) do
+    user     = conn.assigns[:current_user]
+    username = user.username
 
     remove_member(id, username)
     PubSub.broadcast(Alem.PubSub, "room:#{id}", {:user_left, username})
+
     json(conn, %{ok: true, username: username, room: id})
   end
+
+  # ── PRIVATE HELPERS ──────────────────────────────────────────
 
   defp get_room_members(room_id) do
     key = "members:#{room_id}"

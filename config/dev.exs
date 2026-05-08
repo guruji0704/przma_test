@@ -104,3 +104,5 @@ config :alem, Alem.LocalFirst.LibSQLRepo,
   busy_timeout: 5_000,
   stacktrace: true,
   show_sensitive_data_on_connection_error: true
+config :alem, Alem.Mailer,
+  adapter: Swoosh.Adapters.Local

@@ -221,32 +221,32 @@ defmodule AlemWeb.Router do
       default_model_expand_depth: 2
   end
   # =======================
-# =======================
-# CHAT API
-# =======================
+ # =======================
+  # CHAT API
+  # =======================
 
-# Public — token வாங்க (no auth)
-scope "/api/v1/chat", AlemWeb do
-  pipe_through :api
-  post "/socket/token", Chat.TokenController, :create
-end
+  # ✅ எல்லாமே Protected — Pleroma token required
+  # Token controller வேண்டாம் — ஒரே token மட்டும்
+  scope "/api/v1/chat", AlemWeb do
+    pipe_through [:api, AlemWeb.Plugs.ChatAuth]
 
-# Protected — Bearer token required
-scope "/api/v1/chat", AlemWeb do
-  pipe_through [:api, AlemWeb.Plugs.ChatAuth]  # ← auth add பண்ணோம்
+    # Rooms
+    get    "/rooms",              Chat.RoomController,    :index
+    post   "/rooms",              Chat.RoomController,    :create
+    get    "/rooms/:id",          Chat.RoomController,    :show
+    get    "/rooms/:id/members",  Chat.RoomController,    :members
+    get    "/rooms/:id/status",   Chat.RoomController,    :status
+    post   "/rooms/:id/join",     Chat.RoomController,    :join
+    delete "/rooms/:id/leave",    Chat.RoomController,    :leave
 
-  get    "/rooms",              Chat.RoomController,    :index
-  post   "/rooms",              Chat.RoomController,    :create
-  get    "/rooms/:id",          Chat.RoomController,    :show
-  get    "/rooms/:id/members",  Chat.RoomController,    :members
-  get    "/rooms/:id/status",   Chat.RoomController,    :status
-  post   "/rooms/:id/join",     Chat.RoomController,    :join
-  delete "/rooms/:id/leave",    Chat.RoomController,    :leave
-  get    "/rooms/:id/messages", Chat.MessageController, :index
-  post   "/rooms/:id/messages", Chat.MessageController, :send_message
-  post   "/messages/private",   Chat.MessageController, :send_private
-  post   "/rooms/:id/typing",   Chat.TypingController,  :notify
-end
+    # Messages
+    get    "/rooms/:id/messages", Chat.MessageController, :index
+    post   "/rooms/:id/messages", Chat.MessageController, :send_message
+    post   "/messages/private",   Chat.MessageController, :send_private
+
+    # Typing
+    post   "/rooms/:id/typing",   Chat.TypingController,  :notify
+  end
 
   # =======================
   # OPENAPI JSON
