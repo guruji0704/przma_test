@@ -24,7 +24,7 @@ defmodule AlemWeb.Chat.RoomController do
     %{id: "private", name: "Private", emoji: "🔒", type: "private"}
   ]
 
-  @max_members 5
+  @max_members 2
 
   tags ["Chat - Rooms"]
 
