@@ -85,4 +85,14 @@ defmodule Alem.Storage.CAS do
   defp s3_key_for(hash) do
     "cas/#{String.slice(hash, 0, 2)}/#{String.slice(hash, 2, 2)}/#{hash}"
   end
+  defp vault_prefix(nil), do: "cas/shared/"
+  defp vault_prefix(ns) when is_binary(ns) do
+    cond do
+      String.ends_with?(ns, "-personal") -> "cas/personal/"
+      String.ends_with?(ns, "-public")   -> "cas/public/"
+      String.ends_with?(ns, "-private")  -> "cas/private/"
+      true -> "cas/shared/"
+    end
+  end
+
 end

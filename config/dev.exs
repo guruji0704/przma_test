@@ -7,7 +7,7 @@ config :alem, Alem.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "172.235.17.68",
-  database: "dev_alem_integrated",
+  database: "dev_vault",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10

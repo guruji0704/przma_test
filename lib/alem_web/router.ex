@@ -73,6 +73,7 @@ defmodule AlemWeb.Router do
     pipe_through [:browser, :user_layout, :user_auth]
     live "/panel", UserLive, :index
     live "/chat/:id", ChatLive, :show
+    live "/chats",    ChatsLive,  :index
     live "/social", SocialLive, :index
   end
 

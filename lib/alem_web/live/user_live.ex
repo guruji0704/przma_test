@@ -33,6 +33,7 @@ defmodule AlemWeb.UserLive do
        |> assign(:flash_msg,      nil)
        |> assign(:flash_type,     :success)
        |> assign(:active_folder,  "personal")
+       |> assign(:random_vault,    nil)
        |> assign(:folder_stats,   load_folder_stats(user.id))
        |> allow_upload(:file,
            accept: ~w(.mp3 .wav .mp4 .mov .jpg .jpeg .png .gif .pdf .txt .docx),
@@ -169,6 +170,16 @@ defmodule AlemWeb.UserLive do
 
   def handle_event("logout", _, socket), do: {:noreply, redirect(socket, to: "/panel/logout")}
   def handle_event("dismiss_flash", _, socket), do: {:noreply, assign(socket, :flash_msg, nil)}
+
+  def handle_event("random_upload", _params, socket) do
+    vault_num  = :rand.uniform(3) - 1
+    vault_name = %{0 => "personal", 1 => "private", 2 => "public"}[vault_num]
+    user = socket.assigns.user
+    {:noreply, socket
+      |> assign(:active_folder, vault_name)
+      |> assign(:random_vault, vault_num)
+      |> assign(:files, load_files_by_folder(user.id, vault_name))}
+  end
 
   def handle_event("set_folder", %{"folder" => f}, socket)
       when f in ~w(personal private public) do
@@ -310,6 +321,7 @@ defmodule AlemWeb.UserLive do
       |> assign(:month_values,  Jason.encode!(month_values))
       |> assign(:folder_stats,  assigns[:folder_stats] || %{})
       |> assign(:active_folder,  assigns[:active_folder] || "personal")
+      |> assign(:random_vault,     assigns[:random_vault])
       |> assign(:type_values,   Jason.encode!([
            assigns.stats.audio, assigns.stats.video,
            assigns.stats.image, assigns.stats.document
@@ -1331,6 +1343,10 @@ defmodule AlemWeb.UserLive do
             phx-click="set_folder" phx-value-folder="public"
             style={"font-size:11px;#{if @active_folder=="public", do: "background:#d1fae5;color:#064e3b;border-color:#059669", else: ""}"}>
             🌍 Public (<%= Map.get(@folder_stats, "public", 0) %>)</button>
+          <button class={"ftab #{if @random_vault != nil, do: "on"}"}
+            phx-click="random_upload"
+            style={"font-size:11px;#{if @random_vault != nil, do: "background:#fce7f3;color:#831843;border-color:#db2777", else: ""}"}>
+            🎲 Random <%= if @random_vault != nil, do: "(→ #{@active_folder})", else: "" %></button>
         </div>
         <!-- Filter tabs -->
         <div class="filter-row">
@@ -1459,6 +1475,17 @@ defmodule AlemWeb.UserLive do
               <div class="fc-desc">What you choose to share with the world. PRZMA Commons can read this.</div>
               <div class="fc-count"><%= Map.get(@folder_stats || %{}, "public", 0) %> files</div>
             </div>
+            <div class={"folder-card #{if @random_vault != nil, do: "active"}"}
+                 phx-click="random_upload"
+                 style="border-color:#db2777;cursor:pointer">
+              <div class="fc-icon">🎲</div>
+              <div class="fc-name">Random</div>
+              <div class="fc-tags">0=Personal · 1=Private · 2=Public</div>
+              <div class="fc-desc">System picks a vault randomly on each click. Used for testing vault distribution across S3.</div>
+              <div class="fc-count" style="color:#db2777;font-weight:700">
+                <%= if @random_vault != nil, do: "→ vault #{@random_vault} (#{@active_folder})", else: "Click to pick" %>
+              </div>
+            </div>
           </div>
 
           <div style="font-size:12px;color:var(--text-2);padding:8px 12px;
@@ -1470,6 +1497,8 @@ defmodule AlemWeb.UserLive do
                 🔒 <strong>Private</strong> — encrypted on your device before upload. Server cannot read this content. No sharing possible.
               <% "public" -> %>
                 🌍 <strong>Public</strong> — visible to everyone. PRZMA platform can use this for collective intelligence. You can un-public any file at any time.
+              <% _ -> %>
+                🎲 <strong>Random</strong> — vault <%= @random_vault || "?" %> selected (<%= String.capitalize(@active_folder) %>). File will go to <strong><%= @active_folder %>/ab/cd/hash</strong> in Linode S3.
             <% end %>
           </div>
         </div>
