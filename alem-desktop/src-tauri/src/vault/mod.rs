@@ -33,7 +33,7 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Nonce,
 };
 use argon2::{Argon2, Algorithm, Version, Params};
-use lancedb::{connect, connection::Connection, Table};
+
 use keyring::Entry;
 use arrow_array::{StringArray, Array};
 use base64::Engine;

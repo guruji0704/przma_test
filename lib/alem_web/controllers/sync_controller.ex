@@ -25,27 +25,25 @@ defmodule AlemWeb.SyncController do
 
   defp crdt_upload_msgpack(conn, params) do
     file_bytes = normalize_binary(Map.get(params, "file_content"))
-    arrow_ipc  = normalize_binary(Map.get(params, "arrow_metadata_ipc"))
     with {:ok, user}     <- get_current_user(conn),
          {:ok, doc_id}   <- require_param(params, "doc_id"),
          {:ok, filename} <- require_param(params, "filename") do
-      content_type = Map.get(params, "content_type", "application/octet-stream")
+      content_type   = Map.get(params, "content_type", "application/octet-stream")
+      vault_category = Map.get(params, "vault_category", "personal")
       bucket = get_s3_bucket()
       if byte_size(file_bytes) == 0 do
         conn |> put_status(400) |> json(%{error: "Empty file content"})
       else
-        case upload_content_to_s3(user.id, doc_id, filename, file_bytes, content_type, bucket) do
+        case upload_content_to_s3(derive_namespace_key(user), vault_category, doc_id, filename, file_bytes, content_type, bucket) do
           {:ok, s3_key} ->
-            if is_binary(arrow_ipc) and byte_size(arrow_ipc) > 0 do
-              Task.start(fn -> Alem.Analytics.MetadataStore.ingest(arrow_ipc, user.id, doc_id) end)
-            end
             upsert_document_pg(%{
-              id:           doc_id,
-              user_id:      user.id,
-              filename:     filename,
-              object_key:   s3_key,
-              content_type: content_type,
-              status:       "synced"
+              id:            doc_id,
+              user_id:       user.id,
+              filename:      filename,
+              object_key:    s3_key,
+              content_type:  content_type,
+              vault_category: vault_category,
+              status:        "synced"
             })
             # Push perception event with vector to LanceDB via Rust NIF
             Task.start(fn ->
@@ -78,6 +76,8 @@ defmodule AlemWeb.SyncController do
             conn |> put_status(500) |> json(%{error: "S3 failed: #{inspect(reason)}"})
         end
       end
+    else
+      {:error, _} -> conn |> put_status(401) |> json(%{error: "Unauthorized"})
     end
   end
 
@@ -88,16 +88,18 @@ defmodule AlemWeb.SyncController do
          {:ok, file_bytes} <- decode_file_content(params),
          {:ok, _}          <- {:ok, decode_crdt_state(params)} do
       content_type = "application/octet-stream"
-      case upload_content_to_s3(user.id, doc_id, filename, file_bytes,
+      vault_category = Map.get(params, "vault_category", "personal")
+      case upload_content_to_s3(derive_namespace_key(user), vault_category, doc_id, filename, file_bytes,
              content_type, get_s3_bucket()) do
         {:ok, s3_key} ->
           upsert_document_pg(%{
-            id:           doc_id,
-            user_id:      user.id,
-            filename:     filename,
-            object_key:   s3_key,
-            content_type: content_type,
-            status:       "synced"
+            id:            doc_id,
+            user_id:       user.id,
+            filename:      filename,
+            object_key:    s3_key,
+            content_type:  content_type,
+            vault_category: vault_category,
+            status:        "synced"
           })
           # Push perception event with vector to LanceDB via Rust NIF
           Task.start(fn ->
@@ -129,6 +131,8 @@ defmodule AlemWeb.SyncController do
         {:error, _} ->
           conn |> put_status(500) |> json(%{error: "Upload failed"})
       end
+    else
+      {:error, _} -> conn |> put_status(401) |> json(%{error: "Unauthorized"})
     end
   end
 
@@ -140,19 +144,16 @@ defmodule AlemWeb.SyncController do
     with {:ok, user}     <- get_current_user(conn),
          {:ok, doc_id}   <- require_param(params, "doc_id"),
          {:ok, filename} <- require_param(params, "filename") do
-      did_id        = user.did_id || Alem.DID.generate(user.id)
-      namespace_key = Alem.DID.namespace_key(did_id)
+      namespace_key  = derive_namespace_key(user)
+      did_id         = user.did_id || "did:przma:#{namespace_key}"
+      vault_category = Map.get(params, "vault_category", "personal")
       Alem.Namespace.Manager.start(user.id, namespace_key, [did: did_id])
       content_type = Map.get(params, "content_type", "application/octet-stream")
       bucket = get_s3_bucket()
-      s3_key = "user/#{namespace_key}/documents/#{doc_id}/#{filename}"
+      s3_key = vault_s3_key(namespace_key, vault_category, doc_id, filename)
       case ExAws.S3.initiate_multipart_upload(bucket, s3_key, content_type: content_type)
            |> ExAws.request(virtual_host: false) do
         {:ok, %{body: %{upload_id: upload_id}}} ->
-          arrow_ipc = normalize_binary(Map.get(params, "arrow_metadata_ipc"))
-          if is_binary(arrow_ipc) and byte_size(arrow_ipc) > 0 do
-            Task.start(fn -> Alem.Analytics.MetadataStore.ingest(arrow_ipc, user.id, doc_id) end)
-          end
           json(conn, %{
             success:       true,
             upload_id:     upload_id,
@@ -162,6 +163,8 @@ defmodule AlemWeb.SyncController do
         {:error, reason} ->
           conn |> put_status(500) |> json(%{error: "S3 failed: #{inspect(reason)}"})
       end
+    else
+      {:error, _} -> conn |> put_status(401) |> json(%{error: "Unauthorized"})
     end
   end
 
@@ -172,8 +175,9 @@ defmodule AlemWeb.SyncController do
          {:ok, part_num}  <- parse_integer(params, "part_num") do
       case read_full_body(conn, <<>>) do
         {:ok, binary, conn} ->
-          namespace_key = Alem.DID.namespace_key(user.did_id || Alem.DID.generate(user.id))
-          s3_key = "user/#{namespace_key}/documents/#{doc_id}/#{Map.get(params, "filename", "unknown")}"
+          namespace_key  = derive_namespace_key(user)
+          vault_category = Map.get(params, "vault_category", "personal")
+          s3_key = vault_s3_key(namespace_key, vault_category, doc_id, Map.get(params, "filename", "unknown"))
           case ExAws.S3.upload_part(get_s3_bucket(), s3_key, upload_id, part_num, binary)
                |> ExAws.request(virtual_host: false) do
             {:ok, res} ->
@@ -188,6 +192,8 @@ defmodule AlemWeb.SyncController do
         {:error, _} ->
           conn |> put_status(400) |> json(%{error: "Body read failed"})
       end
+    else
+      {:error, _} -> conn |> put_status(401) |> json(%{error: "Unauthorized"})
     end
   end
 
@@ -197,9 +203,10 @@ defmodule AlemWeb.SyncController do
          {:ok, upload_id} <- require_param(params, "upload_id"),
          {:ok, filename}  <- require_param(params, "filename"),
          {:ok, parts_raw} <- require_param(params, "parts") do
-      namespace_key = Alem.DID.namespace_key(user.did_id || Alem.DID.generate(user.id))
+      namespace_key  = derive_namespace_key(user)
+      vault_category = Map.get(params, "vault_category", "personal")
       bucket = get_s3_bucket()
-      s3_key = "user/#{namespace_key}/documents/#{doc_id}/#{filename}"
+      s3_key = vault_s3_key(namespace_key, vault_category, doc_id, filename)
       parts  = parts_raw
                |> Enum.map(fn p -> {p["part_num"], p["etag"]} end)
                |> Enum.sort_by(fn {n, _} -> n end)
@@ -207,9 +214,10 @@ defmodule AlemWeb.SyncController do
            |> ExAws.request(virtual_host: false) do
         {:ok, _} ->
           epoch_id = Map.get(params, "epoch_id")
+          user_did = user.did_id || "did:przma:#{namespace_key}"
           ctx = %{
             user_id:       user.id,
-            namespace_key: user.id,
+            namespace_key: namespace_key,
             actor_did:     user.did_id,
             device_id:     Map.get(params, "device_id", "unknown"),
             filename:      filename
@@ -217,12 +225,26 @@ defmodule AlemWeb.SyncController do
           Task.start(fn ->
             # 1. Save document metadata to PostgreSQL
             upsert_document_pg(%{
-              id:           doc_id,
-              user_id:      user.id,
-              filename:     filename,
-              object_key:   s3_key,
-              content_type: "application/octet-stream",
-              status:       "synced"
+              id:            doc_id,
+              user_id:       user.id,
+              filename:      filename,
+              object_key:    s3_key,
+              content_type:  "application/octet-stream",
+              vault_category: vault_category,
+              status:        "synced"
+            })
+
+            # 2. Write to server-side vault LanceDB
+            Alem.Lance.VaultStore.upsert_document(vault_category, %{
+              doc_id:        doc_id,
+              user_did:      user_did,
+              namespace_key: namespace_key,
+              filename:      filename,
+              content_type:  "application/octet-stream",
+              object_key:    s3_key,
+              device_id:     Map.get(params, "device_id", "unknown"),
+              epoch_id:      epoch_id,
+              status:        "synced"
             })
 
             # 2. Generate vector + push perception event to LanceDB via Rust NIF
@@ -258,14 +280,88 @@ defmodule AlemWeb.SyncController do
             end
 
             # 3. Extract vault content if E2EE epoch key present
-            if is_integer(epoch_id),
+            if is_integer(epoch_id) and epoch_id > 0,
               do: extract_vault_content_async(doc_id, s3_key, bucket, epoch_id, ctx),
-              else: Logger.warning("[CAS] Skipping doc=#{doc_id}: No epoch_id")
+              else: Logger.debug("[CAS] Skipping doc=#{doc_id}: No valid epoch_id (#{inspect(epoch_id)})")
           end)
           json(conn, %{success: true, s3_key: s3_key})
         {:error, _} ->
           conn |> put_status(500) |> json(%{error: "Completion failed"})
       end
+    else
+      {:error, _} -> conn |> put_status(401) |> json(%{error: "Unauthorized"})
+    end
+  end
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # V1 CHUNK / FINALIZE (delegates to crdt_upload)
+  # ══════════════════════════════════════════════════════════════════════════
+
+  def chunk_upload(conn, params), do: crdt_upload(conn, params)
+  def finalize_upload(conn, params), do: crdt_upload(conn, params)
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # APPLY CHANGES
+  # ══════════════════════════════════════════════════════════════════════════
+
+  def apply_changes(conn, _params) do
+    json(conn, %{success: true, applied: 0})
+  end
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # DOWNLOAD FILE — returns presigned S3 URL for a single document
+  # ══════════════════════════════════════════════════════════════════════════
+
+  def download_file(conn, %{"doc_id" => doc_id}) do
+    with {:ok, user} <- get_current_user(conn) do
+      case Repo.one(from d in Document, where: d.id == ^doc_id and d.user_id == ^user.id) do
+        nil ->
+          conn |> put_status(404) |> json(%{error: "Not found"})
+        %{object_key: nil} ->
+          conn |> put_status(404) |> json(%{error: "No file stored for this document"})
+        doc ->
+          case Alem.Storage.ObjectStore.presigned_download_url(get_s3_bucket(), doc.object_key) do
+            {:ok, url} ->
+              json(conn, %{
+                id:           doc.id,
+                filename:     doc.filename,
+                content_type: doc.content_type,
+                download_url: url
+              })
+            {:error, reason} ->
+              Logger.error("[DownloadFile] Presign failed for #{doc_id}: #{inspect(reason)}")
+              conn |> put_status(500) |> json(%{error: "Could not generate download URL"})
+          end
+      end
+    else
+      {:error, _} -> conn |> put_status(401) |> json(%{error: "Unauthorized"})
+    end
+  end
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # SSE EVENT STREAM — real-time sync nudges to desktop clients
+  # ══════════════════════════════════════════════════════════════════════════
+
+  def event_stream(conn, _params) do
+    case get_current_user(conn) do
+      {:ok, _user} ->
+        conn =
+          conn
+          |> put_resp_content_type("text/event-stream")
+          |> put_resp_header("cache-control", "no-cache")
+          |> put_resp_header("x-accel-buffering", "no")
+          |> send_chunked(200)
+        sse_heartbeat_loop(conn)
+      _ ->
+        conn |> put_status(401) |> json(%{error: "Unauthorized"})
+    end
+  end
+
+  defp sse_heartbeat_loop(conn) do
+    Process.sleep(25_000)
+    case Plug.Conn.chunk(conn, ": heartbeat\n\n") do
+      {:ok, conn} -> sse_heartbeat_loop(conn)
+      {:error, _} -> conn
     end
   end
 
@@ -287,16 +383,33 @@ defmodule AlemWeb.SyncController do
           where: d.user_id == ^user.id and d.updated_at >= ^since_dt,
           order_by: [desc: d.updated_at],
           select: %{
-            id:           d.id,
-            filename:     d.filename,
-            content_type: d.content_type,
-            object_key:   d.object_key,
-            content_hash: d.content_hash,
-            status:       d.status,
-            updated_at:   d.updated_at
+            id:               d.id,
+            filename:         d.filename,
+            content_type:     d.content_type,
+            object_key:       d.object_key,
+            content_hash:     d.content_hash,
+            status:           d.status,
+            last_modified_at: d.updated_at,
+            device_id:        fragment("coalesce((?->>'device_id'), '')", d.metadata),
+            vault_category:   d.vault_category
           }
       )
-      json(conn, %{success: true, changes: docs})
+      bucket = get_s3_bucket()
+      changes = Enum.map(docs, fn doc ->
+        download_url =
+          case doc.object_key do
+            nil -> nil
+            key ->
+              case Alem.Storage.ObjectStore.presigned_download_url(bucket, key) do
+                {:ok, url} -> url
+                _          -> nil
+              end
+          end
+        Map.put(doc, :download_url, download_url)
+      end)
+      json(conn, %{success: true, changes: changes})
+    else
+      {:error, _} -> conn |> put_status(401) |> json(%{error: "Unauthorized"})
     end
   end
 
@@ -437,17 +550,18 @@ defmodule AlemWeb.SyncController do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     Repo.insert!(
       %Document{
-        id:           attrs.id,
-        tenant_id:    "default",
-        user_id:      attrs.user_id,
-        filename:     attrs.filename,
-        object_key:   attrs.object_key,
-        content_type: Map.get(attrs, :content_type, "application/octet-stream"),
-        status:       Map.get(attrs, :status, "synced"),
-        inserted_at:  now,
-        updated_at:   now
+        id:             attrs.id,
+        tenant_id:      "default",
+        user_id:        attrs.user_id,
+        filename:       attrs.filename,
+        object_key:     attrs.object_key,
+        content_type:   Map.get(attrs, :content_type, "application/octet-stream"),
+        vault_category: Map.get(attrs, :vault_category, "personal"),
+        status:         Map.get(attrs, :status, "synced"),
+        inserted_at:    now,
+        updated_at:     now
       },
-      on_conflict: {:replace, [:filename, :object_key, :content_type, :status, :updated_at]},
+      on_conflict: {:replace, [:filename, :object_key, :content_type, :vault_category, :status, :updated_at]},
       conflict_target: :id
     )
     :ok
@@ -529,22 +643,36 @@ defmodule AlemWeb.SyncController do
   # GENERAL HELPERS
   # ══════════════════════════════════════════════════════════════════════════
 
-  # defp get_current_user(conn) do
-  #   case get_req_header(conn, "authorization") do
-  #     ["Bearer " <> token | _] -> Auth.verify_token(token)
-  #     _                        -> {:error, :missing_token}
-  #   end
-  # end
-
-  defp get_current_user(_conn) do
-    {:ok, %{id: "1", did_id: "did:przma:test001"}}
+  defp get_current_user(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token | _] -> Auth.verify_token(token)
+      _                        -> {:error, :missing_token}
+    end
   end
 
-  defp upload_content_to_s3(user_id, doc_id, filename, file_bytes, type, bucket) do
-    s3_key = "user/#{user_id}/documents/#{doc_id}/#{filename}"
-    ExAws.S3.put_object(bucket, s3_key, file_bytes, content_type: type)
-    |> ExAws.request(virtual_host: false)
-    {:ok, s3_key}
+  defp derive_namespace_key(user) do
+    case user.did_id do
+      did when is_binary(did) and byte_size(did) > 0 ->
+        Alem.DID.namespace_key(did)
+      _ ->
+        # Stable fallback: SHA-256(user_id), base64url, first 16 chars — never random
+        :crypto.hash(:sha256, user.id)
+        |> Base.url_encode64(padding: false)
+        |> binary_part(0, 16)
+    end
+  end
+
+  defp upload_content_to_s3(namespace_key, vault_category, doc_id, filename, file_bytes, type, bucket) do
+    s3_key = vault_s3_key(namespace_key, vault_category, doc_id, filename)
+    case ExAws.S3.put_object(bucket, s3_key, file_bytes, content_type: type)
+         |> ExAws.request(virtual_host: false) do
+      {:ok, _}         -> {:ok, s3_key}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp vault_s3_key(namespace_key, vault_category, doc_id, filename) do
+    "user/#{namespace_key}/#{vault_category}_vault/#{doc_id}/#{filename}"
   end
 
   defp get_s3_bucket, do: System.get_env("AWS_S3_BUCKET", "perkeep")

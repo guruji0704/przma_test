@@ -6,35 +6,16 @@ use futures::StreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use tauri::{AppHandle, Manager, Emitter};
 use crate::{AppState, device};
-use crate::arrow::{upload_meta_to_ipc, UploadMeta};
-use arrow_array::{StringArray, Array};
+use arrow_array::{StringArray, BinaryArray, Int64Array, Float32Array, FixedSizeListArray, Array};
+use arrow::record_batch::{RecordBatch, RecordBatchIterator};
+use arrow::datatypes::{Field, DataType};
 use crate::sync::stream_sync::StreamSyncWriter;
 use serde_json::{json, Value as JsonValue};
-use arrow::record_batch::RecordBatch;
 
 // Either stream from a vault file (no RAM for file bytes) or use in-memory bytes (legacy blobs).
 enum FileSource {
     VaultFile(String),
     Bytes(Vec<u8>),
-}
-
-// ── XRPC MsgPack upload envelope ─────────────────────────────────────────
-#[derive(serde::Serialize)]
-struct XrpcUpload<'a> {
-    doc_id:             &'a str,
-    filename:           &'a str,
-    content_type:       &'a str,
-    #[serde(with = "serde_bytes")]
-    file_content:       &'a [u8],
-    #[serde(with = "serde_bytes")]
-    automerge_state:    &'a [u8],
-    epoch_id:           Option<u32>,
-    text_content:       &'a str,
-    last_modified_at:   &'a str,
-    device_id:          &'a str,
-    #[serde(with = "serde_bytes")]
-    pub arrow_metadata_ipc: &'a [u8],
-    pub vault_category:     &'a str,
 }
 
 
@@ -43,7 +24,7 @@ struct XrpcUpload<'a> {
 // ══════════════════════════════════════════════════════════════════════════
 
 pub async fn start(app: AppHandle) {
-    log::info!("🔄 [CRDT Sync] Background sync engine started");
+    log::info!("🔄 [CRDT Sync] Background sync engine started (Event-Driven)");
     
     // Start SSE listener for instant sync
     let app_clone = app.clone();
@@ -62,7 +43,16 @@ pub async fn start(app: AppHandle) {
             }
             Err(e) => log::warn!("[CRDT Sync] ❌ Sync error: {}", e),
         }
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        
+        let state = app.state::<AppState>();
+        tokio::select! {
+            _ = state.sync_notify.notified() => {
+                log::info!("🔔 [Sync] Triggered by local change or nudge");
+            }
+            _ = tokio::time::sleep(Duration::from_secs(300)) => {
+                log::info!("💓 [Sync] Safety heartbeat pulse (5m)");
+            }
+        }
     }
 }
 
@@ -105,8 +95,8 @@ async fn start_listener(app: AppHandle) -> Result<(), String> {
                         Ok(bytes) => {
                             let text = String::from_utf8_lossy(&bytes);
                             if text.contains("event: sync_nudge") {
-                                log::info!("🔔 [SSE] Received sync nudge! Triggering instant cycle...");
-                                let _ = run_sync_cycle(&app).await;
+                                log::info!("🔔 [SSE] Received sync nudge! Triggering main loop...");
+                                app.state::<AppState>().sync_notify.notify_one();
                             }
                         }
                         Err(e) => {
@@ -311,6 +301,7 @@ async fn push_documents(
         let modified_col = get_str_col!(10, "updated_at");
         let size_col = get_int_col!(11, "file_size");
         let status_col = get_str_col!(13, "status");
+        let epoch_col = get_int_col!(16, "epoch_id");
 
         for i in 0..batch.num_rows() {
             pending.push(PendingDoc {
@@ -323,7 +314,7 @@ async fn push_documents(
                 last_modified_at: modified_col.value(i).to_string(),
                 status:           status_col.value(i).to_string(),
                 vault_path:       if path_col.is_null(i) { None } else { Some(path_col.value(i).to_string()) },
-                epoch_id:         None,
+                epoch_id:         if epoch_col.is_null(i) { None } else { Some(epoch_col.value(i)) },
                 version:          ver_col.value(i),
                 created_at:       created_col.value(i).to_string(),
                 file_size:        size_col.value(i),
@@ -366,7 +357,7 @@ async fn push_documents(
             let upload_result = try_presigned_upload(
                 &server, &doc.doc_id, &doc.filename, &doc.content_type,
                 &automerge_b64, &file_bytes, &doc.text_content, &dev_id,
-                &doc.last_modified_at, &token, file_bytes.len(), doc.epoch_id.map(|e| e as u32),
+                &doc.last_modified_at, &token, file_bytes.len(), doc.epoch_id.filter(|&e| e > 0).map(|e| e as u32),
                 &v_cat
             ).await;
 
@@ -378,8 +369,9 @@ async fn push_documents(
                     Ok((doc.doc_id, true))
                 }
                 Err(e) => {
-                    table.update().column("status", "'failed'").only_if(format!("id = '{}'", doc.doc_id)).execute().await.map_err(|e| e.to_string())?;
-                    let _ = app_clone.emit("sync-status", serde_json::json!({"id": doc.doc_id, "status": "failed", "error": e}));
+                    // Keep status as "pending" so the next sync cycle retries
+                    log::error!("[Push:{}] Upload failed for '{}': {}. Will retry next sync.", t_name, doc.doc_id, e);
+                    let _ = app_clone.emit("sync-status", serde_json::json!({"id": doc.doc_id, "status": "pending", "error": &e}));
                     Ok((doc.doc_id, false))
                 }
             }
@@ -417,7 +409,7 @@ async fn pull_documents(
 
     let result: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
     let default_vec = vec![];
-    let rows = result["results"][0]["response"]["result"]["rows"].as_array().unwrap_or(&default_vec);
+    let rows = result["changes"].as_array().unwrap_or(&default_vec);
 
     let mut pulled = 0;
     
@@ -450,20 +442,37 @@ async fn pull_documents(
         if let Some(batch_res) = stream.next().await {
             let batch = batch_res.map_err(|e| e.to_string())?;
             if batch.num_rows() > 0 {
+                // Existing doc — update timestamp if server version is newer
                 let existing_modified = batch.column(10).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0);
                 if existing_modified < remote_modified.as_str() {
                     table.update()
-                        .column("last_modified_at", format!("'{}'", remote_modified))
+                        .column("updated_at", format!("'{}'", remote_modified))
                         .column("status", "'synced'")
                         .only_if(format!("id = '{}'", remote_id))
                         .execute().await.map_err(|e| e.to_string())?;
                     pulled += 1;
                 }
             } else {
-                // New document from remote - we should ideally fetch the full data here
-                // but for now we just increment pulled as a placeholder.
-                // In a real scenario, SSE or a separate fetch would handle this.
-                pulled += 1;
+                // New document from remote — download and store
+                let download_url = row["download_url"].as_str().unwrap_or("");
+                let filename     = row["filename"].as_str().unwrap_or("file");
+                let content_type = row["content_type"].as_str().unwrap_or("application/octet-stream");
+                let epoch_id     = row["epoch_id"].as_i64();
+
+                if !download_url.is_empty() {
+                    match fetch_and_store_remote_doc(
+                        &ldb, &remote_id, filename, content_type,
+                        download_url, table_name, epoch_id,
+                    ).await {
+                        Ok(()) => {
+                            log::info!("[Pull] Stored new doc '{}' in {}", remote_id, table_name);
+                            pulled += 1;
+                        }
+                        Err(e) => {
+                            log::error!("[Pull] Failed to download '{}': {}", remote_id, e);
+                        }
+                    }
+                }
             }
         }
     }
@@ -493,28 +502,15 @@ async fn try_presigned_upload(
 ) -> Result<(), String> {
     let meta_client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string())?;
 
-    // 1. Generate Arrow IPC metadata for analytics
-    let meta = UploadMeta {
-        doc_id,
-        filename,
-        content_type,
-        file_size: file_size as i64,
-        status: "pending",
-        created_at: last_modified_at,
-        vault_category,
-    };
-    let ipc_bytes = crate::arrow::upload_meta_to_ipc(&meta).map_err(|e| format!("Arrow encoding failed: {}", e))?;
-    let ipc_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &ipc_bytes);
-
-    // 2. Initiate V2 Multipart Upload
+    // 1. Initiate V2 Multipart Upload
     let initiate_resp = meta_client.post(format!("{}/api/v1/sync/v2/initiate", server_url))
         .header("Authorization", format!("Bearer {}", token))
         .json(&serde_json::json!({
             "doc_id": doc_id,
             "filename": filename,
             "content_type": content_type,
-            "arrow_metadata_ipc": ipc_b64,
             "file_size": file_size,
+            "vault_category": vault_category,
         })).send().await.map_err(|e| format!("Initiate request failed: {}", e))?;
 
     if !initiate_resp.status().is_success() {
@@ -524,7 +520,7 @@ async fn try_presigned_upload(
     let init_json: serde_json::Value = initiate_resp.json().await.map_err(|e| e.to_string())?;
     let upload_id = init_json["upload_id"].as_str().ok_or("No upload_id in response")?.to_string();
 
-    // 3. Upload Parts via Elixir Proxy
+    // 2. Upload Parts via Elixir Proxy
     let sem = Arc::new(tokio::sync::Semaphore::new(3)); // lower concurrency to not overload Elixir processing
     let mut join_set = tokio::task::JoinSet::new();
 
@@ -543,16 +539,18 @@ async fn try_presigned_upload(
         let upload_id_c = upload_id.clone();
         let doc_id_c = doc_id.to_string();
         let filename_c = filename.to_string();
+        let vault_category_c = vault_category.to_string();
 
         join_set.spawn(async move {
             let _permit = sem_part.acquire_owned().await.map_err(|e| e.to_string())?;
-            
+
             // Build the URL with query parameters since the file chunk is in the body
             let part_url = reqwest::Url::parse_with_params(&url, &[
                 ("upload_id", upload_id_c),
                 ("doc_id", doc_id_c),
                 ("filename", filename_c),
                 ("part_num", pn.to_string()),
+                ("vault_category", vault_category_c),
             ]).map_err(|e| e.to_string())?;
 
             let resp = client_c.post(part_url)
@@ -563,8 +561,9 @@ async fn try_presigned_upload(
                 .map_err(|e| format!("Part {} request failed: {}", pn, e))?;
                 
             if !resp.status().is_success() {
+                let status = resp.status();
                 let err_text = resp.text().await.unwrap_or_default();
-                return Err(format!("Part {} status: {} - {}", pn, resp.status(), err_text));
+                return Err(format!("Part {} status: {} - {}", pn, status, err_text));
             }
             
             let json_resp: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
@@ -587,7 +586,7 @@ async fn try_presigned_upload(
         })
     }).collect::<Vec<_>>();
 
-    // 4. Complete the Multipart Upload
+    // 3. Complete the Multipart Upload
     let complete_resp = meta_client.post(format!("{}/api/v1/sync/v2/complete", server_url))
         .header("Authorization", format!("Bearer {}", token))
         .json(&serde_json::json!({
@@ -597,13 +596,81 @@ async fn try_presigned_upload(
             "parts": parts_json,
             "device_id": device_id,
             "epoch_id": epoch_id,
+            "vault_category": vault_category,
         })).send().await.map_err(|e| format!("Complete request failed: {}", e))?;
 
     if !complete_resp.status().is_success() {
+        let status = complete_resp.status();
         let err_text = complete_resp.text().await.unwrap_or_default();
-        return Err(format!("Complete failed: {} - {}", complete_resp.status(), err_text));
+        return Err(format!("Complete failed: {} - {}", status, err_text));
     }
 
+    Ok(())
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// fetch_and_store_remote_doc
+//
+// Downloads a file from a presigned S3 URL and inserts it into the
+// appropriate vault table with status "synced".  The bytes stored are the
+// raw vault-encrypted bytes — decryption happens on open, not on pull.
+// ══════════════════════════════════════════════════════════════════════════
+
+async fn fetch_and_store_remote_doc(
+    ldb:          &Arc<crate::db::lancedb::LanceDBManager>,
+    doc_id:       &str,
+    filename:     &str,
+    content_type: &str,
+    download_url: &str,
+    table_name:   &str,
+    epoch_id:     Option<i64>,
+) -> Result<(), String> {
+    let bytes = reqwest::get(download_url)
+        .await.map_err(|e| format!("S3 fetch failed: {}", e))?
+        .bytes()
+        .await.map_err(|e| format!("Body read failed: {}", e))?
+        .to_vec();
+
+    let now   = chrono::Utc::now().to_rfc3339();
+    let table = ldb.open_table(table_name).await.map_err(|e| e.to_string())?;
+
+    // Delete any stale record before inserting
+    let mut stream = table.query().only_if(format!("id = '{}'", doc_id)).execute().await.map_err(|e| e.to_string())?;
+    if let Some(batch_res) = stream.next().await {
+        if batch_res.map(|b| b.num_rows() > 0).unwrap_or(false) {
+            table.delete(&format!("id = '{}'", doc_id)).await.map_err(|e| e.to_string())?;
+        }
+    }
+
+    let schema = table.schema().await.map_err(|e| e.to_string())?;
+    let batch  = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec![doc_id])),                                        // 0  id
+            Arc::new(StringArray::from(vec![filename])),                                      // 1  filename
+            Arc::new(BinaryArray::from(vec![None as Option<&[u8]>])),                         // 2  automerge_state
+            Arc::new(StringArray::from(vec![None as Option<&str>])),                          // 3  text_content
+            Arc::new(BinaryArray::from(vec![Some(bytes.as_slice())])),                        // 4  binary_content
+            Arc::new(StringArray::from(vec![content_type])),                                  // 5  content_type
+            Arc::new(StringArray::from(vec![None as Option<&str>])),                          // 6  vault_path
+            Arc::new(StringArray::from(vec!["server"])),                                      // 7  device_id
+            Arc::new(Int64Array::from(vec![1i64])),                                           // 8  version
+            Arc::new(StringArray::from(vec![now.clone()])),                                   // 9  created_at
+            Arc::new(StringArray::from(vec![now.clone()])),                                   // 10 updated_at
+            Arc::new(Int64Array::from(vec![bytes.len() as i64])),                             // 11 file_size
+            Arc::new(StringArray::from(vec!["personal"])),                                    // 12 vault_category
+            Arc::new(StringArray::from(vec!["synced"])),                                      // 13 status
+            Arc::new(FixedSizeListArray::try_new(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                128, Arc::new(Float32Array::from(vec![0.0f32; 128])), None,
+            ).map_err(|e| e.to_string())?),                                                   // 14 vector
+            Arc::new(StringArray::from(vec![None as Option<&str>])),                          // 15 content_hash
+            Arc::new(Int64Array::from(vec![epoch_id])),                                       // 16 epoch_id
+        ],
+    ).map_err(|e| e.to_string())?;
+
+    let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -618,7 +685,7 @@ async fn emit_sync_status(ldb: &crate::db::lancedb::LanceDBManager, app: &AppHan
             if let Ok(mut stream) = table.query().execute().await {
                 while let Some(Ok(batch)) = stream.next().await {
                     total_count += batch.num_rows() as i64;
-                    if let Some(status_col) = batch.column(12).as_any().downcast_ref::<arrow::array::StringArray>() {
+                    if let Some(status_col) = batch.column(13).as_any().downcast_ref::<arrow::array::StringArray>() {
                         for i in 0..batch.num_rows() {
                             match status_col.value(i) {
                                 "pending" => total_pending += 1,

@@ -324,7 +324,12 @@ pub async fn login(
         .unwrap_or(&identifier)
         .to_string();
 
-    let user_id = did.splitn(3, ':').nth(2).unwrap_or(&identifier).to_string();
+    // Prefer the backend's primary key (user.id) over the DID fingerprint — they must match
+    // the owner_user_id stored in ChatRoom and other backend resources.
+    let user_id = token_data["user_id"]
+        .as_str()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| did.splitn(3, ':').nth(2).unwrap_or(&identifier).to_string());
 
 
     log::info!("Login OK  username={} did={} user_id={}", username, did, user_id);

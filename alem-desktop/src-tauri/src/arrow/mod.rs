@@ -48,19 +48,18 @@ use crate::db::models::Document;
 /// are pre-computed so DuckDB can skip entire file groups without decoding.
 pub fn document_schema() -> Schema {
     Schema::new(vec![
-        Field::new("doc_id",       DataType::Utf8,                                   false),
-        Field::new("filename",     DataType::Utf8,                                   false),
-        Field::new("file_size",    DataType::Int64,                                  true),
-        Field::new("content_type", DataType::Utf8,                                   true),
-        Field::new("status",       DataType::Utf8,                                   false),
-        Field::new("is_synced",    DataType::Boolean,                                false),
-        Field::new("needs_upload", DataType::Boolean,                                false),
-        Field::new(
-            "inserted_at",
-            DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
-            true,
-        ),
-        Field::new("year",  DataType::Int32, true),   // e.g. 2025
+        Field::new("doc_id",        DataType::Utf8,                                             false),
+        Field::new("filename",      DataType::Utf8,                                             false),
+        Field::new("file_size",     DataType::Int64,                                            true),
+        Field::new("content_type",  DataType::Utf8,                                             true),
+        Field::new("status",        DataType::Utf8,                                             false),
+        Field::new("is_synced",     DataType::Boolean,                                          false),
+        Field::new("needs_upload",  DataType::Boolean,                                          false),
+        Field::new("inserted_at",   DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())), true),
+        Field::new("day",           DataType::Utf8,  true),  // "YYYY-MM-DD" for daily partitioning
+        Field::new("week",          DataType::Int32, true),  // ISO week 1-53
+        Field::new("month",         DataType::Int32, true),  // 1-12
+        Field::new("year",          DataType::Int32, true),  // e.g. 2025
         Field::new("vault_category", DataType::Utf8, false),
     ])
 }

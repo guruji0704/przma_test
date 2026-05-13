@@ -240,6 +240,8 @@ pub async fn upload_file(
     let table = state.lancedb.open_table(&vault_name).await.map_err(|e| e.to_string())?;
     let schema = table.schema().await.map_err(|e| e.to_string())?;
     
+    let epoch_id = state.epoch_key.read().await.as_ref().map(|ek| ek.epoch_id as i64);
+
     let batch = arrow::array::RecordBatch::try_new(
         schema.clone(),
         vec![
@@ -261,6 +263,7 @@ pub async fn upload_file(
                 Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
                  128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
             Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // hash
+            Arc::new(arrow::array::Int64Array::from(vec![epoch_id])), // epoch_id
         ],
     ).map_err(|e| e.to_string())?;
 
@@ -268,7 +271,7 @@ pub async fn upload_file(
     table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
 
     log::info!("✅ [Binary] Uploaded {} ({}) to LanceDB", filename, doc_id);
-    tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
+    state.sync_notify.notify_one();
     Ok(())
 }
 
@@ -359,6 +362,7 @@ pub async fn upload_files_from_paths(
         vault_path:    std::path::PathBuf,
         original_size: u64,
         hash:          String,
+        epoch_id:      Option<i64>,
     }
 
     // Extract things from state that we need in the blocking thread.
@@ -414,7 +418,7 @@ pub async fn upload_files_from_paths(
                             "files_total": total,
                             "percent":     (done * 100 / total.max(1)),
                         }));
-                        return Ok(ReadyFile { doc_id, path_str, filename, content_type, vault_path: path, original_size: file_size_hint, hash });
+                        return Ok(ReadyFile { doc_id, path_str, filename, content_type, vault_path: path, original_size: file_size_hint, hash, epoch_id: None });
                     }
 
                     // ── Streaming encrypt → .vault file ──────────────────
@@ -451,32 +455,39 @@ pub async fn upload_files_from_paths(
                     // Use v2 dual-key encryption when server epoch key is available.
                     // v2 embeds a server-readable wrapped key so the server can
                     // Streaming encrypt → .vault file
-                    let encrypt_result = match epoch_key_snapshot {
+                    let (original_size, epoch_id) = match epoch_key_snapshot {
                         Some(ref ek) => {
                             log::info!("[Vault] 🔐 Using V2 encryption for '{}' (epoch_id={})", filename, ek.epoch_id);
-                            vault::encrypt_file_v2(path, &vault_path, &vault_key_snapshot, ek, progress_cb)
-                                .map(|r| r.original_size)
+                            match vault::encrypt_file_v2(path, &vault_path, &vault_key_snapshot, ek, progress_cb) {
+                                Ok(res) => (res.original_size, Some(res.epoch_id as i64)),
+                                Err(e)  => {
+                                    let _ = std::fs::remove_file(&vault_path); 
+                                    let err = format!("Encrypt failed: {}", e);
+                                    log::error!("[Vault] '{}': {}", filename, err);
+                                    let _ = app_emit.emit("fs-upload-progress", serde_json::json!({
+                                        "path": path_str, "filename": filename,
+                                        "status": "error", "error": err.clone(),
+                                    }));
+                                    return Err(UploadResult { filename, status: "error".into(), error: Some(err) });
+                                }
+                            }
                         },
                         None => {
                             log::warn!("[Vault] ⚠️ Falling back to V1 encryption for '{}' (No Epoch Key)", filename);
-                            vault::encrypt_file(path, &vault_path, &vault_key_snapshot, progress_cb)
+                            match vault::encrypt_file(path, &vault_path, &vault_key_snapshot, progress_cb) {
+                                Ok(size) => (size, None),
+                                Err(e)   => {
+                                    let _ = std::fs::remove_file(&vault_path); 
+                                    let err = format!("Encrypt failed: {}", e);
+                                    log::error!("[Vault] '{}': {}", filename, err);
+                                    let _ = app_emit.emit("fs-upload-progress", serde_json::json!({
+                                        "path": path_str, "filename": filename,
+                                        "status": "error", "error": err.clone(),
+                                    }));
+                                    return Err(UploadResult { filename, status: "error".into(), error: Some(err) });
+                                }
+                            }
                         },
-                    };
-
-                    let original_size = match encrypt_result {
-                        Ok(n)  => n,
-                        Err(e) => {
-                            let _ = std::fs::remove_file(&vault_path); // cleanup partial
-                            let err = format!("Encrypt failed: {}", e);
-                            log::error!("[Vault] '{}': {}", filename, err);
-                            let _ = app_emit.emit("fs-upload-progress", serde_json::json!({
-                                "path": path_str, "filename": filename,
-                                "status": "error", "error": err.clone(),
-                            }));
-                            return Err(UploadResult {
-                                filename, status: "error".into(), error: Some(err),
-                            });
-                        }
                     };
 
                     // ── Write metadata.json alongside the vault file ──────
@@ -500,8 +511,8 @@ pub async fn upload_files_from_paths(
                         "percent":     (done * 100 / total.max(1)),
                     }));
 
-                    log::info!("[Vault] ✅ '{}' → {}.vault ({} bytes)", filename, doc_id, original_size);
-                    Ok(ReadyFile { doc_id, path_str, filename, content_type, vault_path, original_size, hash })
+                    log::info!("[Vault] ✅ '{}' → {}.vault ({} bytes, epoch={:?})", filename, doc_id, original_size, epoch_id);
+                    Ok(ReadyFile { doc_id, path_str, filename, content_type, vault_path, original_size, hash, epoch_id })
                 })
                 .collect()
         })
@@ -576,6 +587,7 @@ pub async fn upload_files_from_paths(
                     Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
                      128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
                 Arc::new(arrow::array::StringArray::from(vec![Some(ready.hash.as_str())])),
+                Arc::new(arrow::array::Int64Array::from(vec![ready.epoch_id])),
             ],
         ).map_err(|e| e.to_string())?;
 
@@ -608,9 +620,7 @@ pub async fn upload_files_from_paths(
         }
     }
 
-    let app_clone = app.clone();
-    tokio::spawn(async move { let _ = engine::run_sync_cycle(&app_clone).await; });
-
+    state.sync_notify.notify_one();
     Ok(results)
 }
 
@@ -732,6 +742,7 @@ pub async fn upload_file_chunk(
                 Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
                  128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()), // 14: vector
             Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // 15: content_hash
+            Arc::new(arrow::array::Int64Array::from(vec![None as Option<i64>])), // 16: epoch_id
         ],
     ).map_err(|e| e.to_string())?;
 
@@ -742,7 +753,7 @@ pub async fn upload_file_chunk(
     table.delete(format!("doc_id = '{}'", doc_id).as_str()).await.map_err(|e| e.to_string())?;
 
     log::info!("✅ [Chunked] Assembled '{}' from {} chunks ({} bytes)", filename, total_chunks, assembled_len);
-    tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
+    state.sync_notify.notify_one();
     Ok("ASSEMBLED".to_string())
 }
 
@@ -778,27 +789,30 @@ pub async fn create_document(
                              else if vault_name.contains("social") { "social" }
                              else { "personal" };
     
+    let epoch_id = state.epoch_key.read().await.as_ref().map(|ek| ek.epoch_id as i64);
+
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(arrow::array::StringArray::from(vec![doc_id.clone()])),
-            Arc::new(arrow::array::StringArray::from(vec![filename])),
-            Arc::new(arrow::array::BinaryArray::from(vec![crdt_doc.automerge_state.as_slice()])),
-            Arc::new(arrow::array::StringArray::from(vec![Some(text_content.as_str())])),
-            Arc::new(arrow::array::BinaryArray::from(vec![None as Option<&[u8]>])), // binary_content
-            Arc::new(arrow::array::StringArray::from(vec!["text/plain"])),
-            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // vault_path
-            Arc::new(arrow::array::StringArray::from(vec![device_id])),
-            Arc::new(arrow::array::Int64Array::from(vec![1])), // version
-            Arc::new(arrow::array::StringArray::from(vec![now.clone()])),
-            Arc::new(arrow::array::StringArray::from(vec![now])),
-            Arc::new(arrow::array::Int64Array::from(vec![text_content.len() as i64])),
-            Arc::new(arrow::array::StringArray::from(vec![vault_category])), // 12: vault_category
-            Arc::new(arrow::array::StringArray::from(vec!["pending"])), // 13: status
+            Arc::new(arrow::array::StringArray::from(vec![doc_id.clone()])), // 0
+            Arc::new(arrow::array::StringArray::from(vec![filename])), // 1
+            Arc::new(arrow::array::BinaryArray::from(vec![crdt_doc.automerge_state.as_slice()])), // 2
+            Arc::new(arrow::array::StringArray::from(vec![Some(text_content.as_str())])), // 3
+            Arc::new(arrow::array::BinaryArray::from(vec![None as Option<&[u8]>])), // 4
+            Arc::new(arrow::array::StringArray::from(vec!["text/plain"])), // 5
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // 6
+            Arc::new(arrow::array::StringArray::from(vec![device_id])), // 7
+            Arc::new(arrow::array::Int64Array::from(vec![1])), // 8
+            Arc::new(arrow::array::StringArray::from(vec![now.clone()])), // 9
+            Arc::new(arrow::array::StringArray::from(vec![now])), // 10
+            Arc::new(arrow::array::Int64Array::from(vec![text_content.len() as i64])), // 11
+            Arc::new(arrow::array::StringArray::from(vec![vault_category])), // 12
+            Arc::new(arrow::array::StringArray::from(vec!["pending"])), // 13
             Arc::new(arrow::array::FixedSizeListArray::try_new(
                 Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
-                 128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()), // 14: vector
-            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // 15: content_hash
+                 128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()), // 14
+            Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // 15
+            Arc::new(arrow::array::Int64Array::from(vec![epoch_id])), // 16: epoch_id
         ],
     ).map_err(|e| e.to_string())?;
 
@@ -806,7 +820,7 @@ pub async fn create_document(
     table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
 
     log::info!("✅ [Text] Document created in LanceDB (ID: {})", doc_id);
-    tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
+    state.sync_notify.notify_one();
     Ok(())
 }
 
@@ -856,24 +870,25 @@ pub async fn update_document(
         let new_batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(arrow::array::StringArray::from(vec![id.clone()])),
-                Arc::new(arrow::array::StringArray::from(vec![batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])),
-                Arc::new(arrow::array::BinaryArray::from(vec![new_automerge_state.as_slice()])),
-                Arc::new(arrow::array::StringArray::from(vec![Some(text_content.as_str())])),
-                Arc::new(arrow::array::BinaryArray::from(vec![None as Option<&[u8]>])), // binary_content
-                Arc::new(arrow::array::StringArray::from(vec!["text/plain"])),
-                Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // vault_path
-                Arc::new(arrow::array::StringArray::from(vec![device_id])),
-                Arc::new(arrow::array::Int64Array::from(vec![version + 1])),
-                Arc::new(arrow::array::StringArray::from(vec![batch.column(9).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])),
-                Arc::new(arrow::array::StringArray::from(vec![batch.column(11).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])), // updated_at
-                Arc::new(arrow::array::Int64Array::from(vec![text_content.len() as i64])),
-                Arc::new(arrow::array::StringArray::from(vec!["pending"])), // status
-                Arc::new(arrow::array::StringArray::from(vec![batch.column(13).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])), // vault_category
+                Arc::new(arrow::array::StringArray::from(vec![id.clone()])), // 0
+                Arc::new(arrow::array::StringArray::from(vec![batch.column(1).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])), // 1
+                Arc::new(arrow::array::BinaryArray::from(vec![new_automerge_state.as_slice()])), // 2
+                Arc::new(arrow::array::StringArray::from(vec![Some(text_content.as_str())])), // 3
+                Arc::new(arrow::array::BinaryArray::from(vec![None as Option<&[u8]>])), // 4
+                Arc::new(arrow::array::StringArray::from(vec!["text/plain"])), // 5
+                Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // 6
+                Arc::new(arrow::array::StringArray::from(vec![device_id])), // 7
+                Arc::new(arrow::array::Int64Array::from(vec![version + 1])), // 8
+                Arc::new(arrow::array::StringArray::from(vec![batch.column(9).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])), // 9
+                Arc::new(arrow::array::StringArray::from(vec![now])), // 10: updated_at
+                Arc::new(arrow::array::Int64Array::from(vec![text_content.len() as i64])), // 11
+                Arc::new(arrow::array::StringArray::from(vec![batch.column(12).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)])), // 12: vault_category
+                Arc::new(arrow::array::StringArray::from(vec!["pending"])), // 13: status
                 Arc::new(arrow::array::FixedSizeListArray::try_new(
                     Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
-                     128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
-                Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // hash
+                     128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()), // 14
+                Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // 15
+                Arc::new(arrow::array::Int64Array::from(vec![None as Option<i64>])), // 16: epoch_id
             ],
         ).map_err(|e| e.to_string())?;
 
@@ -881,7 +896,7 @@ pub async fn update_document(
         table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
 
         log::info!("✅ [CRDT] Document updated in LanceDB");
-        tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
+        state.sync_notify.notify_one();
         Ok(())
     } else {
         Err("Document not found".to_string())
@@ -923,6 +938,7 @@ pub async fn delete_document(
         table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
         
         log::info!("✅ Document marked as deleted (tombstone created)");
+        state.sync_notify.notify_one();
         Ok(())
     } else {
         Err("Document not found".to_string())
@@ -968,7 +984,7 @@ pub async fn rename_document(
         table.add(Box::new(reader)).execute().await.map_err(|e| e.to_string())?;
 
         log::info!("✅ Document renamed in LanceDB");
-        tokio::spawn(async move { let _ = engine::run_sync_cycle(&app).await; });
+        state.sync_notify.notify_one();
         Ok(())
     } else {
         Err("Document not found".to_string())
@@ -1209,24 +1225,25 @@ async fn handle_conflict(
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(StringArray::from(vec![conflict_id.clone()])),
-            Arc::new(StringArray::from(vec![format!("{} (Conflict Copy)", filename)])),
-            Arc::new(BinaryArray::from(vec![None as Option<&[u8]>])), // automerge
-            Arc::new(StringArray::from_iter(vec![Some(text_content.as_str())])),
-            Arc::new(BinaryArray::from(vec![Some(bytes.as_slice())])),
-            Arc::new(StringArray::from(vec![ctype])),
-            Arc::new(StringArray::from(vec![None as Option<&str>])), // vault_path
-            Arc::new(StringArray::from(vec!["conflict_resolver"])),
-            Arc::new(Int64Array::from(vec![1])), // version
-            Arc::new(StringArray::from(vec![now.clone()])),
-            Arc::new(StringArray::from(vec![now])),
-            Arc::new(Int64Array::from(vec![plaintext.len() as i64])),
-            Arc::new(StringArray::from(vec!["pending"])),
-            Arc::new(StringArray::from(vec![category])),
+            Arc::new(StringArray::from(vec![conflict_id.clone()])), // 0
+            Arc::new(StringArray::from(vec![format!("{} (Conflict Copy)", filename)])), // 1
+            Arc::new(BinaryArray::from(vec![None as Option<&[u8]>])), // 2
+            Arc::new(StringArray::from_iter(vec![Some(text_content.as_str())])), // 3
+            Arc::new(BinaryArray::from(vec![Some(bytes.as_slice())])), // 4
+            Arc::new(StringArray::from(vec![ctype])), // 5
+            Arc::new(StringArray::from(vec![None as Option<&str>])), // 6
+            Arc::new(StringArray::from(vec!["conflict_resolver"])), // 7
+            Arc::new(Int64Array::from(vec![1])), // 8
+            Arc::new(StringArray::from(vec![now.clone()])), // 9
+            Arc::new(StringArray::from(vec![now.clone()])), // 10
+            Arc::new(Int64Array::from(vec![plaintext.len() as i64])), // 11
+            Arc::new(StringArray::from(vec![category])), // 12: vault_category
+            Arc::new(StringArray::from(vec!["pending"])), // 13: status
             Arc::new(FixedSizeListArray::try_new(
                 Arc::new(Field::new("item", DataType::Float32, true)),
-                 128, Arc::new(Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
-            Arc::new(StringArray::from(vec![None as Option<&str>])), // hash
+                 128, Arc::new(Float32Array::from(vec![0.0f32; 128])), None).unwrap()), // 14
+            Arc::new(StringArray::from(vec![None as Option<&str>])), // 15
+            Arc::new(Int64Array::from(vec![None as Option<i64>])), // 16: epoch_id
         ],
     ).map_err(|e| e.to_string())?;
 
@@ -1436,6 +1453,7 @@ async fn download_and_store(
                 Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true)),
                  128, Arc::new(arrow::array::Float32Array::from(vec![0.0f32; 128])), None).unwrap()),
             Arc::new(arrow::array::StringArray::from(vec![None as Option<&str>])), // hash
+            Arc::new(arrow::array::Int64Array::from(vec![doc["epoch_id"].as_i64()])), // epoch_id
         ],
     ).map_err(|e| e.to_string())?;
 

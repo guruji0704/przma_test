@@ -17,6 +17,9 @@ defmodule Alem.Application do
       # PubSub
       {Phoenix.PubSub, name: Alem.PubSub},
 
+      # Presence (tracks online chat users per channel)
+      AlemWeb.Presence,
+
       # LanceDB write subsystem (one GenServer per active user)
       Alem.Lance.Supervisor,
 

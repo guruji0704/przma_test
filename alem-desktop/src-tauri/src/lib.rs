@@ -16,6 +16,7 @@ pub struct AppState {
     /// None if the server was unreachable at startup (falls back to v1 encrypt).
     /// Updated after login and on each sync cycle.
     pub epoch_key: Arc<tokio::sync::RwLock<Option<vault::EpochPublicKey>>>,
+    pub sync_notify: Arc<tokio::sync::Notify>,
     pub lancedb:   Arc<db::lancedb::LanceDBManager>,
 }
 
@@ -77,6 +78,7 @@ pub fn run() {
             app.manage(AppState {
                 vault_key: Arc::new(tokio::sync::RwLock::new(*vault_key)),
                 epoch_key: Arc::new(tokio::sync::RwLock::new(epoch_key)),
+                sync_notify: Arc::new(tokio::sync::Notify::new()),
                 lancedb:   Arc::clone(&lancedb_mgr),
             });
 
@@ -135,6 +137,26 @@ pub fn run() {
             commands::media::store_thumbnail,
             commands::media::get_thumbnail,
             commands::media::get_thumbnails_bulk,
+            // Vault sharing
+            commands::vault::share_file,
+            commands::vault::get_incoming_shares,
+            commands::vault::accept_share,
+            commands::vault::revoke_share,
+            // Chat
+            commands::chat::get_chat_credentials,
+            commands::chat::list_chat_rooms,
+            commands::chat::create_chat_room,
+            commands::chat::invite_to_room,
+            commands::chat::join_room,
+            commands::chat::create_dm_room,
+            commands::chat::leave_room,
+            commands::chat::get_room_members,
+            commands::chat::get_room_status,
+            commands::chat::list_chat_users,
+            commands::chat::store_chat_message,
+            commands::chat::get_local_chat_messages,
+            commands::chat::fetch_room_messages,
+            commands::chat::delete_chat_room,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

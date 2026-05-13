@@ -21,6 +21,11 @@ defmodule AlemWeb.Endpoint do
     websocket: true,
     longpoll: false
 
+  # Chat WebSocket (Phoenix Channels — vault-scoped real-time messaging)
+  socket "/chat", AlemWeb.ChatSocket,
+    websocket: [timeout: 45_000],
+    longpoll: false
+
   # Serve at "/" the static files from "priv/static" directory.
   plug Plug.Static,
     at: "/",

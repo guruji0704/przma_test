@@ -24,4 +24,7 @@ defmodule Alem.LanceDB do
   
   def drop_table(_table_name),
     do: :erlang.nif_error(:nif_not_loaded)
+
+  def upsert_vault_doc(_table_name, _metadata_json),
+    do: :erlang.nif_error(:nif_not_loaded)
 end

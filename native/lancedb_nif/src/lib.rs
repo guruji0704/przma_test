@@ -390,6 +390,144 @@ fn drop_table(table_name: String) -> rustler::Atom {
     }
 }
 
+// ── Server-side vault document upsert ────────────────────────────────────
+//
+// Writes one document metadata record into the specified vault table
+// (personal_vault | private_vault | social_vault) on the shared S3 LanceDB.
+// Creates the table on first use.  Deletes any existing row with the same
+// id + user_did before inserting (upsert = delete + append).
+//
+// Schema (15 columns):
+//   id, user_did, namespace_key, filename, content_type,
+//   file_size (Int64 nullable), status, device_id, vault_category,
+//   content_hash (Utf8 nullable), epoch_id (Int64 nullable), object_key,
+//   created_at, updated_at, vector (FixedSizeList<Float32>[128] nullable)
+#[rustler::nif(schedule = "DirtyIo")]
+fn upsert_vault_doc(table_name: String, metadata_json: String) -> rustler::Atom {
+    let rt = get_runtime();
+    let db_uri = get_db_uri();
+
+    let res: Result<(), String> = rt.block_on(async {
+        use arrow::array::{Float32Array, StringArray, Int64Array, FixedSizeListArray, ArrayRef};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let conn = lancedb::connect(&db_uri)
+            .execute().await
+            .map_err(|e| e.to_string())?;
+
+        let meta: serde_json::Value = serde_json::from_str(&metadata_json)
+            .map_err(|e| e.to_string())?;
+
+        let id             = meta["id"].as_str().unwrap_or("").to_string();
+        let user_did       = meta["user_did"].as_str().unwrap_or("").to_string();
+        let namespace_key  = meta["namespace_key"].as_str().unwrap_or("").to_string();
+        let filename       = meta["filename"].as_str().unwrap_or("").to_string();
+        let content_type   = meta["content_type"].as_str().unwrap_or("").to_string();
+        let file_size: Option<i64> = meta["file_size"].as_i64();
+        let status         = meta["status"].as_str().unwrap_or("synced").to_string();
+        let device_id      = meta["device_id"].as_str().unwrap_or("").to_string();
+        let vault_category = meta["vault_category"].as_str().unwrap_or("private").to_string();
+        let content_hash   = meta["content_hash"].as_str().map(|s| s.to_string());
+        let epoch_id: Option<i64> = meta["epoch_id"].as_i64();
+        let object_key     = meta["object_key"].as_str().unwrap_or("").to_string();
+        let created_at     = meta["created_at"].as_str().unwrap_or("").to_string();
+        let updated_at     = meta["updated_at"].as_str().unwrap_or("").to_string();
+
+        let vector: Vec<f32> = match meta["vector"].as_array() {
+            Some(arr) => {
+                let mut v: Vec<f32> = arr.iter()
+                    .filter_map(|x| x.as_f64().map(|f| f as f32))
+                    .collect();
+                v.resize(128, 0.0);
+                v
+            }
+            None => vec![0.0f32; 128],
+        };
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id",             DataType::Utf8,  false),
+            Field::new("user_did",       DataType::Utf8,  false),
+            Field::new("namespace_key",  DataType::Utf8,  false),
+            Field::new("filename",       DataType::Utf8,  false),
+            Field::new("content_type",   DataType::Utf8,  false),
+            Field::new("file_size",      DataType::Int64, true),
+            Field::new("status",         DataType::Utf8,  false),
+            Field::new("device_id",      DataType::Utf8,  false),
+            Field::new("vault_category", DataType::Utf8,  false),
+            Field::new("content_hash",   DataType::Utf8,  true),
+            Field::new("epoch_id",       DataType::Int64, true),
+            Field::new("object_key",     DataType::Utf8,  false),
+            Field::new("created_at",     DataType::Utf8,  false),
+            Field::new("updated_at",     DataType::Utf8,  false),
+            Field::new("vector",         DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)), 128,
+            ), true),
+        ]));
+
+        let float_arr = Float32Array::from(vector);
+        let vec_arr   = FixedSizeListArray::try_new(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            128,
+            Arc::new(float_arr) as ArrayRef,
+            None,
+        ).map_err(|e| e.to_string())?;
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec![id.as_str()])),
+            Arc::new(StringArray::from(vec![user_did.as_str()])),
+            Arc::new(StringArray::from(vec![namespace_key.as_str()])),
+            Arc::new(StringArray::from(vec![filename.as_str()])),
+            Arc::new(StringArray::from(vec![content_type.as_str()])),
+            Arc::new(Int64Array::from(vec![file_size])),
+            Arc::new(StringArray::from(vec![status.as_str()])),
+            Arc::new(StringArray::from(vec![device_id.as_str()])),
+            Arc::new(StringArray::from(vec![vault_category.as_str()])),
+            Arc::new(StringArray::from(vec![content_hash.as_deref()])),
+            Arc::new(Int64Array::from(vec![epoch_id])),
+            Arc::new(StringArray::from(vec![object_key.as_str()])),
+            Arc::new(StringArray::from(vec![created_at.as_str()])),
+            Arc::new(StringArray::from(vec![updated_at.as_str()])),
+            Arc::new(vec_arr),
+        ];
+
+        let batch = arrow::record_batch::RecordBatch::try_new(schema.clone(), columns)
+            .map_err(|e| e.to_string())?;
+
+        let make_iter = {
+            let b = batch.clone();
+            let s = schema.clone();
+            move || RecordBatchIterator::new(vec![Ok(b.clone())].into_iter(), s.clone())
+        };
+
+        // Open or create the vault table
+        let table = match conn.open_table(&table_name).execute().await {
+            Ok(t)  => t,
+            Err(_) => conn.create_table(&table_name, make_iter())
+                .execute().await
+                .map_err(|e| e.to_string())?,
+        };
+
+        // Delete stale record before inserting (upsert semantics)
+        if !id.is_empty() {
+            let _ = table.delete(
+                &format!("id = '{}' AND user_did = '{}'", id, user_did)
+            ).await;
+        }
+
+        table.add(make_iter())
+            .execute().await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    });
+
+    match res {
+        Ok(_)  => atoms::ok(),
+        Err(_) => atoms::error(),
+    }
+}
+
 rustler::init!("Elixir.Alem.LanceDB", [
     append_ipc,
     query,
@@ -398,5 +536,6 @@ rustler::init!("Elixir.Alem.LanceDB", [
     insert_json,
     vector_search,
     insert_with_vector,
-    drop_table
+    drop_table,
+    upsert_vault_doc
 ]);

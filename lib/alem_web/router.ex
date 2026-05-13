@@ -198,6 +198,67 @@ defmodule AlemWeb.Router do
     end
   end
 
+  # ── Three-Vault API ───────────────────────────────────────────────────────
+  scope "/api/v1/vaults", AlemWeb.Vault do
+    pipe_through :api
+
+    # Personal vault
+    get    "/personal/files",                PersonalVaultController, :list
+    get    "/personal/files/:doc_id",        PersonalVaultController, :get
+    delete "/personal/files/:doc_id",        PersonalVaultController, :delete
+    post   "/personal/files/:doc_id/share",  PersonalVaultController, :share
+
+    # Private vault
+    get    "/private/files",                 PrivateVaultController, :list
+    get    "/private/files/:doc_id",         PrivateVaultController, :get
+    delete "/private/files/:doc_id",         PrivateVaultController, :delete
+    post   "/private/shared/accept",         PrivateVaultController, :accept_share
+
+    # Social vault
+    get    "/social/files",                  SocialVaultController, :list
+    get    "/social/files/:doc_id",          SocialVaultController, :get
+    delete "/social/files/:doc_id",          SocialVaultController, :delete
+    post   "/social/shared/accept",          SocialVaultController, :accept_share
+
+    # Share management (cross-vault)
+    get    "/shares/outgoing",               VaultShareController, :outgoing
+    get    "/shares/incoming",               VaultShareController, :incoming
+    delete "/shares/:share_id",              VaultShareController, :revoke
+    patch  "/shares/:share_id",              VaultShareController, :update
+    get    "/shares/:share_id/log",          VaultShareController, :access_log
+  end
+
+  # ── Chat API ──────────────────────────────────────────────────────────────
+  scope "/api/v1/chat", AlemWeb.Chat do
+    pipe_through [:api, AlemWeb.Plugs.ChatAuth]
+
+    # Rooms — literal paths MUST come before :id patterns at the same level
+    get    "/rooms",                    RoomController,    :index
+    post   "/rooms",                    RoomController,    :create
+    post   "/rooms/join_with_token",    RoomController,    :join_with_token
+    get    "/rooms/:id",                RoomController,    :show
+    get    "/rooms/:id/members",        RoomController,    :members
+    get    "/rooms/:id/status",         RoomController,    :status
+    post   "/rooms/:id/join",           RoomController,    :join
+    post   "/rooms/:id/invite",         RoomController,    :invite
+    delete "/rooms/:id/leave",          RoomController,    :leave
+    delete "/rooms/:id",                RoomController,    :delete
+    post   "/dm",                       RoomController,    :dm
+
+    # Messages (REST history + offline send; real-time via channel)
+    get    "/rooms/:room_id/messages",  MessageController, :index
+    post   "/rooms/:room_id/messages",  MessageController, :send_message
+
+    # Private DM (not persisted — PubSub only)
+    post   "/messages/private",         MessageController, :send_private
+
+    # Typing indicator (REST fallback — prefer channel 'typing' push)
+    post   "/rooms/:id/typing",         TypingController,  :notify
+
+    # Users (for invite picker)
+    get    "/users",                    UserController,    :index
+  end
+
   # ── Health check ──────────────────────────────────────────────────────────
   scope "/api", AlemWeb do
     pipe_through :api

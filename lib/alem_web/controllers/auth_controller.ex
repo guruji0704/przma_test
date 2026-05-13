@@ -521,7 +521,8 @@ end
           expires_in:    Token.expires_in(token),
           refresh_token: token.refresh_token,
           me:            user.nickname,
-          did:           user.did_id
+          did:           user.did_id,
+          user_id:       user.id
         })
 
       {:error, :invalid_credentials} ->

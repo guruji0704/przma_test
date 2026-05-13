@@ -1,0 +1,26 @@
+Compiling 11 files (.ex)
+    warning: redefining module AlemWeb.Chat.UserController (current version loaded from _build/dev/lib/alem/ebin/Elixir.AlemWeb.Chat.UserController.beam)
+    Γöé
+  1 Γöé defmodule AlemWeb.Chat.UserController do
+    Γöé ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Γöé
+    ΓööΓöÇ lib/alem_web/chat/user_controller.ex:1: AlemWeb.Chat.UserController (module)
+
+    warning: redefining module AlemWeb.Chat.MessageController (current version loaded from _build/dev/lib/alem/ebin/Elixir.AlemWeb.Chat.MessageController.beam)
+    Γöé
+  1 Γöé defmodule AlemWeb.Chat.MessageController do
+    Γöé ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Γöé
+    ΓööΓöÇ lib/alem_web/chat/message_controller.ex:1: AlemWeb.Chat.MessageController (module)
+
+    error: cannot define module AlemWeb.Chat.RoomController because it is currently being defined in lib/alem_web/controllers/chat/room_controller.ex:1
+    Γöé
+  1 Γöé defmodule AlemWeb.Chat.RoomController do
+    Γöé ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Γöé
+    ΓööΓöÇ lib/alem_web/chat/room_controller.ex:1: AlemWeb.Chat.RoomController (module)
+
+
+== Compilation error in file lib/alem_web/chat/room_controller.ex ==
+** (CompileError) lib/alem_web/chat/room_controller.ex: cannot compile module AlemWeb.Chat.RoomController (errors have been logged)
+    (elixir 1.18.4) lib/kernel/parallel_compiler.ex:423: anonymous fn/5 in Kernel.ParallelCompiler.spawn_workers/8
