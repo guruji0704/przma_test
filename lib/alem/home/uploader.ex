@@ -22,7 +22,7 @@ defmodule Alem.Home.Uploader do
   import Ecto.Query
   alias Alem.{Repo, DID}
   alias Alem.Schemas.{Document, ShareToken}
-  alias Alem.Storage.{CAS, ObjectStore}
+  alias Alem.Storage.{CAS, ObjectStore, Paths}
   alias Alem.Lance.{VectorEncoder, DISSupervisor}
   alias Alem.LanceDB
 
@@ -50,7 +50,7 @@ defmodule Alem.Home.Uploader do
     doc_id  = Ecto.UUID.generate()
 
     # Encrypted files go to /private/encrypted/ — no media_category routing
-    s3_key = "user/#{prefix}/private/encrypted/#{doc_id}/#{filename}"
+    s3_key = Paths.private_encrypted_path(did_id, doc_id, filename)
 
     Logger.info("[Uploader] Private upload #{filename} — server sees ciphertext only")
 
@@ -58,7 +58,7 @@ defmodule Alem.Home.Uploader do
          {:ok, doc} <- insert_document(%{
            id:           doc_id,
            user_id:      user_id,
-           tenant_id:    "#{prefix}-private",
+           tenant_id:    Paths.namespace_key(did_id, :private),
            filename:     filename,
            content_type: content_type,
            object_key:   s3_key,
@@ -82,11 +82,11 @@ defmodule Alem.Home.Uploader do
     user_id   = ctx.user_id
     did_id    = ctx.did_id
     folder    = ctx.folder
-    prefix    = DID.namespace_key(did_id)
-    ns_key    = "#{prefix}-#{folder}"
+    _prefix   = DID.namespace_key(did_id)
+    ns_key    = Paths.namespace_key(did_id, folder)
     doc_id    = Ecto.UUID.generate()
     category  = Document.media_category(content_type)
-    s3_key    = Document.s3_key(prefix, folder, doc_id, filename, content_type)
+    s3_key    = Paths.doc_path(did_id, folder, doc_id, filename)
 
     Logger.info("[Uploader] #{folder} upload #{filename} (#{byte_size(file_bytes)} bytes)")
 

@@ -2,11 +2,8 @@ defmodule AlemWeb.ChatLive do
   use AlemWeb, :live_view
   import Ecto.Query
   alias Alem.{Chat, Repo}
-  alias Alem.Schemas.{Conversation, ConversationMember, Message, PerceptionLink}
+  alias Alem.Schemas.{Conversation, ConversationMember, Message}
   alias Alem.Pleroma.User
-  alias Alem.Storage.ObjectStore
-  alias Alem.Cas.{CasObject, CasDedupRef}
-  alias Alem.Schemas.Document
 
   @vaults %{0 => "personal", 1 => "private", 2 => "public"}
 
@@ -53,69 +50,35 @@ defmodule AlemWeb.ChatLive do
     do: {:noreply, cancel_upload(socket, :chat_file, ref)}
 
   def handle_event("upload_file", _params, socket) do
-    did  = socket.assigns.did
     user = socket.assigns.user
     cid  = socket.assigns.conversation_id
+
     case socket.assigns.uploads.chat_file.entries do
-      [] -> {:noreply, assign(socket, :flash_msg, "No file selected")}
+      [] ->
+        {:noreply, assign(socket, :flash_msg, "No file selected")}
+
       [entry] ->
-        # Wait until upload is complete
         if entry.progress < 100 do
-          {:noreply, assign(socket, :flash_msg, "File still uploading, please wait...")}
+          {:noreply, assign(socket, :flash_msg, "Still uploading, please wait...")}
         else
-        result = consume_uploaded_entries(socket, :chat_file, fn %{path: tmp}, entry ->
-          bytes    = File.read!(tmp)
-          filename = entry.client_name
-          ctype    = entry.client_type || "application/octet-stream"
-          vault_num  = :rand.uniform(3) - 1
-          vault_name = Map.fetch!(@vaults, vault_num)
-          prefix   = did |> String.split(":") |> List.last() |> String.slice(0, 16)
-          ns_key   = "#{prefix}-#{vault_name}"
-          hash     = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
-          ab = String.slice(hash, 0, 2)
-          cd = String.slice(hash, 2, 2)
-          s3_key   = "#{vault_name}/#{ab}/#{cd}/#{hash}"
-          now      = DateTime.utc_now() |> DateTime.truncate(:second)
-          doc_id   = Ecto.UUID.generate()
-          existing = Repo.get(CasObject, hash)
-          if existing do
-            Repo.update_all(from(c in CasObject, where: c.content_hash == ^hash), inc: [ref_count: 1])
-          else
-            ObjectStore.put_object(s3_key, bytes, ctype)
-            Repo.insert!(%CasObject{
-              content_hash: hash, namespace_key: ns_key, actor_did: did,
-              storage_backend: "s3", storage_key: s3_key, media_type: ctype,
-              file_size: byte_size(bytes), ref_count: 1, is_current: true,
-              is_corrupt: false, is_verified: false, effective_from: now})
+          # Phase 3: all chat upload logic delegated to ChatApi
+          result = consume_uploaded_entries(socket, :chat_file, fn %{path: tmp}, entry ->
+            file_params = %{
+              path:         tmp,
+              filename:     entry.client_name,
+              content_type: entry.client_type || "application/octet-stream",
+              size:         entry.client_size
+            }
+            Alem.Api.ChatApi.upload_file(user, cid, file_params)
+          end)
+
+          case result do
+            [{:ok, %{flash: flash}}] ->
+              {:noreply, assign(socket, :flash_msg, flash)}
+            _ ->
+              {:noreply, assign(socket, :flash_msg, "Upload failed")}
           end
-          Repo.insert!(%Document{
-            id: doc_id, user_id: user.id, tenant_id: ns_key, filename: filename,
-            content_type: ctype, folder: vault_name, media_category: "documents",
-            is_encrypted: false, status: "synced", content_hash: hash,
-            object_key: "user/#{prefix}/#{vault_name}/chat/#{cid}/#{doc_id}/#{filename}",
-            inserted_at: now, updated_at: now})
-          Repo.insert!(%CasDedupRef{
-            tenant_id: ns_key, namespace_key: ns_key, actor_did: did,
-            content_hash: hash, document_id: doc_id, user_filename: filename, is_active: true})
-          {:ok, link} = Repo.insert(%PerceptionLink{
-            link_type: "circle", content_hash: hash, document_id: doc_id,
-            owner_did: did, issuer_did: did, conversation_id: cid,
-            can_forward: false, forward_depth: 0, scope: "read",
-            expires_at: DateTime.add(now, 30 * 86_400, :second)})
-          {:ok, %{link: link, filename: filename, vault_num: vault_num, vault_name: vault_name}}
-        end)
-        case result do
-          [{:ok, %{link: link, filename: fn_, vault_num: vn, vault_name: vname}}] ->
-            now = DateTime.utc_now() |> DateTime.truncate(:second)
-            {:ok, msg} = Repo.insert(%Message{
-              conversation_id: cid, sender_did: did, content_type: "perception_link",
-              body: fn_, perception_link_id: link.id, sent_at: now})
-            Phoenix.PubSub.broadcast(Alem.PubSub, "conversation:#{cid}", {:new_message, msg})
-            {:noreply, assign(socket, :flash_msg, "✅ #{fn_} → vault #{vn} (#{vname})")}
-          _ ->
-            {:noreply, assign(socket, :flash_msg, "Upload failed")}
         end
-        end  # progress check
     end
   end
 

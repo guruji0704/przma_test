@@ -103,6 +103,56 @@ defmodule AlemWeb.UserLive do
 
   # ── Events ─────────────────────────────────────────────────────────────────
 
+
+  def handle_event("save_provider", params, socket) do
+    user = socket.assigns.user
+    case Alem.Api.ProviderApi.create_provider(user, params) do
+      {:ok, _} ->
+        {:noreply, socket
+          |> assign(:providers, Alem.Api.ProviderApi.list_providers(user))
+          |> assign(:flash_msg, "✅ Provider saved")
+          |> assign(:flash_type, :success)}
+      {:error, cs} ->
+        {:noreply, assign(socket, :flash_msg, "❌ Save failed: #{inspect(cs.errors)}")}
+    end
+  end
+
+  def handle_event("delete_provider", %{"id" => id}, socket) do
+    user = socket.assigns.user
+    Alem.Api.ProviderApi.delete_provider(user, id)
+    {:noreply, socket
+      |> assign(:providers, Alem.Api.ProviderApi.list_providers(user))
+      |> assign(:flash_msg, "Provider removed")}
+  end
+
+  def handle_event("set_active_provider", %{"id" => id}, socket) do
+    user = socket.assigns.user
+    Alem.Api.ProviderApi.set_active(user, id)
+    {:noreply, socket
+      |> assign(:providers, Alem.Api.ProviderApi.list_providers(user))
+      |> assign(:flash_msg, "✅ Provider activated")}
+  end
+
+  def handle_event("use_managed", _, socket) do
+    user = socket.assigns.user
+    Alem.Api.ProviderApi.set_managed(user)
+    {:noreply, socket
+      |> assign(:providers, Alem.Api.ProviderApi.list_providers(user))
+      |> assign(:flash_msg, "✅ Using PRZMA managed storage")}
+  end
+
+  def handle_event("test_provider", %{"id" => id}, socket) do
+    user = socket.assigns.user
+    case Alem.Api.ProviderApi.test_connection(user, id) do
+      {:ok, :connected} ->
+        {:noreply, socket
+          |> assign(:providers, Alem.Api.ProviderApi.list_providers(user))
+          |> assign(:flash_msg, "✅ Connection verified!")}
+      {:error, {:connection_failed, r}} ->
+        {:noreply, assign(socket, :flash_msg, "❌ Failed: #{r}")}
+    end
+  end
+
   @impl true
   def handle_event("nav", %{"page" => page}, socket) do
     {:noreply, socket |> assign(:page, String.to_existing_atom(page)) |> assign(:sidebar_open, false)}
@@ -136,7 +186,20 @@ defmodule AlemWeb.UserLive do
     folder = Map.get(params, "folder", socket.assigns[:active_folder] || "personal")
 
     results = consume_uploaded_entries(socket, :file, fn %{path: path}, entry ->
-      process_upload(path, entry.client_name, entry.client_type, user, folder)
+      bytes = File.read!(path)
+      file_params = %{
+        path:         path,
+        filename:     entry.client_name,
+        content_type: detect_type(entry.client_name, bytes, entry.client_type),
+        size:         entry.client_size
+      }
+      case Alem.Api.UploadApi.upload(user, folder, file_params) do
+        {:ok, %{doc: doc}} ->
+          {:ok, %{filename: entry.client_name, size: entry.client_size,
+                  folder: folder, doc_id: doc.id, s3: true, pg: true, lance: true}}
+        {:error, reason} ->
+          {:ok, %{filename: entry.client_name, error: inspect(reason)}}
+      end
     end)
 
     {:noreply,
@@ -225,40 +288,6 @@ defmodule AlemWeb.UserLive do
     {:noreply, assign(socket, viewer: nil, viewer_loading: false)}
   end
 
-  defp process_upload(path, filename, client_type, user, folder \\ "personal") do
-    try do
-      file_bytes   = File.read!(path)
-      content_type = detect_type(filename, file_bytes, client_type)
-      did_id       = user.did_id || user.id
-
-      case Alem.Home.upload(
-        file_bytes,
-        filename,
-        content_type,
-        folder:  folder,
-        user_id: user.id,
-        did_id:  did_id
-      ) do
-        {:ok, doc} ->
-          {:ok, %{
-            filename: filename,
-            size:     byte_size(file_bytes),
-            type:     content_type,
-            folder:   folder,
-            s3:       true,
-            pg:       true,
-            lance:    true,
-            doc_id:   doc.id
-          }}
-
-        {:error, reason} ->
-          {:ok, %{filename: filename, error: inspect(reason)}}
-      end
-    rescue e ->
-      {:ok, %{filename: filename, error: Exception.message(e)}}
-    end
-  end
-
   defp detect_type(n, b, t) when t in [nil, "", "application/octet-stream"] do
     magic = case b do
       <<0x89,0x50,0x4E,0x47,_::binary>> -> "image/png"
@@ -322,6 +351,7 @@ defmodule AlemWeb.UserLive do
       |> assign(:folder_stats,  assigns[:folder_stats] || %{})
       |> assign(:active_folder,  assigns[:active_folder] || "personal")
       |> assign(:random_vault,     assigns[:random_vault])
+      |> assign(:providers,        Alem.Api.ProviderApi.list_providers(assigns.user))
       |> assign(:type_values,   Jason.encode!([
            assigns.stats.audio, assigns.stats.video,
            assigns.stats.image, assigns.stats.document
@@ -989,6 +1019,9 @@ defmodule AlemWeb.UserLive do
           <button class={"nav-item #{if @page == :upload, do: "active"}"} phx-click="nav" phx-value-page="upload" data-label="Upload">
             <span class="nav-icon">↑</span><span class="nav-label">Upload</span>
           </button>
+        <button class={"ftab #{if @page == :settings, do: "on"}"}
+          phx-click="nav" phx-value-page="settings"
+          style="font-size:11px;">⚙️ Settings</button>
           <button class="nav-item" onclick="window.open('/studio','_blank')" data-label="PRZMA Studio">
             <span class="nav-icon">✏</span><span class="nav-label">PRZMA Studio</span>
           </button>
@@ -1631,6 +1664,121 @@ defmodule AlemWeb.UserLive do
               <button class="btn btn-danger btn-sm" phx-click="revoke_session" phx-value-id={s.id}>← Logout</button>
             </div>
           <% end %>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
+  defp render_page(%{page: :settings} = assigns) do
+    ~H"""
+    <div style="padding:24px;max-width:780px;margin:0 auto;">
+      <h2 style="font-size:20px;font-weight:700;margin-bottom:4px;color:var(--text);">⚙️ Settings</h2>
+      <p style="color:var(--text-2);font-size:13px;margin-bottom:24px;">Manage your storage providers (BYOS — Bring Your Own Storage).</p>
+
+      <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <div>
+            <div style="font-weight:600;font-size:15px;color:var(--text);">🗄️ Storage Providers</div>
+            <div style="font-size:12px;color:var(--text-2);margin-top:2px;">Connect your own S3, MinIO, Cloudflare R2, or Backblaze.</div>
+          </div>
+          <button phx-click="use_managed"
+            style="padding:6px 14px;background:var(--bg-3);border:1px solid var(--border);border-radius:8px;font-size:12px;cursor:pointer;color:var(--text);">
+            ☁️ Use PRZMA Managed
+          </button>
+        </div>
+
+        <%= for p <- @providers do %>
+        <div style={"background:var(--bg-3);border:2px solid #{if p.is_active, do: "#22c55e", else: "var(--border)"};border-radius:8px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;"}>
+          <div>
+            <div style="font-weight:600;font-size:13px;color:var(--text);"><%= if p.is_active, do: "✅ " %><%= p.label || p.adapter %></div>
+            <div style="font-size:11px;color:var(--text-2);margin-top:2px;"><%= p.adapter %> · bucket: <strong><%= p.bucket %></strong><%= if p.region, do: " · #{p.region}" %></div>
+            <%= if p.is_verified do %>
+              <div style="font-size:11px;color:#22c55e;margin-top:2px;">● Verified</div>
+            <% end %>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button phx-click="test_provider" phx-value-id={p.id}
+              style="padding:4px 10px;background:var(--bg-4);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;color:var(--text);">🔌 Test</button>
+            <%= unless p.is_active do %>
+            <button phx-click="set_active_provider" phx-value-id={p.id}
+              style="padding:4px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:11px;cursor:pointer;color:#064e3b;">⚡ Activate</button>
+            <% end %>
+            <button phx-click="delete_provider" phx-value-id={p.id}
+              data-confirm="Remove this provider?"
+              style="padding:4px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:11px;cursor:pointer;color:#991b1b;">🗑️</button>
+          </div>
+        </div>
+        <% end %>
+
+        <%= if @providers == [] do %>
+        <div style="text-align:center;padding:24px;color:var(--text-2);font-size:13px;border:1px dashed var(--border);border-radius:8px;margin-bottom:16px;">
+          <div style="font-size:28px;margin-bottom:8px;">☁️</div>
+          Using PRZMA managed Linode S3. Add your own provider below.
+        </div>
+        <% end %>
+
+        <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px;">
+          <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;">➕ Add Provider</div>
+          <form phx-submit="save_provider" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <label style="font-size:11px;color:var(--text-2);display:block;margin-bottom:3px;">Provider Type *</label>
+              <select name="adapter" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-3);color:var(--text);">
+                <option value="s3">AWS S3</option>
+                <option value="minio">MinIO</option>
+                <option value="r2">Cloudflare R2</option>
+                <option value="backblaze">Backblaze B2</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text-2);display:block;margin-bottom:3px;">Display Label</label>
+              <input name="label" placeholder="My Linode S3"
+                style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-3);color:var(--text);" />
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text-2);display:block;margin-bottom:3px;">Bucket Name *</label>
+              <input name="bucket" placeholder="my-bucket" required
+                style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-3);color:var(--text);" />
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text-2);display:block;margin-bottom:3px;">Region</label>
+              <input name="region" placeholder="us-east-1"
+                style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-3);color:var(--text);" />
+            </div>
+            <div style="grid-column:1/-1;">
+              <label style="font-size:11px;color:var(--text-2);display:block;margin-bottom:3px;">Endpoint URL (MinIO / R2 / Backblaze / Linode)</label>
+              <input name="endpoint" placeholder="https://in-maa-1.linodeobjects.com"
+                style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-3);color:var(--text);" />
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text-2);display:block;margin-bottom:3px;">Access Key ID</label>
+              <input name="access_key" type="password" placeholder="AKIA..."
+                style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-3);color:var(--text);" />
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text-2);display:block;margin-bottom:3px;">Secret Access Key</label>
+              <input name="secret_key" type="password" placeholder="wJalr..."
+                style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg-3);color:var(--text);" />
+            </div>
+            <input type="hidden" name="provider_type" value="storage" />
+            <div style="grid-column:1/-1;display:flex;align-items:center;gap:12px;">
+              <button type="submit"
+                style="padding:9px 22px;background:#1e40af;color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">
+                💾 Save Provider
+              </button>
+              <span style="font-size:11px;color:var(--text-2);">🔒 Keys encrypted before storage. PRZMA never sees plaintext credentials.</span>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-2);border:1px solid #3b82f6;border-radius:10px;padding:14px;">
+        <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px;">📡 Active Storage</div>
+        <%= if Enum.any?(@providers, & &1.is_active) do %>
+          <% active = Enum.find(@providers, & &1.is_active) %>
+          <div style="font-size:13px;color:var(--text);">Using: <strong><%= active.label || active.adapter %></strong> · <%= active.bucket %><%= if active.region, do: " · #{active.region}" %></div>
+        <% else %>
+          <div style="font-size:13px;color:var(--text);">Using: <strong>PRZMA Managed</strong> — Linode Object Storage · in-maa-1 · bucket: perkeep</div>
         <% end %>
       </div>
     </div>
