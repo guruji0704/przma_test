@@ -257,6 +257,20 @@ defmodule AlemWeb.Router do
 
     # Users (for invite picker)
     get    "/users",                    UserController,    :index
+
+    # ── Inbox ────────────────────────────────────────────
+  get    "/inbox",                   InboxController, :index
+  patch  "/inbox/:id/read",          InboxController, :mark_read
+  post   "/inbox/read_all",          InboxController, :mark_all_read
+
+  # ── Outbox ───────────────────────────────────────────
+  get    "/outbox",                  OutboxController, :index
+
+  # ── Notifications ────────────────────────────────────
+  get    "/notifications",           NotificationController, :index
+  patch  "/notifications/:id/read",  NotificationController, :mark_read
+  post   "/notifications/read_all",  NotificationController, :mark_all_read
+  
   end
 
   # ── Health check ──────────────────────────────────────────────────────────

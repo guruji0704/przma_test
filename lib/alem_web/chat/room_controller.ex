@@ -25,6 +25,7 @@ defmodule AlemWeb.Chat.RoomController do
   alias AlemWeb.{Endpoint, Presence}
   alias Phoenix.PubSub
   alias OpenApiSpex.Schema
+  alias Alem.ActivityStream
 
   tags ["Chat - Rooms"]
 
@@ -328,6 +329,15 @@ defmodule AlemWeb.Chat.RoomController do
               username: user.username,
               did:      user.did
             }})
+
+            # Publish ActivityStream Join
+          ActivityStream.publish(
+            "Join", user.id, user.username, "ChatRoom",
+            %{room_id: id, room_name: room.name, vault: room.vault},
+            room_id:   id,
+            vault:     room.vault,
+            object_id: id
+          )
           end
 
           json(conn, %{
@@ -368,6 +378,17 @@ defmodule AlemWeb.Chat.RoomController do
 
       # 3. Push room_invite event to their live user channel
       AlemWeb.ChatChannel.notify_invite(target_id, did_key, room)
+
+      # Publish ActivityStream Invite
+    ActivityStream.publish(
+      "Invite", user.id, user.username, "ChatRoom",
+      %{room_id: room_id, room_name: room.name, vault: room.vault},
+      recipients:        [%{user_id: target_id, username: target_username}],
+      room_id:           room_id,
+      vault:             room.vault,
+      object_id:         room_id,
+      notification_type: "invite"
+    )
 
       json(conn, %{ok: true, invited: target_id, room: room_id})
     else
@@ -427,6 +448,15 @@ defmodule AlemWeb.Chat.RoomController do
           did:      user.did
         }})
 
+         # Publish ActivityStream Leave
+      ActivityStream.publish(
+        "Leave", user.id, user.username, "ChatRoom",
+        %{room_id: id, room_name: room.name, vault: room.vault},
+        room_id:   id,
+        vault:     room.vault,
+        object_id: id
+      )
+
         json(conn, %{ok: true, username: user.username, did: user.did, room: id})
     end
   end
@@ -439,6 +469,17 @@ defmodule AlemWeb.Chat.RoomController do
          {:ok, _} <- Chat.delete_room(id, user.id) do
       # Push room_deleted to every connected WebSocket client in this channel topic
       Endpoint.broadcast("vault_chat:#{room.vault}:#{id}", "room_deleted", %{room_id: id})
+
+      # Publish ActivityStream Delete — fans out to all members before they're removed
+    ActivityStream.publish(
+      "Delete", user.id, user.username, "ChatRoom",
+      %{room_id: id, room_name: room.name, vault: room.vault},
+      room_id:           id,
+      vault:             room.vault,
+      object_id:         id,
+      notification_type: "room_deleted"
+    )
+
       json(conn, %{ok: true, room: id})
     else
       {:room, nil}            -> conn |> put_status(404) |> json(%{error: "Room not found"})
@@ -458,6 +499,21 @@ defmodule AlemWeb.Chat.RoomController do
     else
       case Chat.get_or_create_dm(vault, [user.id, target_id], [user.username, target_username]) do
         {:ok, room} ->
+
+         # Only publish the activity when the room is freshly created
+        # get_or_create_dm returns the existing room if it already exists
+        # We detect new rooms by checking if the room was just inserted (inserted_at == updated_at)
+        if room.inserted_at == room.updated_at do
+          ActivityStream.publish(
+            "Create", user.id, user.username, "ChatRoom",
+            %{room_id: room.id, is_dm: true, vault: vault,
+              partner_id: target_id, partner_username: target_username},
+            recipients:        [%{user_id: target_id, username: target_username}],
+            vault:             vault,
+            object_id:         room.id,
+            notification_type: "dm_request"
+          )
+        end
           json(conn, %{ok: true, room: Chat.room_json(room)})
 
         {:error, changeset} ->
