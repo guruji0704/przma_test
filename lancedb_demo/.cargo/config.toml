@@ -1,0 +1,10 @@
+[build]
+jobs = 1
+target-dir = "D:\\lancedb_demo\\target"
+
+[profile.dev]
+codegen-units = 1
+opt-level = 0
+lto = false
+panic = "abort"
+incremental = false
